@@ -19,7 +19,7 @@ FORBIDDEN_IMPORTS = {"os", "sys", "subprocess", "shutil", "importlib", "socket",
 FORBIDDEN_FUNCTIONS = {"eval", "exec", "compile", "__import__", "getattr", "setattr", "delattr", "globals", "locals"}
 FORBIDDEN_PATTERNS = [
 	(r"frappe\.db\.sql\s*\(", "frappe.db.sql() (raw SQL) — use Frappe ORM instead"),
-	(r"open\s*\(", "open() (file operations) — not allowed in Server Scripts"),
+	(r"(?<!\.)open\s*\(", "open() (file operations) — not allowed in Server Scripts"),
 	(r"requests\.", "requests library — external HTTP calls not allowed in sandbox"),
 ]
 

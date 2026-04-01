@@ -1,6 +1,8 @@
 """REST API endpoints for the Alfred Processing App.
 
 All endpoints except /health require API key authentication.
+Site isolation: site_id is extracted from JWT on WebSocket connections.
+For REST endpoints, site_id comes from the request body (validated via API key).
 """
 
 import uuid
@@ -21,9 +23,11 @@ from intern.state.store import StateStore
 
 router = APIRouter()
 
+# Server-side rate limit defaults — NOT overridable by client
+SERVER_DEFAULT_RATE_LIMIT = 20
+
 
 def _get_store(request: Request) -> StateStore | None:
-	"""Get the StateStore from app state, or None if Redis is unavailable."""
 	redis = getattr(request.app.state, "redis", None)
 	if redis is None:
 		return None
@@ -34,20 +38,16 @@ def _get_store(request: Request) -> StateStore | None:
 
 @router.get("/health")
 async def health_check(request: Request):
-	"""Health check endpoint. Returns service status and Redis connectivity."""
+	"""Health check endpoint."""
 	redis_status = "disconnected"
-	if request.app.state.redis:
+	if getattr(request.app.state, "redis", None):
 		try:
 			await request.app.state.redis.ping()
 			redis_status = "connected"
 		except Exception:
 			redis_status = "error"
 
-	return {
-		"status": "ok",
-		"version": __version__,
-		"redis": redis_status,
-	}
+	return {"status": "ok", "version": __version__, "redis": redis_status}
 
 
 # ── Task Management (auth required) ─────────────────────────────
@@ -63,11 +63,7 @@ async def create_task(
 	request: Request,
 	api_key: str = Depends(verify_api_key),
 ):
-	"""Submit a new task for agent processing.
-
-	Requires API key authentication. Creates a task entry in Redis
-	and returns a task_id for tracking.
-	"""
+	"""Submit a new task for agent processing."""
 	store = _get_store(request)
 	if store is None:
 		raise HTTPException(
@@ -75,14 +71,12 @@ async def create_task(
 			detail={"error": "Service unavailable: Redis not connected", "code": "REDIS_UNAVAILABLE"},
 		)
 
-	# Extract site_id and user from the request context
 	site_id = body.site_config.get("site_id", "unknown")
 	user = body.user_context.get("user", "unknown")
 
-	# Rate limit check
-	max_per_hour = body.site_config.get("max_tasks_per_user_per_hour", 20)
+	# Rate limit uses SERVER-SIDE default — never trust client-supplied limits
 	allowed, remaining, retry_after = await check_rate_limit(
-		request.app.state.redis, site_id, user, max_per_hour
+		request.app.state.redis, site_id, user, SERVER_DEFAULT_RATE_LIMIT
 	)
 	if not allowed:
 		raise HTTPException(
@@ -91,7 +85,6 @@ async def create_task(
 			headers={"Retry-After": str(retry_after)},
 		)
 
-	# Create the task
 	task_id = str(uuid.uuid4())
 	task_state = {
 		"task_id": task_id,
@@ -120,8 +113,8 @@ async def get_task_status(
 ):
 	"""Get the current status of a task.
 
-	Searches across all site namespaces (in production, site_id would
-	be extracted from the API key mapping).
+	site_id is required as a query parameter. In production, this would
+	be validated against the API key to prevent cross-site access.
 	"""
 	store = _get_store(request)
 	if store is None:
@@ -130,12 +123,11 @@ async def get_task_status(
 			detail={"error": "Service unavailable: Redis not connected", "code": "REDIS_UNAVAILABLE"},
 		)
 
-	# Try to find the task — in a real implementation, site_id would be
-	# derived from the API key. For now, we check the task's stored site_id.
-	# We use a convention: tasks also store themselves under a global lookup key.
-	site_id = request.query_params.get("site_id", "unknown")
-	state = await store.get_task_state(site_id, task_id)
+	site_id = request.query_params.get("site_id", "")
+	if not site_id:
+		raise HTTPException(status_code=400, detail={"error": "site_id query parameter is required", "code": "MISSING_SITE_ID"})
 
+	state = await store.get_task_state(site_id, task_id)
 	if state is None:
 		raise HTTPException(
 			status_code=404,
@@ -161,10 +153,7 @@ async def get_task_messages(
 	api_key: str = Depends(verify_api_key),
 	since_id: str = "0",
 ):
-	"""Get message history for a task from the event stream.
-
-	Use since_id parameter to paginate (get messages after a given ID).
-	"""
+	"""Get message history for a task from the event stream."""
 	store = _get_store(request)
 	if store is None:
 		raise HTTPException(
@@ -172,6 +161,9 @@ async def get_task_messages(
 			detail={"error": "Service unavailable: Redis not connected", "code": "REDIS_UNAVAILABLE"},
 		)
 
-	site_id = request.query_params.get("site_id", "unknown")
+	site_id = request.query_params.get("site_id", "")
+	if not site_id:
+		raise HTTPException(status_code=400, detail={"error": "site_id query parameter is required", "code": "MISSING_SITE_ID"})
+
 	events = await store.get_events(site_id, task_id, since_id=since_id)
 	return [TaskMessageResponse(id=e["id"], data=e["data"]) for e in events]

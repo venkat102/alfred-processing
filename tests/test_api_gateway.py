@@ -231,21 +231,30 @@ class TestRateLimit:
 		if app.state.redis is None:
 			pytest.skip("Redis not available")
 
-		for i in range(3):
-			resp = await client.post(
-				"/api/v1/tasks",
-				json={
-					"prompt": f"task {i}",
-					"site_config": {"site_id": "ratelimit-test-site", "max_tasks_per_user_per_hour": 2},
-					"user_context": {"user": "rate@test.com"},
-				},
-				headers=_auth_headers(),
-			)
-			if i < 2:
-				assert resp.status_code == 201, f"Request {i} should succeed: {resp.text}"
-			else:
-				assert resp.status_code == 429, f"Request {i} should be rate limited: {resp.text}"
-				assert "Retry-After" in resp.headers
+		# Server uses SERVER_DEFAULT_RATE_LIMIT (20). Send 21 requests to exceed it.
+		# For faster testing, temporarily set the server default lower.
+		import intern.api.routes as routes_mod
+		original_limit = routes_mod.SERVER_DEFAULT_RATE_LIMIT
+		routes_mod.SERVER_DEFAULT_RATE_LIMIT = 2
+
+		try:
+			for i in range(3):
+				resp = await client.post(
+					"/api/v1/tasks",
+					json={
+						"prompt": f"task {i}",
+						"site_config": {"site_id": "ratelimit-test-site-v2"},
+						"user_context": {"user": "rate-v2@test.com"},
+					},
+					headers=_auth_headers(),
+				)
+				if i < 2:
+					assert resp.status_code == 201, f"Request {i} should succeed: {resp.text}"
+				else:
+					assert resp.status_code == 429, f"Request {i} should be rate limited: {resp.text}"
+					assert "Retry-After" in resp.headers
+		finally:
+			routes_mod.SERVER_DEFAULT_RATE_LIMIT = original_limit
 
 
 # ── WebSocket ────────────────────────────────────────────────────
@@ -286,8 +295,8 @@ class TestWebSocket:
 				auth = json.loads(await ws.receive_text())
 				assert auth["type"] == "auth_success"
 
-				# Send custom message
-				await ws.send_json({"msg_id": "msg-001", "type": "prompt", "data": {"text": "Create a ToDo"}})
+				# Send a non-prompt custom message (prompt triggers the pipeline which needs a real LLM)
+				await ws.send_json({"msg_id": "msg-001", "type": "status_query", "data": {"text": "what is happening"}})
 
 				# Read responses, skip pings
 				resp = json.loads(await ws.receive_text())
@@ -295,7 +304,7 @@ class TestWebSocket:
 					resp = json.loads(await ws.receive_text())
 
 				assert resp["type"] == "echo"
-				assert resp["data"]["received_type"] == "prompt"
+				assert resp["data"]["received_type"] == "status_query"
 
 	async def test_ws_message_routing_mcp(self, app):
 		try:

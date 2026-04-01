@@ -39,14 +39,16 @@ TASK_DESCRIPTIONS = {
 			"Ask clarifying questions if anything is ambiguous. Do NOT proceed with vague requirements."
 		),
 		"expected_output": (
-			"A structured requirement summary in JSON format:\n"
+			"A structured RequirementSpec in JSON format:\n"
 			"{\n"
-			'  "objective": "one sentence summary",\n'
-			'  "scope": "new_doctype | modify_existing | workflow | report | other",\n'
-			'  "entities": [{"name": "...", "type": "DocType|Field|Workflow", "details": "..."}],\n'
-			'  "business_rules": ["rule 1", "rule 2"],\n'
-			'  "permissions": {"roles": ["Role1"], "operations": ["read", "write", "create"]},\n'
-			'  "constraints": ["constraint 1"]\n'
+			'  "summary": "Brief description of what is being built",\n'
+			'  "customizations_needed": [\n'
+			'    {"type": "DocType|Custom Field|Server Script|Client Script|Workflow|Report|Notification|Print Format",\n'
+			'     "name": "Proposed name", "description": "What this does",\n'
+			'     "fields": [...], "needs_workflow": false, "needs_server_script": false}\n'
+			"  ],\n"
+			'  "dependencies": ["Existing DocTypes this depends on"],\n'
+			'  "open_questions": ["Any remaining ambiguities"]\n'
 			"}"
 		),
 	},
@@ -344,6 +346,7 @@ async def run_crew(
 	site_id: str = "",
 	conversation_id: str = "",
 	event_callback=None,
+	human_input_handler=None,
 ) -> dict:
 	"""Run the crew and handle state persistence.
 
@@ -354,6 +357,8 @@ async def run_crew(
 		site_id: Customer site ID for Redis namespace.
 		conversation_id: Conversation ID for Redis key.
 		event_callback: Async callback for pushing events (agent_started, etc.)
+		human_input_handler: Async callable(question: str) -> str for user input.
+			If provided, overrides CrewAI's default stdin-based human_input.
 
 	Returns:
 		Dict with final result, state, and execution log.
@@ -363,6 +368,25 @@ async def run_crew(
 			await event_callback(event_type, data)
 
 	await notify("crew_started", {"conversation_id": conversation_id, "tasks": len(crew.tasks)})
+
+	# Override CrewAI's human_input if a handler is provided.
+	# CrewAI's Task.human_input triggers a call to the built-in input() function.
+	# We monkey-patch it to route through our WebSocket handler instead.
+	original_builtin_input = None
+	if human_input_handler:
+		import builtins
+		original_builtin_input = builtins.input
+
+		def _ws_input(prompt_text=""):
+			"""Replacement for builtins.input() that routes through WebSocket."""
+			import concurrent.futures
+			loop = asyncio.new_event_loop()
+			try:
+				return loop.run_until_complete(human_input_handler(prompt_text))
+			finally:
+				loop.close()
+
+		builtins.input = _ws_input
 
 	try:
 		# Run the crew in a thread pool (CrewAI is synchronous)
@@ -410,3 +434,9 @@ async def run_crew(
 			"error": str(e),
 			"state": state.to_dict(),
 		}
+
+	finally:
+		# Restore original input() if we monkey-patched it
+		if original_builtin_input is not None:
+			import builtins
+			builtins.input = original_builtin_input
