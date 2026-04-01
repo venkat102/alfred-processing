@@ -22,46 +22,6 @@ from intern.tools.mcp_client import MCPClient
 
 logger = logging.getLogger("alfred.mcp_tools")
 
-# ── Tool Description Constants ────────────────────────────────────
-
-DESC_GET_SITE_INFO = (
-	"Get basic site information including Frappe version, installed apps, "
-	"default company, and country. Use this to understand the site environment."
-)
-DESC_GET_DOCTYPES = (
-	"List DocType names and modules. Optionally filter by module name. "
-	"Use this to find existing DocTypes for Link fields and to check what's already available."
-)
-DESC_GET_DOCTYPE_SCHEMA = (
-	"Get the full field schema for a DocType including all fields, types, options, and permissions. "
-	"Requires read permission. Use this to understand existing DocType structures before modifying them."
-)
-DESC_GET_EXISTING_CUSTOMIZATIONS = (
-	"List existing customizations (custom fields, server scripts, client scripts, workflows) "
-	"filtered by your permissions. Use this to check what already exists before creating new customizations."
-)
-DESC_GET_USER_CONTEXT = (
-	"Get the current user's email, roles, permissions, and permitted modules. "
-	"Use this to understand what the user can access."
-)
-DESC_CHECK_PERMISSION = (
-	"Check if the current user has a specific permission (read/write/create/delete) on a DocType. "
-	"ALWAYS use this tool — NEVER guess permissions."
-)
-DESC_VALIDATE_NAME_AVAILABLE = (
-	"Check if a document name is already taken. Use this before creating new DocTypes "
-	"or documents to avoid naming conflicts."
-)
-DESC_HAS_ACTIVE_WORKFLOW = (
-	"Check if a DocType already has an active workflow. "
-	"Frappe allows only one active workflow per DocType."
-)
-DESC_CHECK_HAS_RECORDS = (
-	"Check if a DocType has existing data records. "
-	"Use this before rollback or deletion to avoid data loss."
-)
-
-
 def _run_async(coro):
 	"""Run an async coroutine from synchronous CrewAI tool context."""
 	try:

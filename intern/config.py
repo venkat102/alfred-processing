@@ -29,6 +29,13 @@ class Settings(BaseSettings):
 	FALLBACK_LLM_API_KEY: str = ""
 	FALLBACK_LLM_BASE_URL: str = ""
 
+	# Admin Portal
+	ADMIN_PORTAL_URL: str = ""
+	ADMIN_SERVICE_KEY: str = ""
+
+	# CORS — restrict in production, default allows all for dev
+	ALLOWED_ORIGINS: str = "*"
+
 	# WebSocket
 	WS_HEARTBEAT_INTERVAL: int = 30
 	WS_MESSAGE_BUFFER_TTL: int = 3600

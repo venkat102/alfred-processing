@@ -63,10 +63,13 @@ def create_app() -> FastAPI:
 		lifespan=lifespan,
 	)
 
-	# CORS middleware
+	# CORS middleware — configurable via ALLOWED_ORIGINS env var
+	# Default "*" for development, restrict to specific origins in production
+	settings = get_settings()
+	origins = settings.ALLOWED_ORIGINS.split(",") if settings.ALLOWED_ORIGINS != "*" else ["*"]
 	app.add_middleware(
 		CORSMiddleware,
-		allow_origins=["*"],
+		allow_origins=origins,
 		allow_credentials=True,
 		allow_methods=["*"],
 		allow_headers=["*"],

@@ -211,6 +211,35 @@ async def _run_agent_pipeline(conn: ConnectionState, conversation_id: str, promp
 	redis = getattr(conn.websocket.app.state, "redis", None)
 	store = StateStore(redis) if redis else None
 
+	settings = conn.websocket.app.state.settings
+	admin_url = getattr(settings, "ADMIN_PORTAL_URL", "")
+	admin_key = getattr(settings, "ADMIN_SERVICE_KEY", "")
+	if admin_url and admin_key:
+		try:
+			from intern.api.admin_client import AdminClient
+			admin = AdminClient(admin_url, admin_key, redis)
+			plan_result = await admin.check_plan(conn.site_id)
+			if not plan_result.get("allowed", True):
+				await conn.send({
+					"msg_id": str(uuid.uuid4()),
+					"type": "error",
+					"data": {
+						"error": plan_result.get("reason", "Plan limit exceeded"),
+						"code": "PLAN_EXCEEDED",
+						"warning": plan_result.get("warning"),
+					},
+				})
+				return
+			# Send warning if approaching limit
+			if plan_result.get("warning"):
+				await conn.send({
+					"msg_id": str(uuid.uuid4()),
+					"type": "agent_status",
+					"data": {"agent": "System", "status": "warning", "message": plan_result["warning"]},
+				})
+		except Exception as e:
+			logger.warning("Plan check failed (allowing by default): %s", e)
+
 	# Step 3: Notify user that processing has started
 	await conn.send({
 		"msg_id": str(uuid.uuid4()),

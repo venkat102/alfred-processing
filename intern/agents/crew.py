@@ -19,6 +19,13 @@ from typing import Any
 from crewai import Crew, Process, Task
 
 from intern.agents.definitions import build_agents
+from intern.models.agent_outputs import (
+	RequirementSpec,
+	AssessmentResult,
+	ArchitectureBlueprint,
+	Changeset,
+	DeploymentResult,
+)
 
 logger = logging.getLogger("alfred.crew")
 
@@ -290,6 +297,16 @@ def build_intern_crew(
 	tasks = []
 	task_map = {}
 
+	# Pydantic output models for automatic validation by CrewAI
+	output_models = {
+		"gather_requirements": RequirementSpec,
+		"assess_feasibility": AssessmentResult,
+		"design_solution": ArchitectureBlueprint,
+		"generate_changeset": Changeset,
+		"validate_changeset": None,  # TestReport — name conflicts with pytest, skip auto-validation
+		"deploy_changeset": DeploymentResult,
+	}
+
 	task_definitions = [
 		("gather_requirements", agents["requirement"], True),
 		("assess_feasibility", agents["assessment"], False),
@@ -311,12 +328,20 @@ def build_intern_crew(
 		# Build context from earlier completed tasks
 		context_tasks = [task_map[t] for t in task_map if t in state.completed_tasks or t in task_map]
 
-		task = Task(
-			description=description,
-			expected_output=expected_output,
-			agent=agent,
-			human_input=human_input,
-			context=context_tasks[-2:] if context_tasks else [],  # Last 2 tasks for context
+		task_kwargs = {
+			"description": description,
+			"expected_output": expected_output,
+			"agent": agent,
+			"human_input": human_input,
+			"context": context_tasks[-2:] if context_tasks else [],
+		}
+
+		# Wire Pydantic model for automatic output validation
+		model = output_models.get(task_name)
+		if model:
+			task_kwargs["output_json"] = model
+
+		task = Task(**task_kwargs
 		)
 		tasks.append(task)
 		task_map[task_name] = task
