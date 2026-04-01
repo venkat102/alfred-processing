@@ -1,0 +1,82 @@
+# Alfred Self-Hosted Deployment
+# Full stack: Processing App + Redis + Ollama (local LLM)
+#
+# Usage:
+#   cp .env.example .env  # Configure your settings
+#   docker-compose -f docker-compose.selfhosted.yml up -d
+#
+# Prerequisites:
+#   - Docker + Docker Compose installed
+#   - Frappe site with alfred_client app installed
+#   - Configure Alfred Settings with processing_app_url = ws://localhost:8000
+
+services:
+  processing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - WORKERS=${WORKERS:-2}
+      - API_SECRET_KEY=${API_SECRET_KEY:?Set API_SECRET_KEY in .env}
+      - REDIS_URL=redis://redis:6379/0
+      - FALLBACK_LLM_MODEL=ollama/llama3.1
+      - FALLBACK_LLM_BASE_URL=http://ollama:11434
+      - DEBUG=${DEBUG:-false}
+    depends_on:
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - alfred-net
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks:
+      - alfred-net
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    # GPU support (uncomment for NVIDIA GPU)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    networks:
+      - alfred-net
+
+volumes:
+  redis_data:
+  ollama_data:
+
+networks:
+  alfred-net:
+    driver: bridge
