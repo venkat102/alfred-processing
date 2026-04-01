@@ -21,7 +21,7 @@ WORKDIR /app
 COPY --from=builder /app/deps /usr/local/lib/python3.11/site-packages/
 
 # Copy application code
-COPY intern/ ./intern/
+COPY alfred/ ./alfred/
 
 # Create non-root user for security
 RUN useradd --create-home --shell /bin/bash alfred && \
@@ -40,7 +40,7 @@ ENV WORKERS=4
 ENV HOST=0.0.0.0
 ENV PORT=8000
 
-CMD uvicorn intern.main:app \
+CMD uvicorn alfred.main:app \
 	--host ${HOST} \
 	--port ${PORT} \
 	--workers ${WORKERS} \

@@ -10,7 +10,7 @@ import json
 import pytest
 import redis.asyncio as aioredis
 
-from intern.state.store import StateStore
+from alfred.state.store import StateStore
 
 REDIS_URL = "redis://127.0.0.1:11000/1"  # Use DB 1 for test isolation
 

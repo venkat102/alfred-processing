@@ -6,9 +6,9 @@ import time
 
 import pytest
 
-from intern.agents.crew import (
+from alfred.agents.crew import (
 	CrewState,
-	build_intern_crew,
+	build_alfred_crew,
 	load_crew_state,
 	save_crew_state,
 	TASK_DESCRIPTIONS,
@@ -25,13 +25,13 @@ class TestCrewBuild:
 	"""Test crew construction."""
 
 	def test_crew_builds_without_errors(self):
-		crew, state = build_intern_crew("Create a DocType called Book", {"user": "admin@test.com"})
+		crew, state = build_alfred_crew("Create a DocType called Book", {"user": "admin@test.com"})
 		assert crew is not None
 		assert state is not None
 		assert len(crew.tasks) == 6  # All 6 SDLC tasks
 
 	def test_crew_has_all_agents(self):
-		crew, _ = build_intern_crew("Create a ToDo app")
+		crew, _ = build_alfred_crew("Create a ToDo app")
 		agent_roles = {a.role for a in crew.agents}
 		# Specialist agents in the crew's agents list
 		assert "Requirement Analyst" in agent_roles
@@ -46,29 +46,29 @@ class TestCrewBuild:
 
 	def test_crew_uses_hierarchical_process(self):
 		from crewai import Process
-		crew, _ = build_intern_crew("Test prompt")
+		crew, _ = build_alfred_crew("Test prompt")
 		assert crew.process == Process.hierarchical
 
 	def test_crew_has_manager_agent(self):
-		crew, _ = build_intern_crew("Test prompt")
+		crew, _ = build_alfred_crew("Test prompt")
 		assert crew.manager_agent is not None
 		assert crew.manager_agent.role == "Orchestrator"
 
 	def test_crew_with_site_config(self):
-		crew, _ = build_intern_crew(
+		crew, _ = build_alfred_crew(
 			"Test prompt",
 			site_config={"llm_model": "ollama/mistral", "max_retries_per_agent": 5},
 		)
 		assert crew is not None
 
 	def test_task_descriptions_are_formatted(self):
-		crew, _ = build_intern_crew("Create a Book DocType", {"user": "admin@test.com"})
+		crew, _ = build_alfred_crew("Create a Book DocType", {"user": "admin@test.com"})
 		# First task should contain the prompt
 		first_task = crew.tasks[0]
 		assert "Book" in first_task.description
 
 	def test_human_input_on_correct_tasks(self):
-		crew, _ = build_intern_crew("Test")
+		crew, _ = build_alfred_crew("Test")
 		# First task (requirements) and last (deploy) should have human_input
 		assert crew.tasks[0].human_input is True  # gather_requirements
 		assert crew.tasks[-1].human_input is True  # deploy_changeset
@@ -135,7 +135,7 @@ class TestCrewResumption:
 		state.mark_task_complete("gather_requirements", "req output")
 		state.mark_task_complete("assess_feasibility", "assessment output")
 
-		crew, new_state = build_intern_crew(
+		crew, new_state = build_alfred_crew(
 			"Test prompt",
 			previous_state=state,
 		)
@@ -148,7 +148,7 @@ class TestCrewResumption:
 		state.mark_task_complete("gather_requirements", "req output")
 		state.delegation_count = 2
 
-		_, new_state = build_intern_crew("Test", previous_state=state)
+		_, new_state = build_alfred_crew("Test", previous_state=state)
 		assert new_state.delegation_count == 2
 		assert "gather_requirements" in new_state.completed_tasks
 
@@ -159,7 +159,7 @@ class TestRedisStatePersistence:
 	@pytest.fixture
 	async def store(self):
 		import redis.asyncio as aioredis
-		from intern.state.store import StateStore
+		from alfred.state.store import StateStore
 
 		try:
 			client = aioredis.from_url("redis://127.0.0.1:11000/2", decode_responses=True)

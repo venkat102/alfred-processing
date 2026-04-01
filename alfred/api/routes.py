@@ -9,17 +9,17 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from intern import __version__
-from intern.middleware.auth import verify_api_key
-from intern.middleware.rate_limit import check_rate_limit
-from intern.models.messages import (
+from alfred import __version__
+from alfred.middleware.auth import verify_api_key
+from alfred.middleware.rate_limit import check_rate_limit
+from alfred.models.messages import (
 	ErrorResponse,
 	TaskCreateRequest,
 	TaskCreateResponse,
 	TaskMessageResponse,
 	TaskStatusResponse,
 )
-from intern.state.store import StateStore
+from alfred.state.store import StateStore
 
 router = APIRouter()
 

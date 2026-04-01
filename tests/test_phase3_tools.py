@@ -5,20 +5,20 @@ import os
 
 import pytest
 
-from intern.tools.permission_checks import (
+from alfred.tools.permission_checks import (
 	PERMISSION_MATRIX,
 	assess_complexity,
 	check_escalation_needed,
 	check_permissions,
 )
-from intern.tools.code_validation import (
+from alfred.tools.code_validation import (
 	validate_python_syntax,
 	validate_js_syntax,
 	validate_doctype_definition,
 	validate_workflow_definition,
 	validate_changeset_order,
 )
-from intern.models.agent_outputs import (
+from alfred.models.agent_outputs import (
 	RequirementSpec,
 	AssessmentResult,
 	ArchitectureBlueprint,
@@ -351,7 +351,7 @@ class TestPydanticModels:
 		assert spec.summary == "Create a Book DocType"
 
 	def test_assessment_result(self):
-		from intern.models.agent_outputs import Verdict, Complexity, PermissionCheckResult
+		from alfred.models.agent_outputs import Verdict, Complexity, PermissionCheckResult
 		result = AssessmentResult(
 			verdict=Verdict.AI_CAN_HANDLE,
 			permission_check=PermissionCheckResult(passed=True),
@@ -368,14 +368,14 @@ class TestPydanticModels:
 		assert bp.rollback_safe is True
 
 	def test_changeset(self):
-		from intern.models.agent_outputs import ChangesetItem, ChangeOperation
+		from alfred.models.agent_outputs import ChangesetItem, ChangeOperation
 		cs = Changeset(items=[
 			ChangesetItem(operation=ChangeOperation.CREATE, doctype="DocType", data={"name": "Book"}),
 		])
 		assert len(cs.items) == 1
 
 	def test_test_report(self):
-		from intern.models.agent_outputs import ValidationStatus
+		from alfred.models.agent_outputs import ValidationStatus
 		report = TestReport(
 			status=ValidationStatus.PASS,
 			summary="All checks passed",

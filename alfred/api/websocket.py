@@ -17,8 +17,8 @@ import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from intern.middleware.auth import verify_jwt_token
-from intern.state.store import StateStore
+from alfred.middleware.auth import verify_jwt_token
+from alfred.state.store import StateStore
 
 logger = logging.getLogger("alfred.websocket")
 
@@ -192,7 +192,7 @@ async def _run_agent_pipeline(conn: ConnectionState, conversation_id: str, promp
 	This is the core integration point — it connects the WebSocket
 	to the CrewAI crew and streams events back to the user.
 	"""
-	from intern.defense.sanitizer import check_prompt
+	from alfred.defense.sanitizer import check_prompt
 
 	# Step 1: Prompt defense
 	defense_result = check_prompt(prompt)
@@ -216,7 +216,7 @@ async def _run_agent_pipeline(conn: ConnectionState, conversation_id: str, promp
 	admin_key = getattr(settings, "ADMIN_SERVICE_KEY", "")
 	if admin_url and admin_key:
 		try:
-			from intern.api.admin_client import AdminClient
+			from alfred.api.admin_client import AdminClient
 			admin = AdminClient(admin_url, admin_key, redis)
 			plan_result = await admin.check_plan(conn.site_id)
 			if not plan_result.get("allowed", True):
@@ -249,7 +249,7 @@ async def _run_agent_pipeline(conn: ConnectionState, conversation_id: str, promp
 
 	# Step 4: Build and run the crew
 	try:
-		from intern.agents.crew import build_intern_crew, run_crew, load_crew_state
+		from alfred.agents.crew import build_alfred_crew, run_crew, load_crew_state
 
 		# Check for existing state (resumption)
 		previous_state = None
@@ -262,7 +262,7 @@ async def _run_agent_pipeline(conn: ConnectionState, conversation_id: str, promp
 			"site_id": conn.site_id,
 		}
 
-		crew, state = build_intern_crew(
+		crew, state = build_alfred_crew(
 			user_prompt=prompt,
 			user_context=user_context,
 			site_config=conn.site_config,

@@ -5,7 +5,7 @@ Tool descriptions are optimized for LLM readability — agents read
 these descriptions to decide when to use each tool.
 
 Usage:
-    from intern.tools.mcp_tools import build_mcp_tools
+    from alfred.tools.mcp_tools import build_mcp_tools
 
     tools = build_mcp_tools(mcp_client)
     agents = build_agents(custom_tools=tools)
@@ -18,7 +18,7 @@ from typing import Any
 
 from crewai.tools import tool
 
-from intern.tools.mcp_client import MCPClient
+from alfred.tools.mcp_client import MCPClient
 
 logger = logging.getLogger("alfred.mcp_tools")
 

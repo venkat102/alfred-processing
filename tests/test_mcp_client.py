@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from intern.tools.mcp_client import MCPClient
-from intern.tools.user_interaction import UserInteractionHandler
+from alfred.tools.mcp_client import MCPClient
+from alfred.tools.user_interaction import UserInteractionHandler
 
 
 # ── Mock WebSocket ────────────────────────────────────────────────

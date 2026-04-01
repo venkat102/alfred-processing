@@ -4,9 +4,9 @@ import os
 
 import pytest
 
-from intern.agents import backstories
-from intern.agents.definitions import build_agents, check_llm_health, _resolve_llm
-from intern.agents.tool_stubs import TOOL_ASSIGNMENTS
+from alfred.agents import backstories
+from alfred.agents.definitions import build_agents, check_llm_health, _resolve_llm
+from alfred.agents.tool_stubs import TOOL_ASSIGNMENTS
 
 
 class TestAgentInstantiation:

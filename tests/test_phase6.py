@@ -7,18 +7,18 @@ import time
 
 import pytest
 
-from intern.defense.sanitizer import (
+from alfred.defense.sanitizer import (
 	sanitize_prompt,
 	classify_intent,
 	check_prompt,
 	KNOWN_INTENTS,
 )
-from intern.middleware.error_handling import (
+from alfred.middleware.error_handling import (
 	retry_with_backoff,
 	validate_agent_output,
 	get_user_error_message,
 )
-from intern.agents.token_tracker import TokenTracker, estimate_cost
+from alfred.agents.token_tracker import TokenTracker, estimate_cost
 
 
 # ── Prompt Injection Defense (6.9) ────────────────────────────────

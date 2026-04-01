@@ -4,9 +4,9 @@ Builds a hierarchical crew with 6 SDLC tasks, an orchestrator manager agent,
 state serialization to Redis, and human input handling via WebSocket.
 
 Usage:
-    from intern.agents.crew import build_intern_crew, run_crew
+    from alfred.agents.crew import build_alfred_crew, run_crew
 
-    crew = build_intern_crew("Create a DocType called Book", user_context, site_config)
+    crew = build_alfred_crew("Create a DocType called Book", user_context, site_config)
     result = await run_crew(crew, store, site_id, conversation_id)
 """
 
@@ -18,8 +18,8 @@ from typing import Any
 
 from crewai import Crew, Process, Task
 
-from intern.agents.definitions import build_agents
-from intern.models.agent_outputs import (
+from alfred.agents.definitions import build_agents
+from alfred.models.agent_outputs import (
 	RequirementSpec,
 	AssessmentResult,
 	ArchitectureBlueprint,
@@ -251,7 +251,7 @@ async def load_crew_state(store, site_id: str, conversation_id: str) -> CrewStat
 
 # ── Crew Builder ─────────────────────────────────────────────────
 
-def build_intern_crew(
+def build_alfred_crew(
 	user_prompt: str,
 	user_context: dict | None = None,
 	site_config: dict | None = None,

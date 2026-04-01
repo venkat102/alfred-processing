@@ -11,10 +11,10 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from intern import __version__
-from intern.api.routes import router
-from intern.api.websocket import ws_router
-from intern.config import get_settings
+from alfred import __version__
+from alfred.api.routes import router
+from alfred.api.websocket import ws_router
+from alfred.config import get_settings
 
 logger = logging.getLogger("alfred.processing")
 
@@ -89,7 +89,7 @@ if __name__ == "__main__":
 
 	settings = get_settings()
 	uvicorn.run(
-		"intern.main:app",
+		"alfred.main:app",
 		host=settings.HOST,
 		port=settings.PORT,
 		workers=settings.WORKERS,

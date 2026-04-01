@@ -5,7 +5,7 @@ and assigned tools. Agents are stateless and instantiated per-conversation
 with the appropriate LLM config.
 
 Usage:
-    from intern.agents.definitions import build_agents
+    from alfred.agents.definitions import build_agents
 
     agents = build_agents(site_config={"llm_model": "ollama/llama3.1"})
     requirement_agent = agents["requirement"]
@@ -16,8 +16,8 @@ import os
 
 from crewai import Agent, LLM
 
-from intern.agents import backstories
-from intern.agents.tool_stubs import TOOL_ASSIGNMENTS
+from alfred.agents import backstories
+from alfred.agents.tool_stubs import TOOL_ASSIGNMENTS
 
 logger = logging.getLogger("alfred.agents")
 

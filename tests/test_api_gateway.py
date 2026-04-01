@@ -8,8 +8,8 @@ import pytest
 import redis.asyncio as aioredis
 from httpx import ASGITransport, AsyncClient
 
-from intern.main import create_app
-from intern.middleware.auth import create_jwt_token, verify_jwt_token
+from alfred.main import create_app
+from alfred.middleware.auth import create_jwt_token, verify_jwt_token
 
 API_KEY = "test-secret-key-12345"
 SITE_ID = "test.frappe.cloud"
@@ -26,7 +26,7 @@ async def app():
 	test_app = create_app()
 
 	# Manually init state (lifespan doesn't run with ASGITransport)
-	from intern.config import get_settings
+	from alfred.config import get_settings
 
 	test_app.state.settings = get_settings()
 	try:
@@ -233,7 +233,7 @@ class TestRateLimit:
 
 		# Server uses SERVER_DEFAULT_RATE_LIMIT (20). Send 21 requests to exceed it.
 		# For faster testing, temporarily set the server default lower.
-		import intern.api.routes as routes_mod
+		import alfred.api.routes as routes_mod
 		original_limit = routes_mod.SERVER_DEFAULT_RATE_LIMIT
 		routes_mod.SERVER_DEFAULT_RATE_LIMIT = 2
 
