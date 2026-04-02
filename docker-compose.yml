@@ -1,4 +1,21 @@
+# Alfred Processing App — Docker Compose
+#
+# Modes:
+#   Remote Ollama (default):  docker compose up -d
+#   Local Ollama (CPU):       docker compose --profile local-llm up -d
+#   Local Ollama (GPU):       docker compose --profile local-llm --profile gpu up -d
+#
+# Setup:
+#   1. cp .env.example .env
+#   2. Edit .env — set API_SECRET_KEY and LLM configuration
+#   3. Run one of the commands above
+#   4. Configure Alfred Settings on your Frappe site
+#
+# See docs/SETUP.md for the full guide.
+
 services:
+  # ── Always starts ──────────────────────────────────────────────
+
   processing:
     build:
       context: .
@@ -8,12 +25,15 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8000
-      - WORKERS=${WORKERS:-4}
-      - API_SECRET_KEY=${API_SECRET_KEY:-dev-secret-change-in-production}
+      - WORKERS=${WORKERS:-2}
+      - API_SECRET_KEY=${API_SECRET_KEY:?Set API_SECRET_KEY in .env}
       - REDIS_URL=redis://redis:6379/0
       - FALLBACK_LLM_MODEL=${FALLBACK_LLM_MODEL:-}
       - FALLBACK_LLM_API_KEY=${FALLBACK_LLM_API_KEY:-}
       - FALLBACK_LLM_BASE_URL=${FALLBACK_LLM_BASE_URL:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - ADMIN_PORTAL_URL=${ADMIN_PORTAL_URL:-}
+      - ADMIN_SERVICE_KEY=${ADMIN_SERVICE_KEY:-}
       - DEBUG=${DEBUG:-false}
     depends_on:
       redis:
@@ -41,5 +61,50 @@ services:
       start_period: 5s
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
 
+  # ── Optional: Local Ollama (CPU) ───────────────────────────────
+  # Activate with: docker compose --profile local-llm up -d
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-llm"]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── Optional: Local Ollama with GPU ────────────────────────────
+  # Activate with: docker compose --profile local-llm --profile gpu up -d
+  # Requires: NVIDIA Container Toolkit installed on the host
+
+  ollama-gpu:
+    image: ollama/ollama:latest
+    profiles: ["gpu"]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 volumes:
   redis_data:
+  ollama_data:
