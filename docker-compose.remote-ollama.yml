@@ -1,0 +1,57 @@
+# Alfred Processing App — Remote Ollama Setup
+#
+# Use this when Ollama runs on a separate server (not in Docker).
+# Only starts the Processing App + Redis. No local Ollama container.
+#
+# Usage:
+#   cp .env.example .env    # Configure your settings
+#   # Edit .env: set API_SECRET_KEY, FALLBACK_LLM_BASE_URL to your Ollama server
+#   docker-compose -f docker-compose.remote-ollama.yml up -d
+#
+# Prerequisites:
+#   - Ollama running and reachable at FALLBACK_LLM_BASE_URL (e.g., http://135.13.20.57:11434)
+#   - Frappe site with alfred_client app installed
+
+services:
+  processing:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - WORKERS=${WORKERS:-2}
+      - API_SECRET_KEY=${API_SECRET_KEY:?Set API_SECRET_KEY in .env}
+      - REDIS_URL=redis://redis:6379/0
+      - FALLBACK_LLM_MODEL=${FALLBACK_LLM_MODEL:-ollama/codegemma:7b}
+      - FALLBACK_LLM_BASE_URL=${FALLBACK_LLM_BASE_URL:?Set FALLBACK_LLM_BASE_URL to your Ollama server URL}
+      - FALLBACK_LLM_API_KEY=${FALLBACK_LLM_API_KEY:-}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - DEBUG=${DEBUG:-false}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+volumes:
+  redis_data:
