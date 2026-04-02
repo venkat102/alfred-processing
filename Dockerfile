@@ -1,48 +1,41 @@
-# Stage 1: Build dependencies
-FROM python:3.11-slim AS builder
-
-WORKDIR /app
-
-# Install build dependencies
-RUN pip install --no-cache-dir --upgrade pip
-
-# Copy dependency file first for Docker layer caching
-COPY pyproject.toml ./
-
-# Install production dependencies
-RUN pip install --no-cache-dir --target=/app/deps .
-
-# Stage 2: Runtime image
+# Alfred Processing App — Docker Image
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy installed dependencies from builder
-COPY --from=builder /app/deps /usr/local/lib/python3.11/site-packages/
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+# Copy dependency file first for Docker layer caching
+COPY pyproject.toml README.md ./
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir .
 
 # Copy application code
 COPY alfred/ ./alfred/
 
 # Create non-root user for security
-RUN useradd --create-home --shell /bin/bash alfred && \
-	chown -R alfred:alfred /app
-USER alfred
+RUN useradd --create-home --shell /bin/bash alfreduser && \
+    chown -R alfreduser:alfreduser /app
+USER alfreduser
 
 # Expose API port
 EXPOSE 8000
 
-# Health check: verify the API responds
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-	CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-# Run with uvicorn — worker count configurable via WORKERS env var
-ENV WORKERS=4
+# Run with uvicorn
+ENV WORKERS=2
 ENV HOST=0.0.0.0
 ENV PORT=8000
 
 CMD uvicorn alfred.main:app \
-	--host ${HOST} \
-	--port ${PORT} \
-	--workers ${WORKERS} \
-	--timeout-keep-alive 65 \
-	--log-level info
+    --host ${HOST} \
+    --port ${PORT} \
+    --workers ${WORKERS} \
+    --timeout-keep-alive 65 \
+    --log-level info
