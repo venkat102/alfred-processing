@@ -32,7 +32,7 @@ from alfred.models.agent_outputs import (
 
 
 class TestPermissionMatrix:
-	"""Deterministic permission checks — same input always same output."""
+	"""Deterministic permission checks - same input always same output."""
 
 	def test_system_manager_passes_all(self):
 		spec = {

@@ -63,7 +63,7 @@ class AdminClient:
 		except Exception as e:
 			logger.warning("Admin Portal unreachable for plan check: %s", e)
 			# Fall back to cached or default allow
-			return {"allowed": True, "tier": "offline", "reason": "Admin Portal unreachable — allowing by default"}
+			return {"allowed": True, "tier": "offline", "reason": "Admin Portal unreachable - allowing by default"}
 
 	async def report_usage(self, site_id: str, tokens: int, conversations: int, active_users: int = 1):
 		"""Report usage to the Admin Portal.
@@ -87,7 +87,7 @@ class AdminClient:
 				response.raise_for_status()
 				return response.json().get("message", {})
 		except Exception as e:
-			logger.warning("Failed to report usage to Admin Portal: %s — queuing for retry", e)
+			logger.warning("Failed to report usage to Admin Portal: %s - queuing for retry", e)
 			# Queue for later
 			if self.redis:
 				await self.redis.rpush(
@@ -138,7 +138,7 @@ class AdminClient:
 			except Exception as e:
 				# Put it back at the end of the queue
 				await self.redis.rpush(queue_key, item)
-				logger.warning("Failed to flush usage report: %s — re-queued", e)
+				logger.warning("Failed to flush usage report: %s - re-queued", e)
 				break
 
 		if flushed:

@@ -1,4 +1,4 @@
-"""Error handling utilities — retry logic, output validation, graceful degradation.
+"""Error handling utilities - retry logic, output validation, graceful degradation.
 
 Provides decorators and utilities for:
 - Retry with exponential backoff for transient failures

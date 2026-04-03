@@ -4,7 +4,7 @@ Protocol:
 1. Client connects to /ws/{conversation_id}
 2. Client sends handshake: {"api_key": "...", "jwt_token": "...", "site_config": {...}}
 3. Server validates API key + JWT, extracts site_id and user
-4. Bidirectional messaging begins — each message has a msg_id for ack tracking
+4. Bidirectional messaging begins - each message has a msg_id for ack tracking
 5. MCP (JSON-RPC) messages are identified by "jsonrpc" field, all others by "type" field
 6. Heartbeat ping every 30 seconds
 7. On disconnect, unacked messages buffered in Redis for replay on reconnect
@@ -132,7 +132,7 @@ def _classify_message(data: dict) -> str:
 
 
 async def _handle_mcp_message(data: dict, websocket: WebSocket, conn: ConnectionState):
-	"""Handle an MCP (JSON-RPC) protocol message — forward to MCP client."""
+	"""Handle an MCP (JSON-RPC) protocol message - forward to MCP client."""
 	logger.debug("MCP message from %s@%s: method=%s", conn.user, conn.site_id, data.get("method"))
 	response = {
 		"msg_id": str(uuid.uuid4()),
@@ -147,7 +147,7 @@ async def _handle_mcp_message(data: dict, websocket: WebSocket, conn: Connection
 
 
 async def _handle_custom_message(data: dict, websocket: WebSocket, conn: ConnectionState, conversation_id: str):
-	"""Handle a custom protocol message — route by type."""
+	"""Handle a custom protocol message - route by type."""
 	msg_type = data.get("type", "unknown")
 	msg_id = data.get("msg_id", "")
 
@@ -168,7 +168,7 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 		return
 
 	if msg_type == "prompt":
-		# Core pipeline: user sent a prompt — run the agent crew
+		# Core pipeline: user sent a prompt - run the agent crew
 		prompt_text = data.get("data", {}).get("text", "")
 		if prompt_text:
 			asyncio.create_task(
@@ -178,7 +178,7 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 
 	logger.info("Custom message from %s@%s: type=%s", conn.user, conn.site_id, msg_type)
 
-	# Unknown type — echo back
+	# Unknown type - echo back
 	await websocket.send_json({
 		"msg_id": str(uuid.uuid4()),
 		"type": "echo",
@@ -189,7 +189,7 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 async def _run_agent_pipeline(conn: ConnectionState, conversation_id: str, prompt: str):
 	"""Run the full agent SDLC pipeline for a user prompt.
 
-	This is the core integration point — it connects the WebSocket
+	This is the core integration point - it connects the WebSocket
 	to the CrewAI crew and streams events back to the user.
 	"""
 	from alfred.defense.sanitizer import check_prompt
@@ -269,7 +269,7 @@ async def _run_agent_pipeline(conn: ConnectionState, conversation_id: str, promp
 			previous_state=previous_state,
 		)
 
-		# Event callback — streams agent events to the user via WebSocket
+		# Event callback - streams agent events to the user via WebSocket
 		async def event_callback(event_type: str, data: dict):
 			await conn.send({
 				"msg_id": str(uuid.uuid4()),
@@ -303,7 +303,7 @@ async def _run_agent_pipeline(conn: ConnectionState, conversation_id: str, promp
 		await conn.send({
 			"msg_id": str(uuid.uuid4()),
 			"type": "error",
-			"data": {"error": "Pipeline timed out. The conversation has been saved — you can resume later.", "code": "PIPELINE_TIMEOUT"},
+			"data": {"error": "Pipeline timed out. The conversation has been saved - you can resume later.", "code": "PIPELINE_TIMEOUT"},
 		})
 	except Exception as e:
 		logger.error("Pipeline error for conversation=%s: %s", conversation_id, e, exc_info=True)
@@ -325,7 +325,7 @@ async def _heartbeat_loop(websocket: WebSocket, interval: int = 30):
 
 @ws_router.websocket("/ws/{conversation_id}")
 async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
-	"""WebSocket endpoint — authenticates, then routes messages and runs agent pipeline."""
+	"""WebSocket endpoint - authenticates, then routes messages and runs agent pipeline."""
 	await websocket.accept()
 	logger.info("WebSocket connection opened: conversation=%s", conversation_id)
 

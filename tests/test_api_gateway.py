@@ -1,4 +1,4 @@
-"""Tests for the API Gateway — REST endpoints, auth, rate limiting, WebSocket."""
+"""Tests for the API Gateway - REST endpoints, auth, rate limiting, WebSocket."""
 
 import json
 import os

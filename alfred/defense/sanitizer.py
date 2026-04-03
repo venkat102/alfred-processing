@@ -1,10 +1,10 @@
-"""Prompt injection defense — regex sanitizer + intent classifier.
+"""Prompt injection defense - regex sanitizer + intent classifier.
 
 Layer 1: Fast regex sanitizer catches known injection patterns.
 Layer 2: LLM-based intent classifier categorizes the prompt.
 Unknown intents are flagged for admin review.
 
-All patterns are configurable — stored in site_config from Alfred Settings.
+All patterns are configurable - stored in site_config from Alfred Settings.
 """
 
 import json
@@ -84,7 +84,7 @@ def sanitize_prompt(prompt: str, custom_patterns: list | None = None) -> dict:
 
 	if threats:
 		logger.warning(
-			"Prompt injection detected: %d threat(s) found — %s",
+			"Prompt injection detected: %d threat(s) found - %s",
 			len(threats),
 			", ".join(t["reason"] for t in threats),
 		)

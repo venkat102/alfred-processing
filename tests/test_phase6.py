@@ -1,4 +1,4 @@
-"""Tests for Phase 6 — Integration & Hardening components."""
+"""Tests for Phase 6 - Integration & Hardening components."""
 
 import asyncio
 import json

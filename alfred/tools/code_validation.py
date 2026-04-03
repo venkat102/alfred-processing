@@ -1,6 +1,6 @@
 """Code validation tools for the Tester Agent.
 
-All validation is deterministic code — no LLM involvement.
+All validation is deterministic code - no LLM involvement.
 Two phases: static checks (offline) and Frappe-specific checks.
 
 Dry-run simulation (via MCP tools) is handled by the agent's
@@ -18,9 +18,9 @@ from crewai.tools import tool
 FORBIDDEN_IMPORTS = {"os", "sys", "subprocess", "shutil", "importlib", "socket", "http", "urllib"}
 FORBIDDEN_FUNCTIONS = {"eval", "exec", "compile", "__import__", "getattr", "setattr", "delattr", "globals", "locals"}
 FORBIDDEN_PATTERNS = [
-	(r"frappe\.db\.sql\s*\(", "frappe.db.sql() (raw SQL) — use Frappe ORM instead"),
-	(r"(?<!\.)open\s*\(", "open() (file operations) — not allowed in Server Scripts"),
-	(r"requests\.", "requests library — external HTTP calls not allowed in sandbox"),
+	(r"frappe\.db\.sql\s*\(", "frappe.db.sql() (raw SQL) - use Frappe ORM instead"),
+	(r"(?<!\.)open\s*\(", "open() (file operations) - not allowed in Server Scripts"),
+	(r"requests\.", "requests library - external HTTP calls not allowed in sandbox"),
 ]
 
 VALID_FRAPPE_FIELD_TYPES = {
@@ -72,7 +72,7 @@ def validate_python_syntax(code: str) -> dict:
 					if module_root in FORBIDDEN_IMPORTS:
 						errors.append({
 							"type": "forbidden_import",
-							"message": f"Forbidden import: '{alias.name}' — not allowed in Server Script sandbox",
+							"message": f"Forbidden import: '{alias.name}' - not allowed in Server Script sandbox",
 							"line": node.lineno,
 						})
 			elif isinstance(node, ast.ImportFrom) and node.module:
@@ -80,7 +80,7 @@ def validate_python_syntax(code: str) -> dict:
 				if module_root in FORBIDDEN_IMPORTS:
 					errors.append({
 						"type": "forbidden_import",
-						"message": f"Forbidden import: 'from {node.module}' — not allowed in Server Script sandbox",
+						"message": f"Forbidden import: 'from {node.module}' - not allowed in Server Script sandbox",
 						"line": node.lineno,
 					})
 
@@ -96,7 +96,7 @@ def validate_python_syntax(code: str) -> dict:
 			if func_name in FORBIDDEN_FUNCTIONS:
 				errors.append({
 					"type": "forbidden_function",
-					"message": f"Forbidden function: '{func_name}()' — not allowed in Server Script sandbox",
+					"message": f"Forbidden function: '{func_name}()' - not allowed in Server Script sandbox",
 					"line": node.lineno,
 				})
 
@@ -127,7 +127,7 @@ def validate_python_syntax(code: str) -> dict:
 			if "sendmail" in line and email_pattern.search(line):
 				errors.append({
 					"type": "hardcoded_email",
-					"message": "Hardcoded email address in sendmail — use document context for recipients",
+					"message": "Hardcoded email address in sendmail - use document context for recipients",
 					"line": i,
 				})
 

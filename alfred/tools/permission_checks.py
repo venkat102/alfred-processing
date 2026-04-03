@@ -1,6 +1,6 @@
 """Deterministic permission matrix for the Assessment Agent.
 
-This module contains ZERO LLM involvement — all permission decisions
+This module contains ZERO LLM involvement - all permission decisions
 are pure code based on a hardcoded mapping of customization types to
 required Frappe roles.
 
@@ -48,7 +48,7 @@ ESCALATION_PATTERNS = [
 def check_permissions(requirement_spec: dict, user_roles: list[str]) -> dict:
 	"""Check if user's roles allow all customizations in the requirement spec.
 
-	This function is 100% deterministic — same input always produces same output.
+	This function is 100% deterministic - same input always produces same output.
 	No LLM, no randomness, no external API calls.
 
 	Args:
@@ -67,7 +67,7 @@ def check_permissions(requirement_spec: dict, user_roles: list[str]) -> dict:
 		required_roles = PERMISSION_MATRIX.get(cust_type)
 
 		if required_roles is None:
-			# Unknown customization type — block by default
+			# Unknown customization type - block by default
 			failed.append({
 				"customization_type": cust_type,
 				"required_role": "Unknown",
@@ -127,7 +127,7 @@ def check_escalation_needed(requirement_spec: dict) -> str | None:
 	for item in customizations:
 		cust_type = item.get("type", "")
 		if cust_type not in PERMISSION_MATRIX:
-			return f"Unknown customization type '{cust_type}' — human review needed."
+			return f"Unknown customization type '{cust_type}' - human review needed."
 
 	return None
 
@@ -136,7 +136,7 @@ def check_escalation_needed(requirement_spec: dict) -> str | None:
 
 @tool
 def check_permissions_tool(requirement_spec_json: str, user_roles_json: str) -> str:
-	"""Deterministic permission check for a requirement spec. Checks if the user's roles allow all requested customization types. ALWAYS use this tool — NEVER guess permissions.
+	"""Deterministic permission check for a requirement spec. Checks if the user's roles allow all requested customization types. ALWAYS use this tool - NEVER guess permissions.
 
 	Args:
 		requirement_spec_json: JSON string of the RequirementSpec.

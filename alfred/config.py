@@ -33,7 +33,7 @@ class Settings(BaseSettings):
 	ADMIN_PORTAL_URL: str = ""
 	ADMIN_SERVICE_KEY: str = ""
 
-	# CORS — restrict in production, default allows all for dev
+	# CORS - restrict in production, default allows all for dev
 	ALLOWED_ORIGINS: str = "*"
 
 	# WebSocket

@@ -1,7 +1,7 @@
 """CrewAI @tool wrappers for MCP tools.
 
 Each wrapper is a thin function that delegates to the MCP client.
-Tool descriptions are optimized for LLM readability — agents read
+Tool descriptions are optimized for LLM readability - agents read
 these descriptions to decide when to use each tool.
 
 Usage:
@@ -27,7 +27,7 @@ def _run_async(coro):
 	try:
 		loop = asyncio.get_event_loop()
 		if loop.is_running():
-			# We're in an async context — use a new thread
+			# We're in an async context - use a new thread
 			import concurrent.futures
 			with concurrent.futures.ThreadPoolExecutor() as pool:
 				future = pool.submit(asyncio.run, coro)
@@ -83,7 +83,7 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 
 	@tool
 	def check_permission(doctype: str, action: str = "read") -> str:
-		"""Check if the current user has a specific permission (read/write/create/delete) on a DocType. Always use this tool — never guess permissions."""
+		"""Check if the current user has a specific permission (read/write/create/delete) on a DocType. Always use this tool - never guess permissions."""
 		result = _run_async(mcp_client.call_tool("check_permission", {"doctype": doctype, "action": action}))
 		return json.dumps(result, indent=2)
 

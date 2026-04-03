@@ -74,7 +74,7 @@ def verify_jwt_token(token: str, secret_key: str) -> dict:
 	except jwt.ExpiredSignatureError:
 		raise ValueError("JWT token has expired")
 	except jwt.InvalidSignatureError:
-		raise ValueError("JWT signature verification failed — token may be tampered")
+		raise ValueError("JWT signature verification failed - token may be tampered")
 	except jwt.DecodeError:
 		raise ValueError("JWT token is malformed")
 	except jwt.InvalidTokenError as e:

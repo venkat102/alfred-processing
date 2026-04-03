@@ -53,7 +53,7 @@ def _resolve_llm(site_config: dict | None = None) -> LLM:
 	if api_key:
 		llm_kwargs["api_key"] = api_key
 	if base_url:
-		# Set both base_url and api_base — LiteLLM uses api_base for Ollama routing,
+		# Set both base_url and api_base - LiteLLM uses api_base for Ollama routing,
 		# while base_url is used for OpenAI-compatible endpoints. Setting both ensures
 		# it works for both local Ollama, remote Ollama, and custom API proxies.
 		llm_kwargs["base_url"] = base_url
@@ -74,7 +74,7 @@ def _build_agent(
 
 	All agents get:
 	- allow_delegation=True (manager can delegate between them)
-	- verbose=True (log agent reasoning — controlled at crew level in production)
+	- verbose=True (log agent reasoning - controlled at crew level in production)
 	"""
 	if not backstory:
 		raise ValueError(f"Agent '{role}' has an empty backstory. Every agent must have a detailed system prompt.")

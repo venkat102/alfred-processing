@@ -22,7 +22,7 @@ async def redis_client():
 	try:
 		await client.ping()
 	except Exception:
-		pytest.skip("Redis not available — skipping state store tests")
+		pytest.skip("Redis not available - skipping state store tests")
 	yield client
 	# Cleanup: delete all alfred:* keys in test DB
 	keys = []

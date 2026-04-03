@@ -3,9 +3,9 @@
 All state is namespaced by site_id to ensure multi-tenant isolation.
 
 Key schema:
-	alfred:{site_id}:task:{task_id}      — Hash storing task state as JSON
-	alfred:{site_id}:events:{conv_id}    — Stream of real-time events per conversation
-	alfred:{site_id}:cache:{key}         — TTL-based cached data (plan limits, site context)
+	alfred:{site_id}:task:{task_id}      - Hash storing task state as JSON
+	alfred:{site_id}:events:{conv_id}    - Stream of real-time events per conversation
+	alfred:{site_id}:cache:{key}         - TTL-based cached data (plan limits, site context)
 """
 
 import json

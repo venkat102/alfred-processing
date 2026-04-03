@@ -60,7 +60,7 @@ async def check_rate_limit(
 	remaining = max(0, max_per_hour - current_count - 1)
 
 	if current_count >= max_per_hour:
-		# Rate limit exceeded — calculate retry-after
+		# Rate limit exceeded - calculate retry-after
 		oldest_entries = await redis.zrange(key, 0, 0, withscores=True)
 		if oldest_entries:
 			oldest_time = oldest_entries[0][1]

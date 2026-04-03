@@ -46,7 +46,7 @@ def get_user_context() -> str:
 
 @tool
 def check_permission(doctype: str, action: str = "read") -> str:
-	"""Check if the current user has a specific permission (read/write/create/delete) on a DocType. Always use this tool — never guess permissions."""
+	"""Check if the current user has a specific permission (read/write/create/delete) on a DocType. Always use this tool - never guess permissions."""
 	return f'{{"doctype": "{doctype}", "action": "{action}", "permitted": true}}'
 
 
@@ -91,8 +91,8 @@ def validate_python_syntax(code: str) -> str:
 @tool
 def validate_js_syntax(code: str) -> str:
 	"""Validate JavaScript syntax of a Client Script. Returns any syntax errors found."""
-	# Basic JS validation — full validation would use a JS parser
-	return '{"valid": true, "errors": [], "note": "Basic validation only — full JS parsing not available in stub"}'
+	# Basic JS validation - full validation would use a JS parser
+	return '{"valid": true, "errors": [], "note": "Basic validation only - full JS parsing not available in stub"}'
 
 
 # ── Tool Registry ────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-"""Alfred Processing App — FastAPI entry point.
+"""Alfred Processing App - FastAPI entry point.
 
 Headless service that orchestrates AI agents for generating Frappe customizations.
 Receives tasks from client apps via WebSocket and REST API.
@@ -63,7 +63,7 @@ def create_app() -> FastAPI:
 		lifespan=lifespan,
 	)
 
-	# CORS middleware — configurable via ALLOWED_ORIGINS env var
+	# CORS middleware - configurable via ALLOWED_ORIGINS env var
 	# Default "*" for development, restrict to specific origins in production
 	settings = get_settings()
 	origins = settings.ALLOWED_ORIGINS.split(",") if settings.ALLOWED_ORIGINS != "*" else ["*"]

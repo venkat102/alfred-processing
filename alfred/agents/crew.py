@@ -69,7 +69,7 @@ TASK_DESCRIPTIONS = {
 			"3. Use has_active_workflow for any DocTypes that need workflows\n"
 			"4. Check for naming conflicts with existing DocTypes\n"
 			"5. Assess risk level\n\n"
-			"NEVER guess permissions — ALWAYS use the check_permission tool."
+			"NEVER guess permissions - ALWAYS use the check_permission tool."
 		),
 		"expected_output": (
 			"A feasibility assessment in JSON format:\n"
@@ -293,7 +293,7 @@ def build_alfred_crew(
 		"validation": ctx.get("validate_changeset", {}).get("output", "Not yet validated"),
 	}
 
-	# Create tasks — skip already completed ones on resume
+	# Create tasks - skip already completed ones on resume
 	tasks = []
 	task_map = {}
 
@@ -303,7 +303,7 @@ def build_alfred_crew(
 		"assess_feasibility": AssessmentResult,
 		"design_solution": ArchitectureBlueprint,
 		"generate_changeset": Changeset,
-		"validate_changeset": None,  # TestReport — name conflicts with pytest, skip auto-validation
+		"validate_changeset": None,  # TestReport - name conflicts with pytest, skip auto-validation
 		"deploy_changeset": DeploymentResult,
 	}
 

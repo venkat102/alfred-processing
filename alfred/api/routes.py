@@ -23,7 +23,7 @@ from alfred.state.store import StateStore
 
 router = APIRouter()
 
-# Server-side rate limit defaults — NOT overridable by client
+# Server-side rate limit defaults - NOT overridable by client
 SERVER_DEFAULT_RATE_LIMIT = 20
 
 
@@ -74,7 +74,7 @@ async def create_task(
 	site_id = body.site_config.get("site_id", "unknown")
 	user = body.user_context.get("user", "unknown")
 
-	# Rate limit uses SERVER-SIDE default — never trust client-supplied limits
+	# Rate limit uses SERVER-SIDE default - never trust client-supplied limits
 	allowed, remaining, retry_after = await check_rate_limit(
 		request.app.state.redis, site_id, user, SERVER_DEFAULT_RATE_LIMIT
 	)

@@ -71,7 +71,7 @@ class TokenTracker:
 def estimate_cost(total_tokens: int, model: str = "") -> dict:
 	"""Estimate cost based on token usage and model.
 
-	Rough estimates — actual costs depend on provider pricing.
+	Rough estimates - actual costs depend on provider pricing.
 	"""
 	# Cost per 1M tokens (input/output averaged)
 	model_costs = {
