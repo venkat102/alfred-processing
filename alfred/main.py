@@ -5,7 +5,19 @@ Receives tasks from client apps via WebSocket and REST API.
 """
 
 import logging
+import sys
 from contextlib import asynccontextmanager
+
+# Configure application loggers to show in Docker logs
+logging.basicConfig(
+	level=logging.DEBUG,
+	format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+	stream=sys.stdout,
+)
+# Set alfred loggers to DEBUG, reduce noise from libraries
+logging.getLogger("alfred").setLevel(logging.DEBUG)
+logging.getLogger("websockets").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
