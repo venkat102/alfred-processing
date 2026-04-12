@@ -54,7 +54,9 @@ class TestTaskState:
 
 	async def test_update_state(self, store):
 		await store.set_task_state("site1", "task-1", {"status": "running"})
-		await store.set_task_state("site1", "task-1", {"status": "completed", "result": "ok"})
+		await store.set_task_state(
+			"site1", "task-1", {"status": "completed", "result": "ok"}
+		)
 		result = await store.get_task_state("site1", "task-1")
 		assert result["status"] == "completed"
 		assert result["result"] == "ok"
@@ -163,7 +165,9 @@ class TestEventStream:
 
 class TestTTLCache:
 	async def test_set_and_get_cached(self, store):
-		await store.set_with_ttl("site1", "plan-info", '{"tier": "pro"}', ttl_seconds=60)
+		await store.set_with_ttl(
+			"site1", "plan-info", '{"tier": "pro"}', ttl_seconds=60
+		)
 		result = await store.get_cached("site1", "plan-info")
 		assert result == '{"tier": "pro"}'
 

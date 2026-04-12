@@ -33,26 +33,29 @@ class TestCrewBuild:
 	def test_crew_has_all_agents(self):
 		crew, _ = build_alfred_crew("Create a ToDo app")
 		agent_roles = {a.role for a in crew.agents}
-		# Specialist agents in the crew's agents list
+		# All 6 specialists are in the crew's agents list (no manager agent
+		# in sequential mode - orchestrator was removed to eliminate
+		# delegation loops with local LLMs).
 		assert "Requirement Analyst" in agent_roles
 		assert "Feasibility Assessor" in agent_roles
 		assert "Solution Architect" in agent_roles
 		assert "Frappe Developer" in agent_roles
 		assert "QA Validator" in agent_roles
 		assert "Deployment Specialist" in agent_roles
-		# Orchestrator is the manager, NOT in the agents list
 		assert "Orchestrator" not in agent_roles
-		assert crew.manager_agent.role == "Orchestrator"
+		assert crew.manager_agent is None
 
-	def test_crew_uses_hierarchical_process(self):
+	def test_crew_uses_sequential_process(self):
+		"""Sequential (not hierarchical) since switching eliminated the
+		delegation loop problem with Ollama-backed agents."""
 		from crewai import Process
 		crew, _ = build_alfred_crew("Test prompt")
-		assert crew.process == Process.hierarchical
+		assert crew.process == Process.sequential
 
-	def test_crew_has_manager_agent(self):
+	def test_crew_has_no_manager_agent(self):
+		"""Sequential process doesn't use a manager agent."""
 		crew, _ = build_alfred_crew("Test prompt")
-		assert crew.manager_agent is not None
-		assert crew.manager_agent.role == "Orchestrator"
+		assert crew.manager_agent is None
 
 	def test_crew_with_site_config(self):
 		crew, _ = build_alfred_crew(
@@ -67,11 +70,13 @@ class TestCrewBuild:
 		first_task = crew.tasks[0]
 		assert "Book" in first_task.description
 
-	def test_human_input_on_correct_tasks(self):
+	def test_human_input_disabled_on_all_tasks(self):
+		"""All task.human_input must be False: CrewAI's built-in stdin input()
+		blocks the worker thread and we don't have a WS bridge wired yet.
+		Re-enable once human_input_handler routes through the WebSocket."""
 		crew, _ = build_alfred_crew("Test")
-		# First task (requirements) and last (deploy) should have human_input
-		assert crew.tasks[0].human_input is True  # gather_requirements
-		assert crew.tasks[-1].human_input is True  # deploy_changeset
+		for i, task in enumerate(crew.tasks):
+			assert task.human_input is False, f"Task {i} must have human_input=False"
 
 
 class TestCrewState:

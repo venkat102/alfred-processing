@@ -44,10 +44,18 @@ def _resolve_llm(site_config: dict | None = None) -> LLM:
 	temperature = config.get("llm_temperature", 0.1)
 	max_tokens = config.get("llm_max_tokens", 4096)
 
+	# Cap max_tokens for Ollama - large values (e.g. 16384) contribute to OOM
+	# on big models. Agent responses rarely exceed 2k tokens.
+	if model.startswith("ollama/") and max_tokens > 4096:
+		logger.info("Capping max_tokens from %d to 4096 for Ollama model", max_tokens)
+		max_tokens = 4096
+
 	llm_kwargs = {
 		"model": model,
 		"temperature": temperature,
 		"max_tokens": max_tokens,
+		"stream": True,
+		"timeout": config.get("llm_timeout", 120),
 	}
 
 	if api_key:
@@ -59,7 +67,17 @@ def _resolve_llm(site_config: dict | None = None) -> LLM:
 		llm_kwargs["base_url"] = base_url
 		llm_kwargs["api_base"] = base_url
 
-	logger.info("Resolved LLM: model=%s, base_url=%s, temperature=%s, max_tokens=%s", model, base_url or "(default)", temperature, max_tokens)
+	# Ollama-specific: limit context window to prevent OOM on large models.
+	# llama3.3:70b defaults to 128k context which needs ~40GB+ just for KV cache.
+	# 8192 is enough for agent tasks and keeps memory usage reasonable.
+	num_ctx = int(config.get("llm_num_ctx") or 0)
+	if num_ctx > 0:
+		llm_kwargs["num_ctx"] = num_ctx
+	elif model.startswith("ollama/"):
+		llm_kwargs["num_ctx"] = 8192
+
+	logger.info("Resolved LLM: model=%s, base_url=%s, temperature=%s, max_tokens=%s, num_ctx=%s",
+		model, base_url or "(default)", temperature, max_tokens, llm_kwargs.get("num_ctx", "(default)"))
 	return LLM(**llm_kwargs)
 
 
@@ -73,8 +91,9 @@ def _build_agent(
 	"""Create a single CrewAI Agent with standard configuration.
 
 	All agents get:
-	- allow_delegation=True (manager can delegate between them)
-	- verbose=True (log agent reasoning - controlled at crew level in production)
+	- allow_delegation=False (sequential process, no cross-agent delegation)
+	- max_iter=2 (fail fast with slow local models instead of looping)
+	- verbose=True (log agent reasoning)
 	"""
 	if not backstory:
 		raise ValueError(f"Agent '{role}' has an empty backstory. Every agent must have a detailed system prompt.")
@@ -85,7 +104,8 @@ def _build_agent(
 		backstory=backstory,
 		tools=tools,
 		llm=llm,
-		allow_delegation=True,
+		allow_delegation=False,
+		max_iter=2,
 		verbose=True,
 	)
 
@@ -100,8 +120,9 @@ def build_agents(
 		site_config: Per-connection settings (llm_model, llm_api_key, etc.)
 			sent by the client app during WebSocket handshake.
 		custom_tools: Optional dict mapping agent names to tool lists.
-			If provided, overrides the default stub tools from TOOL_ASSIGNMENTS.
-			Used when real MCP tools are available (Task 2.4).
+			Production path: build_mcp_tools(mcp_client) - live Frappe data.
+			Falls back to the minimal local-only TOOL_ASSIGNMENTS when not passed
+			(used by unit tests that don't have a WebSocket / MCP client).
 
 	Returns:
 		Dict mapping agent names to Agent instances:
@@ -161,13 +182,15 @@ def build_agents(
 			tools=tools.get("deployer", []),
 			llm=llm,
 		),
-		"orchestrator": _build_agent(
-			role="Orchestrator",
-			goal="Route tasks to the right specialist agent, handle delegation loops, decide when to pause for user input or escalate to human",
-			backstory=backstories.ORCHESTRATOR_AGENT,
-			tools=[],  # Orchestrator delegates, doesn't use tools directly
-			llm=llm,
-		),
+		# Orchestrator is only needed for Process.hierarchical.
+		# In sequential mode, tasks run in explicit order - no manager needed.
+		# Kept commented for easy re-enabling if switching back to hierarchical.
+		# "orchestrator": _build_agent(
+		#     role="Orchestrator",
+		#     goal="Route tasks to the right specialist agent...",
+		#     backstory=backstories.ORCHESTRATOR_AGENT,
+		#     tools=[], llm=llm,
+		# ),
 	}
 
 	# Validate uniqueness of roles

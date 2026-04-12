@@ -186,6 +186,9 @@ class ValidationIssue(BaseModel):
 
 class TestReport(BaseModel):
 	"""Structured output from the Tester Agent."""
+	# Tell pytest not to collect this as a test class (starts with "Test")
+	__test__ = False
+
 	status: ValidationStatus
 	issues: list[ValidationIssue] = Field(default_factory=list)
 	summary: str = ""

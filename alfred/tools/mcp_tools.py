@@ -1,8 +1,11 @@
 """CrewAI @tool wrappers for MCP tools.
 
-Each wrapper is a thin function that delegates to the MCP client.
-Tool descriptions are optimized for LLM readability - agents read
-these descriptions to decide when to use each tool.
+Each wrapper is a thin function that delegates to the MCP client via `call_sync`.
+Tool descriptions are optimized for LLM readability - agents read these descriptions
+to decide when to use each tool.
+
+All wrappers catch exceptions and return a JSON string so the LLM reads errors as
+normal tool responses instead of crashing the CrewAI task.
 
 Usage:
     from alfred.tools.mcp_tools import build_mcp_tools
@@ -11,10 +14,8 @@ Usage:
     agents = build_agents(custom_tools=tools)
 """
 
-import asyncio
 import json
 import logging
-from typing import Any
 
 from crewai.tools import tool
 
@@ -22,20 +23,26 @@ from alfred.tools.mcp_client import MCPClient
 
 logger = logging.getLogger("alfred.mcp_tools")
 
-def _run_async(coro):
-	"""Run an async coroutine from synchronous CrewAI tool context."""
+
+def _mcp_call(mcp_client: MCPClient, tool_name: str, arguments: dict | None = None) -> str:
+	"""Invoke an MCP tool and return a JSON string the LLM can parse.
+
+	On any failure, returns a JSON error payload rather than raising. This lets
+	the agent read the error and adapt (e.g. "OK, I don't have permission, let
+	me try a different approach") instead of failing the whole task.
+	"""
 	try:
-		loop = asyncio.get_event_loop()
-		if loop.is_running():
-			# We're in an async context - use a new thread
-			import concurrent.futures
-			with concurrent.futures.ThreadPoolExecutor() as pool:
-				future = pool.submit(asyncio.run, coro)
-				return future.result(timeout=60)
-		else:
-			return loop.run_until_complete(coro)
-	except RuntimeError:
-		return asyncio.run(coro)
+		result = mcp_client.call_sync(tool_name, arguments or {})
+		return json.dumps(result, indent=2)
+	except TimeoutError as e:
+		logger.warning("MCP tool %s timed out: %s", tool_name, e)
+		return json.dumps({
+			"error": "timeout",
+			"message": f"MCP tool '{tool_name}' timed out. The client app may be unresponsive.",
+		})
+	except Exception as e:
+		logger.error("MCP tool %s failed: %s", tool_name, e, exc_info=True)
+		return json.dumps({"error": "mcp_failure", "message": str(e)})
 
 
 def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
@@ -51,61 +58,68 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 	@tool
 	def get_site_info() -> str:
 		"""Get basic site information including Frappe version, installed apps, default company, and country."""
-		result = _run_async(mcp_client.call_tool("get_site_info"))
-		return json.dumps(result, indent=2)
+		return _mcp_call(mcp_client, "get_site_info")
 
 	@tool
 	def get_doctypes(module: str = "") -> str:
 		"""List DocType names and modules. Optionally filter by module name. Use this to find existing DocTypes for Link fields."""
-		args = {}
-		if module:
-			args["module"] = module
-		result = _run_async(mcp_client.call_tool("get_doctypes", args))
-		return json.dumps(result, indent=2)
+		args = {"module": module} if module else {}
+		return _mcp_call(mcp_client, "get_doctypes", args)
 
 	@tool
 	def get_doctype_schema(doctype: str) -> str:
-		"""Get full field schema for a DocType. Requires read permission. Use this to understand existing DocType structures."""
-		result = _run_async(mcp_client.call_tool("get_doctype_schema", {"doctype": doctype}))
-		return json.dumps(result, indent=2)
+		"""Get full field schema for a DocType from the LIVE site (includes custom fields). Requires read permission. Always prefer this over guessing field names."""
+		return _mcp_call(mcp_client, "get_doctype_schema", {"doctype": doctype})
 
 	@tool
 	def get_existing_customizations() -> str:
 		"""List existing customizations (custom fields, server scripts, client scripts, workflows) filtered by your permissions."""
-		result = _run_async(mcp_client.call_tool("get_existing_customizations"))
-		return json.dumps(result, indent=2)
+		return _mcp_call(mcp_client, "get_existing_customizations")
 
 	@tool
 	def get_user_context() -> str:
 		"""Get the current user's email, roles, permissions, and permitted modules."""
-		result = _run_async(mcp_client.call_tool("get_user_context"))
-		return json.dumps(result, indent=2)
+		return _mcp_call(mcp_client, "get_user_context")
 
 	@tool
 	def check_permission(doctype: str, action: str = "read") -> str:
 		"""Check if the current user has a specific permission (read/write/create/delete) on a DocType. Always use this tool - never guess permissions."""
-		result = _run_async(mcp_client.call_tool("check_permission", {"doctype": doctype, "action": action}))
-		return json.dumps(result, indent=2)
+		return _mcp_call(mcp_client, "check_permission", {"doctype": doctype, "action": action})
 
 	@tool
 	def validate_name_available(doctype: str, name: str) -> str:
-		"""Check if a document name is already taken. Use before creating new DocTypes or documents to avoid naming conflicts."""
-		result = _run_async(mcp_client.call_tool("validate_name_available", {"doctype": doctype, "name": name}))
-		return json.dumps(result, indent=2)
+		"""Check if a document name is already taken on the LIVE site. Use before creating new DocTypes or documents to avoid naming conflicts."""
+		return _mcp_call(mcp_client, "validate_name_available", {"doctype": doctype, "name": name})
 
 	@tool
 	def has_active_workflow(doctype: str) -> str:
 		"""Check if a DocType already has an active workflow. Frappe allows only one active workflow per DocType."""
-		result = _run_async(mcp_client.call_tool("has_active_workflow", {"doctype": doctype}))
-		return json.dumps(result, indent=2)
+		return _mcp_call(mcp_client, "has_active_workflow", {"doctype": doctype})
 
 	@tool
 	def check_has_records(doctype: str) -> str:
 		"""Check if a DocType has existing data records. Use before rollback or deletion to avoid data loss."""
-		result = _run_async(mcp_client.call_tool("check_has_records", {"doctype": doctype}))
-		return json.dumps(result, indent=2)
+		return _mcp_call(mcp_client, "check_has_records", {"doctype": doctype})
 
-	# Return tool assignments matching the agent tool registry format
+	@tool
+	def dry_run_changeset(changes: str) -> str:
+		"""Dry-run a changeset against the LIVE site using savepoint rollback. Returns {valid, issues, validated}. Does NOT commit. Validates mandatory fields, link targets, naming conflicts, Python/JS syntax, and Jinja templates. Use before presenting the final changeset."""
+		return _mcp_call(mcp_client, "dry_run_changeset", {"changes": changes})
+
+	# Lite pipeline: one agent handles the whole SDLC, so it gets the union of
+	# every tool the specialist agents would need (deduped while preserving order).
+	_lite_source = [
+		get_site_info, get_doctypes, get_doctype_schema, get_existing_customizations,
+		get_user_context, check_permission, validate_name_available, has_active_workflow,
+		check_has_records, validate_python_syntax_stub, validate_js_syntax_stub,
+	]
+	_seen = set()
+	lite_tools = []
+	for t in _lite_source:
+		if id(t) not in _seen:
+			lite_tools.append(t)
+			_seen.add(id(t))
+
 	return {
 		"requirement": [ask_user_stub, get_site_info, get_doctypes, get_doctype_schema, get_existing_customizations],
 		"assessment": [check_permission, get_user_context, get_existing_customizations],
@@ -114,12 +128,15 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		"tester": [
 			validate_python_syntax_stub, validate_js_syntax_stub, validate_name_available,
 			check_permission, has_active_workflow, get_doctype_schema, check_has_records,
+			dry_run_changeset,
 		],
 		"deployer": [check_has_records],
+		"lite": lite_tools,
 	}
 
 
-# Stubs for tools not provided by MCP (these are local to the processing app)
+# Stubs for tools not provided by MCP (local to the processing app)
+
 @tool
 def ask_user_stub(question: str, choices: str = "") -> str:
 	"""Ask the user a question and wait for their response. Use for clarifying requirements or getting approval."""

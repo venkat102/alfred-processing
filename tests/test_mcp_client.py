@@ -154,6 +154,144 @@ class TestMCPClient:
 	async def test_pending_count(self, client, mock_ws):
 		assert client.pending_count == 0
 
+	async def test_on_call_callback_fires_before_send(self, client, mock_ws):
+		"""The on_call hook must fire with tool name + arguments BEFORE the
+		JSON-RPC request is sent, so UI activity streams accurately show
+		what's about to happen."""
+		calls = []
+
+		async def on_call(tool_name, arguments):
+			calls.append((tool_name, dict(arguments)))
+
+		client._on_call = on_call
+		mock_ws.auto_respond = False
+
+		async def respond():
+			await asyncio.sleep(0.05)
+			req = mock_ws.sent_messages[-1]
+			client.handle_response(mock_ws.make_response(req["id"], {"ok": True}))
+
+		task = asyncio.create_task(respond())
+		await client.call_tool("get_doctype_schema", {"doctype": "Leave Application"})
+		await task
+
+		assert calls == [("get_doctype_schema", {"doctype": "Leave Application"})]
+
+	async def test_on_call_callback_exception_does_not_break_call(self, client, mock_ws):
+		"""A buggy on_call callback must not affect the tool call itself."""
+		async def broken_on_call(tool_name, arguments):
+			raise RuntimeError("boom")
+
+		client._on_call = broken_on_call
+		mock_ws.auto_respond = False
+
+		async def respond():
+			await asyncio.sleep(0.05)
+			req = mock_ws.sent_messages[-1]
+			client.handle_response(mock_ws.make_response(req["id"], {"ok": True}))
+
+		task = asyncio.create_task(respond())
+		result = await client.call_tool("get_site_info")
+		await task
+
+		# Callback failed but tool call still succeeded
+		assert result == {"ok": True}
+
+	async def test_handle_response_ignores_unknown_id(self, client, mock_ws):
+		"""Late or bogus responses (no pending future) must not crash."""
+		client.handle_response({
+			"jsonrpc": "2.0",
+			"id": "not-a-real-request",
+			"result": {"content": [{"type": "text", "text": "{}"}]},
+		})
+		# No exception raised = pass
+
+	async def test_handle_response_double_resolution_safe(self, client, mock_ws):
+		"""If the server replies twice for the same id (buggy MCP server), the
+		second response must be silently ignored instead of raising InvalidStateError."""
+		mock_ws.auto_respond = False
+
+		async def respond_twice():
+			await asyncio.sleep(0.05)
+			req = mock_ws.sent_messages[-1]
+			client.handle_response(mock_ws.make_response(req["id"], {"first": True}))
+			# Second response for same id - should be ignored cleanly
+			client.handle_response(mock_ws.make_response(req["id"], {"second": True}))
+
+		task = asyncio.create_task(respond_twice())
+		result = await client.call_tool("get_site_info")
+		await task
+
+		# First response wins
+		assert result == {"first": True}
+
+	async def test_handle_response_missing_id(self, client, mock_ws):
+		"""Responses without id must not crash the handler."""
+		client.handle_response({"jsonrpc": "2.0", "result": {"content": []}})
+		# No exception raised = pass
+
+	async def test_call_sync_from_worker_thread(self, client, mock_ws):
+		"""call_sync must work when invoked from a non-main-loop thread (the
+		CrewAI tool dispatch path). This is the core cross-thread scenario
+		that the ThreadPoolExecutor-based _run_async previously got wrong."""
+		import threading
+
+		# Capture the main loop so handle_response runs cleanly via call_soon_threadsafe
+		client._main_loop = asyncio.get_running_loop()
+		mock_ws.auto_respond = False
+
+		# Autoresponder task that resolves pending requests from the main loop
+		async def autoresponder():
+			for _ in range(20):
+				await asyncio.sleep(0.02)
+				if mock_ws.sent_messages:
+					req = mock_ws.sent_messages[-1]
+					client.handle_response(mock_ws.make_response(
+						req["id"], {"from_thread": True}
+					))
+					return
+
+		task = asyncio.create_task(autoresponder())
+
+		# Call from a worker thread via run_in_executor
+		loop = asyncio.get_running_loop()
+		def sync_caller():
+			return client.call_sync("get_site_info", {})
+
+		result = await loop.run_in_executor(None, sync_caller)
+		await task
+
+		assert result == {"from_thread": True}
+
+	async def test_call_sync_deadlock_guard(self, client, mock_ws):
+		"""Calling call_sync from the main loop thread must raise a clear
+		RuntimeError rather than deadlocking forever on future.result()."""
+		client._main_loop = asyncio.get_running_loop()
+
+		with pytest.raises(RuntimeError, match="main event loop thread"):
+			client.call_sync("get_site_info", {})
+
+	async def test_call_sync_requires_main_loop(self, mock_ws):
+		"""call_sync without a main_loop set is unusable - it has no loop to
+		dispatch to. Must fail with a clear error message."""
+		client = MCPClient(mock_ws.send, timeout=1)
+		# _main_loop is None (lazy-init only on async call)
+
+		import threading
+		errors = []
+		def worker():
+			try:
+				client.call_sync("get_site_info", {})
+			except RuntimeError as e:
+				errors.append(str(e))
+
+		t = threading.Thread(target=worker)
+		t.start()
+		t.join(timeout=2)
+
+		assert len(errors) == 1
+		assert "main_loop" in errors[0]
+
 
 # ── User Interaction Tests ────────────────────────────────────────
 

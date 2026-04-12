@@ -18,6 +18,7 @@ logging.basicConfig(
 logging.getLogger("alfred").setLevel(logging.DEBUG)
 logging.getLogger("websockets").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)  # Silence cost calculator spam for Ollama
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI

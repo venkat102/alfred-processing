@@ -12,14 +12,19 @@ from alfred.agents.tool_stubs import TOOL_ASSIGNMENTS
 class TestAgentInstantiation:
 	"""Test that all agents can be created without errors."""
 
+	# Expected 6 agents after the sequential-process refactor.
+	# The orchestrator was removed when Process.hierarchical was replaced by
+	# Process.sequential to eliminate delegation loops with local LLMs.
+	EXPECTED_AGENTS = {
+		"requirement", "assessment", "architect",
+		"developer", "tester", "deployer",
+	}
+
 	def test_all_agents_instantiate(self):
 		os.environ["FALLBACK_LLM_MODEL"] = "ollama/llama3.1"
 		agents = build_agents()
-		assert len(agents) == 7
-		assert set(agents.keys()) == {
-			"requirement", "assessment", "architect",
-			"developer", "tester", "deployer", "orchestrator",
-		}
+		assert len(agents) == len(self.EXPECTED_AGENTS)
+		assert set(agents.keys()) == self.EXPECTED_AGENTS
 
 	def test_each_agent_has_unique_role(self):
 		os.environ["FALLBACK_LLM_MODEL"] = "ollama/llama3.1"
@@ -34,11 +39,13 @@ class TestAgentInstantiation:
 			assert agent.backstory, f"Agent '{name}' has empty backstory"
 			assert len(agent.backstory) > 100, f"Agent '{name}' backstory is too short"
 
-	def test_each_agent_allows_delegation(self):
+	def test_delegation_disabled(self):
+		"""Sequential-process agents must not delegate - it triggers infinite
+		loops with local LLMs that handle the delegation prompt poorly."""
 		os.environ["FALLBACK_LLM_MODEL"] = "ollama/llama3.1"
 		agents = build_agents()
 		for name, agent in agents.items():
-			assert agent.allow_delegation is True, f"Agent '{name}' should allow delegation"
+			assert agent.allow_delegation is False, f"Agent '{name}' must not allow delegation"
 
 
 class TestLLMResolution:
@@ -66,67 +73,58 @@ class TestLLMResolution:
 		assert llm.model == "anthropic/claude-sonnet-4-20250514"
 
 	def test_llm_temperature_and_tokens(self):
-		llm = _resolve_llm({
+		# max_tokens > 4096 is capped at 4096 for Ollama models to prevent
+		# KV-cache OOM on large local models (llama3.3:70b etc.). See
+		# _resolve_llm's Ollama cap. Use a non-Ollama model to test the
+		# full 8192 path.
+		llm_ollama = _resolve_llm({
 			"llm_model": "ollama/llama3.1",
 			"llm_temperature": 0.5,
 			"llm_max_tokens": 8192,
 		})
-		assert llm.temperature == 0.5
-		assert llm.max_tokens == 8192
+		assert llm_ollama.temperature == 0.5
+		assert llm_ollama.max_tokens == 4096  # capped
+
+		llm_cloud = _resolve_llm({
+			"llm_model": "anthropic/claude-sonnet-4-20250514",
+			"llm_temperature": 0.3,
+			"llm_max_tokens": 8192,
+		})
+		assert llm_cloud.temperature == 0.3
+		assert llm_cloud.max_tokens == 8192  # not capped for cloud
 
 
 class TestToolAssignments:
-	"""Test that each agent has the correct tools from the design document."""
+	"""Test the minimal local-only TOOL_ASSIGNMENTS fallback used when no
+	custom_tools (i.e. MCP-backed tools) are passed to build_agents.
+
+	Production always passes MCP tools via build_mcp_tools(); this fallback
+	exists for unit tests and offline dev. Most Frappe-backed stubs were
+	removed in task A5 since they were misleading hardcoded data.
+	"""
 
 	def test_requirement_agent_tools(self):
 		os.environ["FALLBACK_LLM_MODEL"] = "ollama/llama3.1"
 		agents = build_agents()
 		tool_names = {t.name for t in agents["requirement"].tools}
-		expected = {"ask_user", "get_site_info", "get_doctypes", "get_doctype_schema", "get_existing_customizations"}
-		assert tool_names == expected, f"Expected {expected}, got {tool_names}"
-
-	def test_assessment_agent_tools(self):
-		os.environ["FALLBACK_LLM_MODEL"] = "ollama/llama3.1"
-		agents = build_agents()
-		tool_names = {t.name for t in agents["assessment"].tools}
-		expected = {"check_permission", "get_user_context", "get_existing_customizations"}
-		assert tool_names == expected
-
-	def test_architect_agent_tools(self):
-		os.environ["FALLBACK_LLM_MODEL"] = "ollama/llama3.1"
-		agents = build_agents()
-		tool_names = {t.name for t in agents["architect"].tools}
-		expected = {"get_doctype_schema", "get_doctypes", "get_existing_customizations", "has_active_workflow"}
-		assert tool_names == expected
-
-	def test_developer_agent_tools(self):
-		os.environ["FALLBACK_LLM_MODEL"] = "ollama/llama3.1"
-		agents = build_agents()
-		tool_names = {t.name for t in agents["developer"].tools}
-		expected = {"get_doctype_schema", "get_doctypes"}
-		assert tool_names == expected
+		# Minimal fallback only has ask_user (local, no Frappe dependency)
+		assert "ask_user" in tool_names
 
 	def test_tester_agent_tools(self):
 		os.environ["FALLBACK_LLM_MODEL"] = "ollama/llama3.1"
 		agents = build_agents()
 		tool_names = {t.name for t in agents["tester"].tools}
-		expected = {
-			"validate_python_syntax", "validate_js_syntax", "validate_name_available",
-			"check_permission", "has_active_workflow", "get_doctype_schema", "check_has_records",
-		}
-		assert tool_names == expected
+		# Minimal fallback: only local syntax validators
+		assert "validate_python_syntax" in tool_names
+		assert "validate_js_syntax" in tool_names
 
-	def test_deployer_agent_tools(self):
+	def test_most_agents_have_no_local_tools(self):
+		"""Assessment, architect, developer, deployer rely entirely on MCP in
+		production. Their fallback tool lists are empty."""
 		os.environ["FALLBACK_LLM_MODEL"] = "ollama/llama3.1"
 		agents = build_agents()
-		tool_names = {t.name for t in agents["deployer"].tools}
-		expected = {"check_has_records"}
-		assert tool_names == expected
-
-	def test_orchestrator_has_no_tools(self):
-		os.environ["FALLBACK_LLM_MODEL"] = "ollama/llama3.1"
-		agents = build_agents()
-		assert len(agents["orchestrator"].tools) == 0
+		for key in ("assessment", "architect", "developer", "deployer"):
+			assert len(agents[key].tools) == 0, f"{key} should have no fallback tools"
 
 
 class TestCustomTools:
@@ -149,17 +147,25 @@ class TestCustomTools:
 class TestBackstories:
 	"""Test backstory content quality."""
 
+	# ORCHESTRATOR_AGENT is dead code (reserved for future Process.hierarchical
+	# re-enable) and intentionally unused by build_agents today, but still
+	# validated here so re-enabling it later isn't blocked by a rotted prompt.
+	# LITE_AGENT is the single-agent fused backstory for the lite pipeline.
+	ALL_BACKSTORIES = [
+		"REQUIREMENT_AGENT", "ASSESSMENT_AGENT", "ARCHITECT_AGENT",
+		"DEVELOPER_AGENT", "TESTER_AGENT", "DEPLOYER_AGENT",
+		"ORCHESTRATOR_AGENT", "LITE_AGENT",
+	]
+
 	def test_backstories_not_empty(self):
-		for name in ["REQUIREMENT_AGENT", "ASSESSMENT_AGENT", "ARCHITECT_AGENT",
-					  "DEVELOPER_AGENT", "TESTER_AGENT", "DEPLOYER_AGENT", "ORCHESTRATOR_AGENT"]:
+		for name in self.ALL_BACKSTORIES:
 			backstory = getattr(backstories, name)
 			assert backstory, f"{name} backstory is empty"
 			assert len(backstory) > 200, f"{name} backstory is too short ({len(backstory)} chars)"
 
 	def test_backstories_contain_negative_constraints(self):
 		"""Each backstory must say what the agent must NOT do."""
-		for name in ["REQUIREMENT_AGENT", "ASSESSMENT_AGENT", "ARCHITECT_AGENT",
-					  "DEVELOPER_AGENT", "TESTER_AGENT", "DEPLOYER_AGENT", "ORCHESTRATOR_AGENT"]:
+		for name in self.ALL_BACKSTORIES:
 			backstory = getattr(backstories, name)
 			assert "MUST NOT" in backstory or "NOT" in backstory, \
 				f"{name} backstory should contain negative constraints"
@@ -170,6 +176,11 @@ class TestBackstories:
 	def test_developer_backstory_requires_permission_checks(self):
 		assert "permission checks" in backstories.DEVELOPER_AGENT.lower()
 		assert "Alfred" in backstories.DEVELOPER_AGENT
+
+	def test_lite_backstory_instructs_live_verification(self):
+		"""Lite agent has no Tester - must verify against live site via MCP."""
+		assert "get_doctype_schema" in backstories.LITE_AGENT
+		assert "verify" in backstories.LITE_AGENT.lower()
 
 
 class TestHealthCheck:
