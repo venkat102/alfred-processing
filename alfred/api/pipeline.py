@@ -35,6 +35,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
+import re as _re
+
 from alfred.obs import tracer
 
 if TYPE_CHECKING:
@@ -44,6 +46,137 @@ if TYPE_CHECKING:
 	from alfred.state.conversation_memory import ConversationMemory
 
 logger = logging.getLogger("alfred.pipeline")
+
+
+# ── Drift detection (training-data bleed) ─────────────────────────────
+#
+# qwen2.5-coder:32b on Ollama sometimes slips out of the task structure
+# when the prompt exceeds its effective attention budget and falls back
+# to its training-data prior for Frappe. The most common drift is a
+# verbose documentation dump of Sales Order (the most-cited DocType in
+# its training corpus), delivered as prose with no JSON. When that
+# happens we want to detect it BEFORE feeding the prose into extraction
+# / rescue / the UI, so the user sees a specific, actionable error
+# instead of a confusing wall of off-topic text.
+#
+# Signals of drift:
+#   1. Output mentions a DocType (Title-Cased multi-word token) that
+#      does NOT appear in the user's prompt.
+#   2. Output uses "documentation mode" giveaway phrases like "The
+#      provided JSON structure" or "describes the metadata".
+#   3. Output is long prose with no JSON brackets at all.
+#   4. Output contains ERPNext-specific field names the user never
+#      mentioned (customer_name, taxes_and_charges, sales_team, etc.).
+#
+# Any one signal is enough to flag drift. We err on the side of false
+# negatives - we don't want to flag a legit answer that happens to
+# mention a related DocType. That's why we require the "foreign
+# doctype" check to be combined with at least one doc-mode giveaway.
+
+_DOCUMENTATION_MODE_PHRASES = (
+	"the provided json structure",
+	"the provided json",
+	"describes the metadata",
+	"here's a breakdown",
+	"here is a breakdown",
+	"the following json",
+	"this json object",
+	"document type:",  # markdown heading from doc-mode dumps
+	"example usage",
+)
+
+# Field names that appear in ERPNext vanilla DocTypes and are a
+# strong smell when mentioned without the user asking. These are
+# training-data prior giveaways.
+_ERPNEXT_FIELD_SMELLS = (
+	"customer_name",
+	"taxes_and_charges",
+	"sales_team",
+	"grand_total",
+	"transaction_date",
+	"delivery_date",
+	"order_type",
+)
+
+_DOCTYPE_NAME_RE = _re.compile(r"\b([A-Z][a-z]+(?:\s[A-Z][a-z]+){0,3})\b")
+
+# Words that look like DocType names by capitalization but aren't
+# doctypes (common English nouns, section headers). Exclude them from
+# the foreign-doctype check.
+_NON_DOCTYPE_CAPITALIZED = frozenset({
+	"The", "This", "That", "These", "Those", "An", "A", "It", "Its",
+	"Here", "There", "What", "When", "Where", "Why", "How",
+	"Module", "Fields", "Field", "Permissions", "Permission", "Example",
+	"Conclusion", "Usage", "Type", "Types", "Name", "Names", "Label",
+	"Notes", "Note", "Description", "Required", "Yes", "No", "Draft",
+	"Submit", "Cancel", "Save", "New", "Create", "Read", "Write",
+	"Delete", "Approve", "Reject", "Active", "Inactive",
+	"Python", "JavaScript", "JSON", "HTML", "SQL",
+	"Frappe", "ERPNext", "API",
+	"System", "Manager", "User", "Admin", "Administrator",
+	"Final", "Answer", "Thought", "Action", "Observation",
+	"I", "You", "We",
+	"North", "South", "East", "West",
+	"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+})
+
+
+def _detect_drift(result_text: str, user_prompt: str) -> str | None:
+	"""Return a short reason string if the output looks drifted, else None.
+
+	Called by `_phase_post_crew` before extraction + rescue to catch
+	training-data bleed and surface a specific error instead of the
+	usual EMPTY_CHANGESET message.
+	"""
+	if not result_text or not isinstance(result_text, str):
+		return None
+	text = result_text.lower()
+	prompt_lower = (user_prompt or "").lower()
+
+	# Signal 1: ERPNext field smells the user never asked about
+	for smell in _ERPNEXT_FIELD_SMELLS:
+		if smell in text and smell not in prompt_lower:
+			return f"output mentioned training-data field '{smell}' that the user never asked about"
+
+	# Signal 2: "documentation mode" phrase
+	doc_mode_hit = next(
+		(p for p in _DOCUMENTATION_MODE_PHRASES if p in text),
+		None,
+	)
+
+	# Signal 3: foreign DocType (Title-Cased multi-word token not in prompt)
+	foreign_doctypes: list[str] = []
+	if user_prompt:
+		candidates = _DOCTYPE_NAME_RE.findall(result_text)
+		for cand in candidates:
+			# Filter out section headers, common English words, etc.
+			first_word = cand.split()[0]
+			if first_word in _NON_DOCTYPE_CAPITALIZED:
+				continue
+			if cand.lower() in prompt_lower:
+				continue
+			# Only count multi-word or clearly doctype-ish names. A single
+			# capitalized word (e.g. "Draft") is too noisy.
+			if " " in cand or len(cand) >= 6:
+				foreign_doctypes.append(cand)
+
+	# Combination rules
+	if doc_mode_hit and foreign_doctypes:
+		return (
+			f"output slipped into documentation mode ('{doc_mode_hit}') about "
+			f"{foreign_doctypes[0]!r} which is not in the user's request"
+		)
+	if doc_mode_hit and len(result_text) > 1500:
+		return f"output is a long documentation dump containing '{doc_mode_hit}'"
+	# A large prose output with no JSON at all is drift regardless
+	if len(result_text) > 2000 and "{" not in result_text and "[" not in result_text:
+		return "output is long prose with no JSON at all"
+	# Too many foreign doctypes = the agent is clearly describing the
+	# wrong thing even without a doc-mode giveaway
+	if len(set(foreign_doctypes)) >= 3:
+		return f"output references multiple unrelated doctypes: {sorted(set(foreign_doctypes))[:3]}"
+
+	return None
 
 
 @dataclass
@@ -830,12 +963,18 @@ class AgentPipeline:
 
 		ctx.result_text = result.get("result", "") or ""
 
+		# Emit a tight "crew completed" status. Do NOT leak result_text
+		# here - if the crew drifted into prose (e.g. training-data
+		# Sales Order documentation), sending result_text[:2000] would
+		# show the drift to the user even when the rescue path later
+		# succeeds. The preview panel is the canonical place for the
+		# final changeset; result_text stays server-side for logs.
 		await ctx.conn.send({
 			"msg_id": str(uuid.uuid4()),
 			"type": "agent_status",
 			"data": {
 				"agent": "Orchestrator", "status": "completed",
-				"result": ctx.result_text[:2000],
+				"message": "Crew finished. Validating and building changeset...",
 			},
 		})
 
@@ -844,34 +983,58 @@ class AgentPipeline:
 			ctx.conversation_id, ctx.result_text[:500],
 		)
 
+		# Drift detection: qwen2.5-coder:32b sometimes slips out of the
+		# task structure and regurgitates training-data Frappe docs
+		# (typically a full Sales Order schema dump). If the Developer's
+		# output is clearly off-topic, fail loudly instead of streaming
+		# the garbage to the UI or feeding it into rescue which itself
+		# would just drift in sympathy.
+		drift_reason = _detect_drift(ctx.result_text, ctx.prompt)
+
 		# Extract
-		ctx.changes = _extract_changes(ctx.result_text)
+		ctx.changes = _extract_changes(ctx.result_text) if not drift_reason else []
 
 		# Rescue path: if the crew drifted into prose, regenerate from the
 		# original prompt in one focused LLM call.
 		if not ctx.changes:
 			logger.info(
-				"First-pass extraction empty - attempting rescue regeneration "
-				"from original prompt"
+				"First-pass extraction empty (drift=%s) - attempting rescue "
+				"regeneration from original prompt",
+				drift_reason or "no",
 			)
 			ctx.changes = await _rescue_regenerate_changeset(
 				ctx.enhanced_prompt, ctx.result_text,
 				ctx.conn.site_config, ctx.event_callback,
+				user_prompt=ctx.prompt,
+				drift_reason=drift_reason,
 			)
 
 		if not ctx.changes:
 			logger.warning(
-				"Pipeline completed but _extract_changes returned empty. "
-				"Result text (first 500): %r", ctx.result_text[:500],
+				"Pipeline completed but extraction + rescue both returned "
+				"empty. Drift=%s. Result text (first 500): %r",
+				drift_reason or "no",
+				ctx.result_text[:500],
 			)
+			user_message = (
+				"Alfred couldn't produce a valid changeset for your request. "
+				"This usually means the agent drifted off-topic. Try rephrasing "
+				"with the exact DocType name and the exact rule, e.g. "
+				"\"On Employee DocType, before insert, throw an error if age "
+				"is less than 24.\""
+			)
+			if drift_reason:
+				user_message = (
+					f"Alfred's output was off-topic ({drift_reason}). "
+					"The rescue path also couldn't produce a valid changeset. "
+					"Please rephrase with the exact DocType name and the exact "
+					"rule, e.g. \"On Employee DocType, before insert, throw an "
+					"error if age is less than 24.\""
+				)
 			self._send_error_later(
-				(
-					"The agent pipeline completed but didn't produce a valid "
-					"changeset. Try rephrasing your request or check the processing "
-					"app logs."
-				),
+				user_message,
 				"EMPTY_CHANGESET",
-				result_preview=ctx.result_text[:500],
+				drift_reason=drift_reason or "",
 			)
 			return
 

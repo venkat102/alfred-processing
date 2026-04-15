@@ -924,6 +924,8 @@ async def _rescue_regenerate_changeset(
 	failed_output: str,
 	site_config: dict,
 	event_callback,
+	user_prompt: str = "",
+	drift_reason: str | None = None,
 ) -> list[dict]:
 	"""Last-resort rescue: regenerate the changeset from scratch when the crew drifted.
 
@@ -932,6 +934,27 @@ async def _rescue_regenerate_changeset(
 	of emitting a changeset. When that happens, we run ONE direct LLM call with
 	the original user prompt + the failed attempt, asking for a clean JSON
 	changeset in one shot. No tools, no agent loop - a single focused call.
+
+	Args:
+		original_prompt: The enhanced prompt fed to the crew. Used as the
+			primary source of truth for what the user wants.
+		failed_output: The developer agent's raw Final Answer (the drift).
+			INTENTIONALLY OMITTED from the rescue LLM prompt when
+			`drift_reason` is set - the drifted prose is noise and would
+			just re-anchor the rescue LLM on the wrong content.
+		site_config: LLM config (model, api_key, base_url, num_ctx).
+		event_callback: For streaming "Rescue" events to the UI.
+		user_prompt: The user's ORIGINAL raw prompt (pre-enhancement). Used
+			to inject a hard DocType constraint into the rescue system
+			message. This is the most reliable signal for "what the user
+			actually asked about".
+		drift_reason: If the caller already detected drift (see
+			`alfred.api.pipeline._detect_drift`), pass the reason here.
+			When set:
+			  - The failed_output is NOT included in the rescue LLM prompt
+			    (it would just re-anchor on the drift).
+			  - A specific "your upstream drifted, do NOT copy it" note is
+			    prepended to the rescue system message.
 
 	Returns a normalized changeset list (possibly empty) - never raises.
 	"""
@@ -945,8 +968,26 @@ async def _rescue_regenerate_changeset(
 		api_key = site_config.get("llm_api_key") or ""
 		base_url = site_config.get("llm_base_url") or ""
 
+		# Drift-aware preamble. When the upstream crew produced drift, we
+		# tell the rescue LLM explicitly that a previous attempt went
+		# off-topic, and we refuse to pass the failed output through.
+		drift_preamble = ""
+		if drift_reason:
+			drift_preamble = (
+				"URGENT - DRIFT RECOVERY MODE:\n"
+				f"A previous attempt drifted off-topic ({drift_reason}). That "
+				"drifted output is NOT shown to you here because it would just "
+				"re-anchor your answer. Read ONLY the USER REQUEST below and "
+				"generate a fresh changeset that targets the DocType named in "
+				"the user's request. Do not reference Sales Order, Expense "
+				"Claim, or any other DocType the user did not explicitly name.\n\n"
+			)
+
+		raw_user_ref = (user_prompt or original_prompt).strip()
+
 		system = (
-			"You are a Frappe changeset generator. Given a user request, produce a "
+			drift_preamble
+			+ "You are a Frappe changeset generator. Given a user request, produce a "
 			"deployable JSON changeset that can be applied via frappe.get_doc(data).insert().\n\n"
 			"OUTPUT FORMAT (STRICT):\n"
 			"- Output ONLY a raw JSON array. No prose, no markdown, no code fences, no commentary.\n"
@@ -955,38 +996,41 @@ async def _rescue_regenerate_changeset(
 			"- Every `data` object MUST include \"doctype\" matching the outer doctype plus all "
 			"mandatory fields for that document type.\n\n"
 			"STAY IN THE USER'S DOMAIN - CRITICAL:\n"
-			"- Use the EXACT DocType name the user named in their request. Read the USER REQUEST "
-			"below, identify the target DocType, and use THAT name in your output.\n"
-			"- Do NOT substitute a different DocType because a previous agent output drifted, "
-			"because an example felt easier, or because the failed output shown below mentioned "
-			"one. The FAILED OUTPUT is noise, not signal.\n"
+			"- The user's ORIGINAL raw request is pinned at the top of the user message below "
+			"under 'USER RAW REQUEST'. The target DocType is whichever one the user named THERE.\n"
 			"- If the user said 'Employee', emit items targeting Employee. If the user said "
-			"'Leave Application', emit items targeting Leave Application. Do NOT change targets.\n"
-			"- Read the user request TWICE before deciding on the target DocType.\n\n"
+			"'Leave Application', emit items targeting Leave Application. Do NOT substitute.\n"
+			"- Read the USER RAW REQUEST TWICE before deciding on the target DocType.\n\n"
 			"FRAPPE CUSTOMIZATION BASICS:\n"
 			"- Email alert -> use Notification doctype (not Server Script)\n"
 			"- New field on existing doctype -> Custom Field (not a new DocType)\n"
-			"- Validation rule / custom logic on save -> Server Script (doctype_event=before_save "
-			"or before_insert or validate, script_type=DocType Event). The script uses `doc.<field>` "
-			"and raises `frappe.throw('message')` to reject.\n"
+			"- Validation rule / business rule / custom constraint / 'throw a message' ->\n"
+			"  Server Script (script_type='DocType Event', doctype_event='before_save' or\n"
+			"  'before_insert' or 'validate'). The script body uses `doc.<field>` and calls\n"
+			"  `frappe.throw('<user-facing message>')` to reject the save.\n"
+			"  A validation is NEVER a Notification and NEVER a new DocType.\n"
 			"- Required fields for Notification: name, subject, document_type, event, channel, "
 			"recipients, message, enabled\n"
 			"- Required fields for Server Script: name, script_type, reference_doctype, "
 			"doctype_event, script\n"
 			"- Required fields for Custom Field: name, dt, fieldname, fieldtype, label\n\n"
-			"The canonical templates for common idioms (approval notifications, audit logs, "
-			"validation scripts, etc.) live in the curated pattern library. Use the user's "
-			"intent to pick a pattern conceptually and adapt it to the target DocType. For "
-			"details like 'which event should this notification fire on' or 'which recipient "
-			"field should I use', follow the request literally - do not invent rules.\n\n"
 			"SHAPE OF EACH ITEM (placeholders in <angle brackets>):\n"
-			'[{"op":"create","doctype":"<DocType kind from USER REQUEST>","data":{"doctype":"<DocType kind>","name":"<descriptive name>","...other mandatory fields for this DocType kind..."}}]\n\n'
+			'[{"op":"create","doctype":"<DocType kind>","data":{"doctype":"<DocType kind>","name":"<descriptive name>","...mandatory fields..."}}]\n\n'
 			"If the request genuinely cannot be satisfied with any Frappe customization, "
 			"output `[]`."
 		)
 
-		user_msg_parts = [f"USER REQUEST:\n{original_prompt[:4000]}"]
-		if failed_output:
+		user_msg_parts = [
+			f"USER RAW REQUEST (this is the authoritative source of target DocType and intent):\n{raw_user_ref[:2000]}",
+		]
+		if original_prompt and original_prompt != raw_user_ref:
+			user_msg_parts.append(
+				f"\n\nENHANCED SPEC (rewritten but must not contradict the raw request above):\n{original_prompt[:2000]}"
+			)
+		# Only include the failed output if drift was NOT detected. If
+		# drift was detected, the prose is actively harmful - it would
+		# just re-anchor the rescue LLM on the wrong content.
+		if failed_output and not drift_reason:
 			user_msg_parts.append(
 				"\n\nThe agent pipeline produced this output, which is not a valid changeset - "
 				"you may use it as hints but IGNORE its format:\n" + failed_output[:3000]

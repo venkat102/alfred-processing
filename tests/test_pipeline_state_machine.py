@@ -20,6 +20,7 @@ from alfred.api.pipeline import (
 	AgentPipeline,
 	PipelineContext,
 	StopSignal,
+	_detect_drift,
 )
 
 
@@ -713,3 +714,95 @@ class TestModeGating:
 		# No changeset extraction, no error emission
 		assert ctx.changes == []
 		assert ctx.should_stop is False
+
+
+class TestDetectDrift:
+	"""Regression tests for the Sales Order training-data bleed.
+
+	The Developer agent running on qwen2.5-coder:32b sometimes slips
+	out of the task structure and regurgitates documentation about
+	Sales Order (the most-cited DocType in its training data) even
+	when the user asked about something else entirely. `_detect_drift`
+	catches that class of output before extraction / rescue / UI so
+	the user gets a specific error instead of a wall of off-topic prose.
+	"""
+
+	def test_clean_json_is_not_drift(self):
+		result = '[{"op": "create", "doctype": "Server Script", "data": {"reference_doctype": "Employee"}}]'
+		prompt = "add a validation to Employee doctype"
+		assert _detect_drift(result, prompt) is None
+
+	def test_employee_validation_sales_order_dump_is_drift(self):
+		"""Exact failure mode: user asked for Employee validation, agent
+		dumped Sales Order documentation."""
+		result = (
+			"The provided JSON structure describes the metadata for a custom "
+			"document type in an ERPNext or Frappe framework, specifically for a "
+			"Sales Order. Module: Selling. Fields: name, customer_name, "
+			"transaction_date, delivery_date, status, items, total, grand_total, "
+			"taxes_and_charges, sales_team."
+		)
+		prompt = (
+			"i want to add a validation to the employee doctype, for any "
+			"employee only above the age of 24 can be created"
+		)
+		reason = _detect_drift(result, prompt)
+		assert reason is not None
+		# Must mention a concrete training-data smell in the reason
+		assert "customer_name" in reason or "taxes_and_charges" in reason or "sales_team" in reason or "Sales Order" in reason
+
+	def test_doc_mode_phrase_alone_is_drift(self):
+		result = (
+			"The provided JSON structure represents a notification with "
+			"various fields like subject, event, channel, recipients, message. "
+			"It targets the Leave Application doctype and fires on Submit. "
+			"Here's a breakdown of the fields you'd use in this case."
+			+ " filler " * 200  # push length > 1500
+		)
+		prompt = "notify the approver when a leave is submitted"
+		assert _detect_drift(result, prompt) is not None
+
+	def test_long_pure_prose_is_drift(self):
+		result = "This describes a Frappe customization. " * 100
+		prompt = "add a field"
+		reason = _detect_drift(result, prompt)
+		assert reason is not None
+		assert "prose" in reason.lower() or "long" in reason.lower()
+
+	def test_short_prose_is_not_drift(self):
+		"""Short explanations that happen to lack JSON aren't drift -
+		they're just unfortunate. Let extraction handle them."""
+		result = "I'll create a notification for you."
+		prompt = "email me when a leave is submitted"
+		assert _detect_drift(result, prompt) is None
+
+	def test_mentioning_training_data_field_is_drift(self):
+		result = (
+			'[{"op": "create", "doctype": "Server Script", "data": '
+			'{"reference_doctype": "Sales Order", "customer_name": "X"}}]'
+		)
+		prompt = "validate Employee age"
+		reason = _detect_drift(result, prompt)
+		assert reason is not None
+		assert "customer_name" in reason
+
+	def test_user_mention_of_sales_order_is_not_drift(self):
+		"""If the user DID ask about Sales Order, mentioning it isn't drift."""
+		result = (
+			"I'll create a Server Script on Sales Order to validate the grand_total."
+		)
+		prompt = "validate that Sales Order grand_total is not zero"
+		assert _detect_drift(result, prompt) is None
+
+	def test_multiple_foreign_doctypes_is_drift(self):
+		result = (
+			"For this request I would use Sales Invoice, Purchase Invoice, "
+			"Payment Entry, and Journal Entry to track the payments."
+		)
+		prompt = "add a priority field to ToDo"
+		reason = _detect_drift(result, prompt)
+		assert reason is not None
+
+	def test_empty_result_is_not_drift(self):
+		assert _detect_drift("", "validate Employee age") is None
+		assert _detect_drift(None, "validate Employee age") is None
