@@ -27,35 +27,38 @@ CRITICAL RULES - follow these strictly:
 
 1. IDENTIFY EXISTING FUNCTIONALITY FIRST.
    Frappe and ERPNext (including HRMS, Education, Healthcare, etc.) already have hundreds of \
-   DocTypes, fields, workflows, and notifications built in. Before suggesting ANY new creation, \
-   you MUST check whether the functionality already exists.
-
-   Common existing DocTypes and their key fields:
-   - Expense Claim: expense_approver, approval_status, total_claimed_amount, employee
-   - Leave Application: leave_approver, status, employee, leave_type
-   - Sales Order / Sales Invoice / Purchase Order / Purchase Invoice: standard accounting flow
-   - Employee: employee_name, department, designation, reports_to
-   - Customer / Supplier / Item / BOM / Stock Entry: standard ERPNext modules
-   - Notification: built-in DocType for email/SMS alerts on document events
+   built-in DocTypes, fields, workflows, and notifications. Before suggesting ANY new creation, \
+   you MUST check whether the functionality already exists. Do NOT assume a DocType exists or \
+   has a particular field - downstream agents verify everything against the live site via \
+   `get_doctype_schema`. Your job is to keep the enhanced prompt faithful to what the user \
+   actually asked for.
 
 2. PREFER MINIMAL CHANGES.
-   - If the user wants an email notification → use the built-in Notification DocType, NOT a Server Script
-   - If the user wants a field added → use Custom Field on the existing DocType, do NOT create a new DocType
-   - If the user wants a workflow → check if one already exists on that DocType first
-   - If the user wants a report → check if a standard report already covers it
-   - Only create new DocTypes when the user genuinely needs a new entity that doesn't exist
+   - Email / alert requirement -> built-in Notification DocType (NOT a Server Script)
+   - New field on an existing DocType -> Custom Field (NOT a new DocType)
+   - Multi-state approval -> Workflow (check if one already exists on that DocType first)
+   - Pre-built report requirement -> check if a standard report already covers it
+   - Only create a new DocType when the user genuinely needs a new entity that doesn't exist
 
-3. BE SPECIFIC about what already exists vs. what needs to be created.
-   Example: "Expense Claim already exists in HRMS with an expense_approver field. \
-   The task is ONLY to create a Notification that emails the expense_approver when a new \
-   Expense Claim is submitted. No new DocType, Custom Field, or Server Script is needed."
+3. STAY IN THE USER'S DOMAIN.
+   Do NOT invent examples, DocTypes, or fields that the user did not mention. If the user \
+   asks about "orders", rewrite for orders - do not pivot to leave applications or any other \
+   domain because it is easier to describe. Use placeholder phrasing like "<target DocType>" \
+   or "<link field holding the approver>" if you need to describe structure without \
+   committing to field names that haven't been verified.
 
-4. Mention the exact Frappe customization type(s) needed:
-   DocType, Custom Field, Server Script, Client Script, Workflow, Notification, Report, Print Format
+4. MENTION THE EXACT FRAPPE CUSTOMIZATION TYPE(S) NEEDED:
+   DocType, Custom Field, Server Script, Client Script, Workflow, Notification, Report, Print Format.
+   Do NOT prescribe implementation details (specific events, trigger conditions, field types) -
+   downstream agents query the pattern library via `lookup_pattern` to pick the right defaults.
 
-5. If the request is ambiguous, make reasonable assumptions and state them.
+5. IF THE REQUEST IS AMBIGUOUS, state the ambiguity clearly at the end of the enhanced prompt \
+   as a question the downstream clarification gate can ask the user. Do NOT silently assume.
 
-Use the following Frappe reference to identify existing DocTypes, fields, and the right customization approach:
+Use the following Frappe reference to identify existing DocTypes, fields, and the right \
+customization approach - but remember the reference is a starting point, not authoritative \
+truth for the live site. Downstream agents will query `lookup_doctype` and `lookup_pattern` \
+to verify facts:
 
 """
 
@@ -69,6 +72,7 @@ async def enhance_prompt(
     raw_prompt: str,
     user_context: dict,
     site_config: dict,
+    conversation_context: str | None = None,
 ) -> str:
     """Enhance a raw user prompt into a structured specification.
 
@@ -76,6 +80,10 @@ async def enhance_prompt(
         raw_prompt: The user's original message.
         user_context: Dict with user, roles, site_id.
         site_config: LLM configuration from Alfred Settings.
+        conversation_context: Optional block summarizing what earlier turns in
+            this chat already built or clarified. Prepended to the user message
+            so the enhancer can resolve references like "that DocType" to a
+            concrete name from history.
 
     Returns:
         Enhanced prompt string. Falls back to original prompt on any error.
@@ -92,15 +100,21 @@ async def enhance_prompt(
                    "Report Manager", "Website Manager"}
     relevant_roles = [r for r in all_roles if r not in noise_roles]
 
+    user_message_parts = [
+        f"User: {user_context.get('user', 'unknown')} "
+        f"(roles: {', '.join(relevant_roles[:15])})",
+    ]
+    if conversation_context:
+        user_message_parts.append("")
+        user_message_parts.append(conversation_context)
+    user_message_parts.append("")
+    user_message_parts.append(f"Request: {raw_prompt}")
+
     kwargs = {
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": (
-                f"User: {user_context.get('user', 'unknown')} "
-                f"(roles: {', '.join(relevant_roles[:15])})\n\n"
-                f"Request: {raw_prompt}"
-            )},
+            {"role": "user", "content": "\n".join(user_message_parts)},
         ],
         "max_tokens": 512,
         "temperature": 0.1,

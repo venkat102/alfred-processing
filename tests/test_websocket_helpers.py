@@ -7,7 +7,9 @@ resolution. The full pipeline is exercised in test_api_gateway.py / manual QA.
 
 import pytest
 
-from alfred.api.websocket import _extract_changes, _describe_tool_call, _TOOL_ACTIVITY
+from alfred.api.websocket import (
+	_extract_changes, _describe_tool_call, _TOOL_ACTIVITY, _validate_changeset_shape,
+)
 
 
 class TestExtractChanges:
@@ -83,6 +85,157 @@ class TestExtractChanges:
 		result = _extract_changes(text)
 		assert len(result) == 1
 		assert result[0]["data"]["name"] == "Solo"
+
+	def test_python_dict_repr_with_single_quotes(self):
+		"""LLMs occasionally emit Python dict repr (single quotes, True/None)
+		instead of strict JSON. ast.literal_eval should rescue it."""
+		text = "[{'op': 'create', 'doctype': 'Notification', 'data': {'name': 'X', 'enabled': True}}]"
+		result = _extract_changes(text)
+		assert len(result) == 1
+		assert result[0]["doctype"] == "Notification"
+		assert result[0]["data"]["name"] == "X"
+		assert result[0]["data"]["enabled"] is True
+
+	def test_python_dict_repr_with_plan_key(self):
+		"""Same dict-repr fallback but inside a {plan: [...]} wrapper."""
+		text = "{'plan': [{'op': 'create', 'doctype': 'DocType', 'name': 'Alfred_Notification'}], 'approval': 'approved'}"
+		result = _extract_changes(text)
+		assert len(result) == 1
+		assert result[0]["doctype"] == "DocType"
+		assert result[0]["data"]["name"] == "Alfred_Notification"
+
+	def test_non_string_input_is_coerced(self):
+		"""If a caller accidentally passes a dict/list instead of a string, coerce
+		to str() rather than crashing."""
+		data = [{"op": "create", "doctype": "Notification", "data": {"name": "Y"}}]
+		result = _extract_changes(data)
+		assert len(result) == 1
+		assert result[0]["data"]["name"] == "Y"
+
+	def test_repeated_concatenated_json_blocks_picks_first(self):
+		"""Qwen retry loops produce the same JSON array 5+ times in one Final Answer.
+		The greedy regex version choked on this with 'Extra data' - raw_decode
+		should pick the first complete block and ignore the trailing junk."""
+		one_block = '[{"op": "create", "doctype": "Workflow", "data": {"name": "LAW"}}]'
+		text = (
+			"Thought: Let me fix the issue.\n\n"
+			f"```json\n{one_block}\n```\n\n"
+			"Let's now create the corrected changeset.\n\n"
+			f"```json\n{one_block}\n```\n\n"
+			"Here is the final version:\n\n"
+			f"```json\n{one_block}\n```"
+		)
+		result = _extract_changes(text)
+		assert len(result) == 1
+		assert result[0]["doctype"] == "Workflow"
+		assert result[0]["data"]["name"] == "LAW"
+
+	def test_qwen_chat_template_tokens_stripped(self):
+		"""qwen2.5-coder sometimes leaks `<|im_start|>` tokens into the Final
+		Answer when max_tokens is too generous. Those must not break parsing."""
+		text = (
+			'<|im_start|>Here is the changeset:\n\n'
+			'```json\n'
+			'[{"op": "create", "doctype": "Notification", "data": {"name": "Alert"}}]\n'
+			'```\n<|im_end|><|im_start|>'
+		)
+		result = _extract_changes(text)
+		assert len(result) == 1
+		assert result[0]["data"]["name"] == "Alert"
+
+	def test_llama_chat_template_tokens_stripped(self):
+		text = (
+			'<|start_header_id|>assistant<|end_header_id|>\n'
+			'[{"op": "create", "doctype": "Notification", "data": {"name": "X"}}]\n'
+			'<|eot_id|>'
+		)
+		result = _extract_changes(text)
+		assert len(result) == 1
+
+	def test_prose_then_single_json_block(self):
+		"""The common case: agent explains, then emits one clean JSON array."""
+		text = (
+			"I analyzed the requirements and determined we need one Notification.\n\n"
+			'[{"op": "create", "doctype": "Notification", "data": {"name": "N1"}}]'
+		)
+		result = _extract_changes(text)
+		assert len(result) == 1
+		assert result[0]["doctype"] == "Notification"
+
+	def test_two_different_blocks_picks_first(self):
+		"""If the agent emits two DIFFERENT arrays, we pick the first one
+		intentionally - the agent's first attempt is usually the cleaner one
+		before it starts second-guessing itself."""
+		text = (
+			'[{"op": "create", "doctype": "A", "data": {"name": "first"}}]\n\n'
+			'Actually let me reconsider:\n\n'
+			'[{"op": "create", "doctype": "B", "data": {"name": "second"}}]'
+		)
+		result = _extract_changes(text)
+		assert len(result) == 1
+		assert result[0]["doctype"] == "A"
+		assert result[0]["data"]["name"] == "first"
+
+	def test_repeated_plan_object_wrapper(self):
+		"""Same repetition scenario but inside {plan: [...]} wrapper."""
+		text = (
+			'```json\n'
+			'{"plan": [{"op": "create", "doctype": "Notification", "data": {"name": "X"}}]}\n'
+			'```\n\n'
+			'Let me try again:\n\n'
+			'```json\n'
+			'{"plan": [{"op": "create", "doctype": "Notification", "data": {"name": "X"}}]}\n'
+			'```'
+		)
+		result = _extract_changes(text)
+		assert len(result) == 1
+		assert result[0]["doctype"] == "Notification"
+
+
+class TestValidateChangesetShape:
+	"""Contract validation for changeset items before the rescue/preview step."""
+
+	def test_valid_item_returns_no_errors(self):
+		items = [
+			{"op": "create", "doctype": "Notification", "data": {"doctype": "Notification", "name": "Test"}},
+		]
+		assert _validate_changeset_shape(items) == []
+
+	def test_invalid_op_flagged(self):
+		items = [{"op": "magic", "doctype": "Notification", "data": {"doctype": "Notification"}}]
+		errors = _validate_changeset_shape(items)
+		assert any("op=" in e for e in errors)
+
+	def test_missing_doctype_flagged(self):
+		items = [{"op": "create", "doctype": "", "data": {}}]
+		errors = _validate_changeset_shape(items)
+		assert any("doctype=" in e for e in errors)
+
+	def test_non_dict_data_flagged(self):
+		items = [{"op": "create", "doctype": "Notification", "data": "oops"}]
+		errors = _validate_changeset_shape(items)
+		assert any("data=" in e for e in errors)
+
+	def test_outer_inner_doctype_mismatch_flagged(self):
+		items = [{
+			"op": "create", "doctype": "Notification",
+			"data": {"doctype": "Server Script", "name": "X"},
+		}]
+		errors = _validate_changeset_shape(items)
+		assert any("does not match" in e for e in errors)
+
+	def test_non_dict_item_flagged(self):
+		items = ["not a dict", {"op": "create", "doctype": "Notification", "data": {}}]
+		errors = _validate_changeset_shape(items)
+		assert any("expected dict" in e for e in errors)
+
+	def test_multiple_items_all_valid(self):
+		items = [
+			{"op": "create", "doctype": "Notification", "data": {"doctype": "Notification"}},
+			{"op": "create", "doctype": "Server Script", "data": {"doctype": "Server Script"}},
+			{"op": "update", "doctype": "Custom Field", "data": {"doctype": "Custom Field"}},
+		]
+		assert _validate_changeset_shape(items) == []
 
 
 class TestDescribeToolCall:

@@ -268,20 +268,19 @@ WHAT YOU MUST NOT DO:
 - Do NOT use frappe.db.sql with string interpolation (SQL injection risk)
 
 OUTPUT FORMAT:
-A JSON array of complete Frappe document definitions. Example:
+A JSON array of complete Frappe document definitions. Shape (placeholders in <angle brackets> -
+substitute with values from the user's actual request, NOT from this example):
 [
-  {"op": "create", "doctype": "Notification", "data": {
-    "doctype": "Notification",
-    "name": "Notify Approver",
-    "subject": "New {document_type} submitted",
-    "document_type": "Expense Claim",
-    "event": "New",
-    "channel": "Email",
-    "recipients": [{"receiver_by_document_field": "expense_approver"}],
-    "message": "<p>Please review the new submission.</p>",
-    "enabled": 1
+  {"op": "create", "doctype": "<TYPE>", "data": {
+    "doctype": "<TYPE>",
+    "name": "<descriptive name>",
+    ... all mandatory fields for <TYPE>, verified via get_doctype_schema ...
   }}
 ]
+
+STAY IN THE USER'S DOMAIN: the DocType and field names in your output must come from the
+user's actual request, never from example templates. If the user asks about Sales Order, do
+not emit Expense Claim or any other DocType just because an example uses it.
 
 Every data object must be directly deployable. The downstream dry-run validator will \
 reject any item with missing mandatory fields - so be thorough and complete in one pass."""

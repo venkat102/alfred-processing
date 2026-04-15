@@ -10,6 +10,7 @@ Protocol:
 7. On disconnect, unacked messages buffered in Redis for replay on reconnect
 """
 
+import ast
 import asyncio
 import json
 import logging
@@ -20,7 +21,6 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from alfred.middleware.auth import verify_jwt_token
-from alfred.state.store import StateStore
 
 if TYPE_CHECKING:
 	from alfred.agents.crew import CrewState
@@ -63,7 +63,124 @@ def _describe_tool_call(tool_name: str, arguments: dict) -> str:
 		return f"Running {tool_name}"
 
 
-def _extract_changes(result_text: str) -> list[dict]:
+def _validate_changeset_shape(items: list[dict]) -> list[str]:
+	"""Check each changeset item against the contract the deploy engine expects.
+
+	Returns a list of human-readable error messages (empty if valid). Not a
+	raising validator - callers use the errors list for logging and to decide
+	whether to trigger the rescue path.
+
+	Contract per item:
+	  - op in {"create", "update", "delete"}
+	  - doctype is a non-empty string
+	  - data is a dict
+	  - data.doctype matches the outer doctype when both are present
+	"""
+	errors = []
+	valid_ops = {"create", "update", "delete"}
+	for i, item in enumerate(items):
+		if not isinstance(item, dict):
+			errors.append(f"item[{i}] is {type(item).__name__}, expected dict")
+			continue
+		op = item.get("op")
+		if op not in valid_ops:
+			errors.append(f"item[{i}] has op={op!r}, expected one of {sorted(valid_ops)}")
+		doctype = item.get("doctype")
+		if not isinstance(doctype, str) or not doctype:
+			errors.append(f"item[{i}] has doctype={doctype!r}, expected non-empty string")
+		data = item.get("data", {})
+		if not isinstance(data, dict):
+			errors.append(f"item[{i}] has data={type(data).__name__}, expected dict")
+			continue
+		inner_dt = data.get("doctype")
+		if inner_dt and isinstance(doctype, str) and inner_dt != doctype:
+			errors.append(
+				f"item[{i}] inner data.doctype={inner_dt!r} does not match outer {doctype!r}"
+			)
+	return errors
+
+
+_CHAT_TEMPLATE_LEAKAGE = re.compile(
+	r"<\|im_start\|>|<\|im_end\|>|<\|endoftext\|>|<\|start_header_id\|>|<\|end_header_id\|>|<\|eot_id\|>"
+)
+_CODE_FENCE_LINE = re.compile(r"^\s*```(?:json|python|javascript|js)?\s*$", re.MULTILINE)
+
+
+def _parse_first_json_value(text: str):
+	"""Parse the first well-formed JSON value in text.
+
+	Walks the text, and at every `[` or `{` tries `JSONDecoder.raw_decode`.
+	Returns the first successful parse, or None.
+
+	This is the critical fix for qwen-style retry loops where the Developer
+	task produces 5+ concatenated copies of the same changeset separated by
+	prose and `<|im_start|>` leakage. A greedy regex can't handle that case
+	because `json.loads` rejects concatenated top-level values as "Extra data".
+	`raw_decode` stops at the first complete value and ignores the tail.
+
+	Also runs `ast.literal_eval` as a fallback at each position so Python-repr
+	dicts (single quotes, True/False/None) are handled the same way they used
+	to be.
+	"""
+	if not text:
+		return None
+	decoder = json.JSONDecoder()
+	for i, ch in enumerate(text):
+		if ch not in "[{":
+			continue
+		try:
+			obj, _ = decoder.raw_decode(text, i)
+			return obj
+		except json.JSONDecodeError:
+			pass
+		# ast fallback: walk to a balanced close and try literal_eval. Only
+		# needed when the model emits Python dict repr instead of JSON.
+		close = _find_balanced_close(text, i)
+		if close is not None:
+			try:
+				return ast.literal_eval(text[i : close + 1])
+			except (ValueError, SyntaxError):
+				continue
+	return None
+
+
+def _find_balanced_close(text: str, start: int) -> int | None:
+	"""Return the index of the `]` or `}` that closes the bracket at `start`.
+
+	Single-pass scanner that tracks string state and escape sequences. Used
+	by the ast fallback path; the primary parser uses raw_decode and doesn't
+	need this.
+	"""
+	if start >= len(text) or text[start] not in "[{":
+		return None
+	open_char = text[start]
+	close_char = "}" if open_char == "{" else "]"
+	depth = 0
+	in_string = False
+	escape = False
+	for i in range(start, len(text)):
+		ch = text[i]
+		if escape:
+			escape = False
+			continue
+		if ch == "\\":
+			escape = True
+			continue
+		if ch == '"':
+			in_string = not in_string
+			continue
+		if in_string:
+			continue
+		if ch == open_char:
+			depth += 1
+		elif ch == close_char:
+			depth -= 1
+			if depth == 0:
+				return i
+	return None
+
+
+def _extract_changes(result_text) -> list[dict]:
 	"""Parse agent result text into normalized changeset items for the PreviewPanel.
 
 	The PreviewPanel expects each item to have:
@@ -73,32 +190,40 @@ def _extract_changes(result_text: str) -> list[dict]:
 	code fences), so we normalize everything into this format. Returns an empty
 	list on any parse failure - the caller should treat empty as "extraction
 	failed" and surface an error rather than silently showing nothing.
+
+	Pre-parsing cleanup handles three kinds of noise that local models produce
+	when they drift:
+	  - Markdown code fences (```json ... ```), possibly multiple per output.
+	  - Chat-template leakage tokens (`<|im_start|>`, `<|im_end|>`, ...) that
+	    appear when the model hallucinates a new conversation turn past its
+	    stop token.
+	  - Repeated concatenated JSON blocks (qwen "fix the JSON" retry loops
+	    sometimes produce 5+ identical copies of the same array). The parser
+	    picks the first well-formed block via `JSONDecoder.raw_decode`.
+
+	After extraction, runs `_validate_changeset_shape` to log any contract
+	violations at WARNING level. Invalid items still pass through (so the
+	rescue path has a chance) but the warnings surface in logs for debugging.
 	"""
 	if not result_text:
 		logger.debug("_extract_changes: empty result_text")
 		return []
 
-	try:
-		# Strip markdown code fences (```json ... ```)
-		cleaned = re.sub(r'^```(?:json)?\s*', '', result_text.strip())
-		cleaned = re.sub(r'\s*```$', '', cleaned)
+	if not isinstance(result_text, str):
+		result_text = str(result_text)
 
-		# Try to find JSON object or array. Greedy match so nested braces work.
-		json_match = re.search(r'[\[{].*[\]}]', cleaned, re.DOTALL)
-		if not json_match:
+	try:
+		cleaned = _CHAT_TEMPLATE_LEAKAGE.sub("", result_text)
+		cleaned = _CODE_FENCE_LINE.sub("", cleaned)
+		cleaned = cleaned.strip()
+
+		parsed = _parse_first_json_value(cleaned)
+		if parsed is None:
 			logger.warning(
-				"_extract_changes: no JSON found in result (first 200 chars): %r",
-				result_text[:200],
+				"_extract_changes: no parseable JSON in result (first 500 chars): %r",
+				result_text[:500],
 			)
 			return []
-
-		parsed = json.loads(json_match.group())
-	except json.JSONDecodeError as e:
-		logger.warning(
-			"_extract_changes: JSON decode failed at pos %d: %s. Text (first 200): %r",
-			getattr(e, "pos", -1), e.msg, result_text[:200],
-		)
-		return []
 	except Exception as e:
 		logger.exception("_extract_changes: unexpected error: %s", e)
 		return []
@@ -148,6 +273,16 @@ def _extract_changes(result_text: str) -> list[dict]:
 			"doctype": doctype,
 			"data": data,
 		})
+
+	# Shape validation - surface contract violations in logs for debugging.
+	# We still return the normalized list so the rescue path can run, but a
+	# loud warning here means the agent's output drifted from the contract.
+	errors = _validate_changeset_shape(normalized)
+	if errors:
+		logger.warning(
+			"_extract_changes: %d contract violation(s) in %d item(s): %s",
+			len(errors), len(normalized), "; ".join(errors[:5]),
+		)
 
 	return normalized
 
@@ -243,7 +378,7 @@ async def _authenticate_handshake(
 	except WebSocketDisconnect:
 		logger.debug("Client disconnected before handshake: conversation=%s", conversation_id)
 		return None
-	except (json.JSONDecodeError, Exception) as e:
+	except Exception as e:
 		try:
 			await websocket.close(code=WS_CLOSE_INVALID_HANDSHAKE, reason=f"Invalid handshake: {e}")
 		except Exception:
@@ -360,7 +495,23 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 	if msg_type == "prompt":
 		# Core pipeline: user sent a prompt - run the agent crew
 		prompt_text = data.get("data", {}).get("text", "")
+		manual_mode = (data.get("data", {}).get("mode") or "auto").strip().lower()
+		if manual_mode not in ("auto", "dev", "plan", "insights"):
+			manual_mode = "auto"
 		if not prompt_text:
+			return
+
+		# If the pipeline is paused waiting for a clarification answer, route
+		# this prompt to the oldest pending question instead of starting a new
+		# pipeline. This lets the user just type their answer in the chat box
+		# without any special UI state - the frontend stays simple.
+		if conn._pending_questions:
+			oldest_id = next(iter(conn._pending_questions))
+			logger.info(
+				"Routing prompt as answer to pending question %s for %s@%s",
+				oldest_id, conn.user, conn.site_id,
+			)
+			conn.resolve_question(oldest_id, prompt_text)
 			return
 
 		# Reject concurrent prompts on the same conversation. Two parallel
@@ -383,7 +534,9 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 
 		async def _run_and_clear():
 			try:
-				await _run_agent_pipeline(conn, conversation_id, prompt_text)
+				await _run_agent_pipeline(
+					conn, conversation_id, prompt_text, manual_mode=manual_mode
+				)
 			finally:
 				conn.active_pipeline = None
 
@@ -491,18 +644,27 @@ async def _dry_run_with_retry(
 		custom_tools = build_mcp_tools(conn.mcp_client)
 		agents = build_agents(site_config=site_config, custom_tools=custom_tools)
 		developer = agents["developer"]
+		# Cap the fix-task iterations so qwen-style repeat loops can't wedge
+		# the pipeline. If it can't fix it in 3 ReAct steps, escalate to the
+		# user rather than spending more tokens spinning.
+		developer.max_iter = 3
 
 		fix_task = Task(
 			description=(
+				"OUTPUT FORMAT (STRICT): Your entire Final Answer MUST be a single JSON\n"
+				"array. Start with `[` and end with `]`. Do NOT repeat the array. Do NOT\n"
+				"include markdown code fences. Do NOT include any prose, commentary, or\n"
+				"duplicate copies. If you have nothing to change, output the input array\n"
+				"unchanged - still as a single clean array.\n\n"
 				"The changeset you produced failed dry-run validation against the live site. "
 				"Fix the issues below and produce a corrected changeset.\n\n"
 				f"Validation issues:\n{issues_json}\n\n"
 				f"Original changeset:\n{changes_json}\n\n"
 				"Return a corrected changeset as a JSON array of complete document definitions. "
 				"Every 'data' object must include all required fields for its doctype. "
-				"Use get_doctype_schema to verify field names against the live site before writing."
+				"Use lookup_doctype(name, layer='framework') to verify field names before writing."
 			),
-			expected_output="A JSON array of corrected changeset items",
+			expected_output="A JSON array of corrected changeset items (single array, no repeats).",
 			agent=developer,
 		)
 
@@ -539,257 +701,311 @@ async def _dry_run_with_retry(
 	return dry_run
 
 
-async def _run_agent_pipeline(conn: ConnectionState, conversation_id: str, prompt: str):
-	"""Run the full agent SDLC pipeline for a user prompt.
+async def _clarify_requirements(
+	enhanced_prompt: str,
+	conn: "ConnectionState",
+	event_callback,
+) -> tuple[str, list[tuple[str, str]]]:
+	"""Structured clarification gate: ask the user about ambiguities before the crew runs.
 
-	This is the core integration point - it connects the WebSocket
-	to the CrewAI crew and streams events back to the user.
+	One direct LLM call asks "what ambiguities exist in this request that only
+	a human can resolve?" and returns a JSON list of questions. If non-empty, we
+	send each question to the UI via conn.ask_human() (which blocks until the
+	user responds), then append the Q/A pairs to the enhanced prompt so the
+	downstream agents have the clarified context.
+
+	Principles:
+	- Only blocking decisions (schema choices, trigger events, scope) warrant
+	  a question. Not implementation details the agents can figure out.
+	- Max 3 questions per pass to avoid interrogation fatigue.
+	- Short timeout on each question (15 min) - if the user walks away, the
+	  pipeline still completes using the LLM's best guess.
+	- Never raises: on any error, returns the original prompt unchanged.
+
+	Returns:
+		Tuple of (clarified_prompt, qa_pairs). qa_pairs is the list of
+		(question, answer) tuples so the caller can persist them into the
+		conversation memory for future turns.
 	"""
-	from alfred.defense.sanitizer import check_prompt
+	if not enhanced_prompt:
+		return enhanced_prompt, []
 
-	# Step 1: Prompt defense
-	defense_result = check_prompt(prompt)
-	if not defense_result["allowed"]:
-		await conn.send({
-			"msg_id": str(uuid.uuid4()),
-			"type": "error",
-			"data": {
-				"error": defense_result["rejection_reason"],
-				"code": "PROMPT_BLOCKED" if not defense_result["needs_review"] else "NEEDS_REVIEW",
-			},
-		})
-		return
-
-	# Step 2: Plan check (admin portal)
-	redis = getattr(conn.websocket.app.state, "redis", None)
-	store = StateStore(redis) if redis else None
-
-	# Pipeline mode override from the admin portal. The portal's check_plan
-	# response may include {"pipeline_mode": "lite" | "full"} to force a mode
-	# based on the site's subscription tier. If present, this overrides the
-	# site's local Alfred Settings.pipeline_mode. If not present, the site's
-	# setting wins. If the admin portal isn't configured at all, we fall back
-	# to the site's setting.
-	plan_pipeline_mode: str | None = None
-
-	settings = conn.websocket.app.state.settings
-	admin_url = getattr(settings, "ADMIN_PORTAL_URL", "")
-	admin_key = getattr(settings, "ADMIN_SERVICE_KEY", "")
-	if admin_url and admin_key:
-		try:
-			from alfred.api.admin_client import AdminClient
-			admin = AdminClient(admin_url, admin_key, redis)
-			plan_result = await admin.check_plan(conn.site_id)
-			if not plan_result.get("allowed", True):
-				await conn.send({
-					"msg_id": str(uuid.uuid4()),
-					"type": "error",
-					"data": {
-						"error": plan_result.get("reason", "Plan limit exceeded"),
-						"code": "PLAN_EXCEEDED",
-						"warning": plan_result.get("warning"),
-					},
-				})
-				return
-			# Send warning if approaching limit
-			if plan_result.get("warning"):
-				await conn.send({
-					"msg_id": str(uuid.uuid4()),
-					"type": "agent_status",
-					"data": {"agent": "System", "status": "warning", "message": plan_result["warning"]},
-				})
-			# Capture any plan-level pipeline mode override
-			_raw_mode = (plan_result.get("pipeline_mode") or "").lower()
-			if _raw_mode in ("full", "lite"):
-				plan_pipeline_mode = _raw_mode
-		except Exception as e:
-			logger.warning("Plan check failed (allowing by default): %s", e)
-
-	# Step 3: Enhance the prompt
-	await conn.send({
-		"msg_id": str(uuid.uuid4()),
-		"type": "agent_status",
-		"data": {"agent": "System", "status": "enhancing", "message": "Analyzing your request..."},
-	})
-
-	user_context = {
-		"user": conn.user,
-		"roles": conn.roles,
-		"site_id": conn.site_id,
-	}
-
-	from alfred.agents.prompt_enhancer import enhance_prompt
-	enhanced_prompt = await enhance_prompt(prompt, user_context, conn.site_config)
-
-	# Determine pipeline mode (full 6-agent SDLC vs single-agent lite).
-	# Precedence (highest to lowest):
-	#   1. Admin portal plan override (plan_pipeline_mode) - forces the mode
-	#      based on subscription tier, so a "starter" plan is locked to lite
-	#      regardless of what the site admin toggles.
-	#   2. site_config.pipeline_mode - self-hosted / no-portal installs use
-	#      the Alfred Settings field to pick their own mode.
-	#   3. Default "full" - safest for complex tasks when neither is set.
-	if plan_pipeline_mode:
-		pipeline_mode = plan_pipeline_mode
-		pipeline_mode_source = "plan"
-	else:
-		pipeline_mode = (conn.site_config.get("pipeline_mode") or "full").lower()
-		if pipeline_mode not in ("full", "lite"):
-			pipeline_mode = "full"
-		pipeline_mode_source = "site_config"
-
-	logger.info(
-		"Pipeline mode resolved for %s: %s (source=%s)",
-		conn.site_id, pipeline_mode, pipeline_mode_source,
-	)
-
-	# Step 4: Notify user that agent processing has started. Include the mode
-	# so the UI can render a "Basic" badge and hide the 6-phase pipeline.
-	await conn.send({
-		"msg_id": str(uuid.uuid4()),
-		"type": "agent_status",
-		"data": {
-			"agent": "Orchestrator",
-			"status": "started",
-			"phase": "requirement",
-			"pipeline_mode": pipeline_mode,
-			"pipeline_mode_source": pipeline_mode_source,
-		},
-	})
-
-	# Step 5: Build and run the crew
 	try:
-		from alfred.agents.crew import build_alfred_crew, build_lite_crew, run_crew, load_crew_state
-		from alfred.tools.mcp_tools import build_mcp_tools
+		import litellm
 
-		# Check for existing state (resumption)
-		previous_state = None
-		if store:
-			previous_state = await load_crew_state(store, conn.site_id, conversation_id)
+		site_config = conn.site_config or {}
+		model = site_config.get("llm_model") or "ollama/llama3.1"
+		api_key = site_config.get("llm_api_key") or ""
+		base_url = site_config.get("llm_base_url") or ""
 
-		# Build live MCP-backed tools so agents query the real Client App site
-		# (with correct permissions) instead of hardcoded stubs.
-		custom_tools = build_mcp_tools(conn.mcp_client) if conn.mcp_client else None
-
-		if pipeline_mode == "lite":
-			lite_tools = (custom_tools or {}).get("lite", []) if custom_tools else []
-			if not lite_tools:
-				logger.warning(
-					"Lite pipeline starting without MCP tools for %s - the agent "
-					"will have no way to verify DocType schemas, check permissions, "
-					"or run dry_run_changeset. Expect degraded output quality. "
-					"This usually means mcp_client is None (handshake did not "
-					"initialize it) or build_mcp_tools returned no 'lite' key.",
-					conn.site_id,
-				)
-			crew, state = build_lite_crew(
-				user_prompt=enhanced_prompt,
-				user_context=user_context,
-				site_config=conn.site_config,
-				previous_state=previous_state,
-				lite_tools=lite_tools,
-			)
-		else:
-			crew, state = build_alfred_crew(
-				user_prompt=enhanced_prompt,
-				user_context=user_context,
-				site_config=conn.site_config,
-				previous_state=previous_state,
-				custom_tools=custom_tools,
-			)
-
-		# Event callback - streams agent events to the user via WebSocket
-		async def event_callback(event_type: str, data: dict):
-			await conn.send({
-				"msg_id": str(uuid.uuid4()),
-				"type": "agent_status",
-				"data": {"event": event_type, **data},
-			})
-
-		# Run with timeout - sequential process is faster, so 2× per-task is enough
-		timeout = conn.site_config.get("task_timeout_seconds", 300)
-		result = await asyncio.wait_for(
-			run_crew(crew, state, store, conn.site_id, conversation_id, event_callback),
-			timeout=timeout * 2,
+		system = (
+			"You are a Frappe requirements analyst. You receive an enhanced user "
+			"request and must identify BLOCKING ambiguities that only a human can "
+			"resolve before any code is generated.\n\n"
+			"A BLOCKING ambiguity is one where the wrong choice would force a rework. "
+			"The categories you should look for:\n"
+			"- Trigger timing: when should the customization fire? (on create / on save / "
+			"on submit / on field change / scheduled - the wrong choice produces unwanted "
+			"or missing events)\n"
+			"- Recipient target: which user or role should receive a notification? When "
+			"the request says 'the manager' or 'the approver', which specific Link field "
+			"on the target DocType holds that user?\n"
+			"- Scope: which DocType(s) does the customization apply to? 'orders' could "
+			"mean Sales Order, Purchase Order, or both.\n"
+			"- Permissions: 'only X can do Y' - which exact role or permission?\n\n"
+			"A NON-BLOCKING detail (do NOT ask about these):\n"
+			"- Field labels / naming conventions (agent can decide)\n"
+			"- Code style / implementation choices (agent can decide)\n"
+			"- Stylistic UI wording (agent can decide)\n\n"
+			"RULES:\n"
+			"- Ask at most 3 questions. Usually zero is the right answer.\n"
+			"- If the request is unambiguous, return an empty array.\n"
+			"- Each question must be answerable in one short sentence.\n"
+			"- Include a `choices` array with 2-4 concrete options when the answer "
+			"has a finite set; omit or use [] if open-ended.\n\n"
+			"OUTPUT FORMAT (STRICT): a raw JSON array, no prose, no fences:\n"
+			'[{"question": "...", "choices": ["option A", "option B"]}, ...]\n'
+			"If nothing to ask, output exactly `[]`."
 		)
 
-		# Step 6: Send result back
-		if result["status"] == "completed":
-			result_text = result.get("result", "")
+		kwargs = {
+			"model": model,
+			"messages": [
+				{"role": "system", "content": system},
+				{"role": "user", "content": f"ENHANCED REQUEST:\n{enhanced_prompt[:6000]}"},
+			],
+			"max_tokens": 1024,
+			"temperature": 0.0,
+			"timeout": 60,
+		}
+		if api_key:
+			kwargs["api_key"] = api_key
+		if base_url:
+			kwargs["base_url"] = base_url
+			kwargs["api_base"] = base_url
+		num_ctx = int(site_config.get("llm_num_ctx") or 0)
+		if num_ctx > 0:
+			kwargs["num_ctx"] = num_ctx
+		elif str(model).startswith("ollama/"):
+			kwargs["num_ctx"] = 8192
 
-			# Send the completed status
-			await conn.send({
-				"msg_id": str(uuid.uuid4()),
-				"type": "agent_status",
-				"data": {"agent": "Orchestrator", "status": "completed", "result": result_text[:2000]},
-			})
-
-			# Send the changeset as a preview so the UI can display it.
-			# Parse the result JSON and normalize each item to the format
-			# the PreviewPanel expects:
-			#   { op: "create", doctype: "Notification", data: { name: "...", fields: [...], ... } }
-			changes = _extract_changes(result_text)
-
-			if changes:
-				# Pre-preview dry-run via MCP: users should only see validated changesets.
-				dry_run = await _dry_run_with_retry(
-					conn, state, changes, conn.site_config, event_callback
-				)
-				changes = dry_run.pop("_final_changes", changes)
-
-				await conn.send({
-					"msg_id": str(uuid.uuid4()),
-					"type": "changeset",
-					"data": {
-						"conversation": conversation_id,
-						"changes": changes,
-						"result_text": result_text[:4000],
-						"dry_run": dry_run,
-					},
-				})
-			else:
-				# Crew completed but produced no parseable changeset. Surface a
-				# clear error instead of leaving the UI in processing state -
-				# the polling fallback would eventually notice nothing arrived,
-				# but an explicit error lets the user retry immediately.
-				logger.warning(
-					"Pipeline completed but _extract_changes returned empty. "
-					"Result text (first 500): %r", result_text[:500],
-				)
-				await conn.send({
-					"msg_id": str(uuid.uuid4()),
-					"type": "error",
-					"data": {
-						"error": (
-							"The agent pipeline completed but didn't produce a valid "
-							"changeset. Try rephrasing your request or check the processing "
-							"app logs."
-						),
-						"code": "EMPTY_CHANGESET",
-						"result_preview": result_text[:500],
-					},
-				})
-		else:
-			await conn.send({
-				"msg_id": str(uuid.uuid4()),
-				"type": "error",
-				"data": {"error": result.get("error", "Pipeline failed"), "code": "PIPELINE_FAILED"},
-			})
-
-	except asyncio.TimeoutError:
-		logger.error("Pipeline timeout for conversation=%s", conversation_id)
-		await conn.send({
-			"msg_id": str(uuid.uuid4()),
-			"type": "error",
-			"data": {"error": "Pipeline timed out. The conversation has been saved - you can resume later.", "code": "PIPELINE_TIMEOUT"},
+		await event_callback("clarify", {
+			"agent": "Requirements", "status": "checking",
+			"message": "Checking for ambiguities that need your input...",
 		})
+
+		loop = asyncio.get_running_loop()
+
+		def _run():
+			resp = litellm.completion(**kwargs)
+			return resp.choices[0].message.content or ""
+
+		raw = await loop.run_in_executor(None, _run)
+		logger.info("Clarify pass result (first 500): %r", (raw or "")[:500])
+
+		questions = []
+		try:
+			cleaned = re.sub(r'^```(?:json)?\s*', '', (raw or "").strip())
+			cleaned = re.sub(r'\s*```$', '', cleaned)
+			match = re.search(r'\[.*\]', cleaned, re.DOTALL)
+			if match:
+				parsed = json.loads(match.group())
+				if isinstance(parsed, list):
+					questions = [q for q in parsed if isinstance(q, dict) and q.get("question")]
+		except Exception as e:
+			logger.warning("Clarify pass: failed to parse questions: %s", e)
+			questions = []
+
+		if not questions:
+			logger.info("Clarify pass: no blocking ambiguities - proceeding directly")
+			return enhanced_prompt, []
+
+		questions = questions[:3]
+		logger.info("Clarify pass: asking %d question(s)", len(questions))
+
+		qa_pairs = []
+		for q in questions:
+			question_text = str(q.get("question", "")).strip()
+			if not question_text:
+				continue
+			raw_choices = q.get("choices") or []
+			choices = [str(c).strip() for c in raw_choices if str(c).strip()][:4]
+
+			await event_callback("clarify", {
+				"agent": "Requirements", "status": "asking",
+				"message": question_text,
+			})
+			try:
+				answer = await conn.ask_human(question_text, choices=choices, timeout=900)
+			except Exception as e:
+				logger.warning("ask_human failed for question %r: %s", question_text, e)
+				answer = "[no response]"
+
+			qa_pairs.append((question_text, answer or "[no response]"))
+
+		if not qa_pairs:
+			return enhanced_prompt, []
+
+		clarifications_block = "\n\nUSER CLARIFICATIONS:\n" + "\n".join(
+			f"Q: {q}\nA: {a}" for q, a in qa_pairs
+		)
+		clarified = enhanced_prompt + clarifications_block
+
+		await event_callback("clarify", {
+			"agent": "Requirements", "status": "done",
+			"message": f"Got {len(qa_pairs)} clarification(s) - continuing with your input.",
+		})
+
+		return clarified, qa_pairs
 	except Exception as e:
-		logger.error("Pipeline error for conversation=%s: %s", conversation_id, e, exc_info=True)
-		await conn.send({
-			"msg_id": str(uuid.uuid4()),
-			"type": "error",
-			"data": {"error": str(e), "code": "PIPELINE_ERROR"},
+		logger.warning("Clarify pass crashed, proceeding with original prompt: %s", e, exc_info=True)
+		return enhanced_prompt, []
+
+
+async def _rescue_regenerate_changeset(
+	original_prompt: str,
+	failed_output: str,
+	site_config: dict,
+	event_callback,
+) -> list[dict]:
+	"""Last-resort rescue: regenerate the changeset from scratch when the crew drifted.
+
+	Local coder models (qwen2.5-coder, llama3.1) sometimes pivot into explanatory
+	mode after calling get_doctype_schema - they describe what they found instead
+	of emitting a changeset. When that happens, we run ONE direct LLM call with
+	the original user prompt + the failed attempt, asking for a clean JSON
+	changeset in one shot. No tools, no agent loop - a single focused call.
+
+	Returns a normalized changeset list (possibly empty) - never raises.
+	"""
+	if not original_prompt:
+		return []
+
+	try:
+		import litellm
+
+		model = site_config.get("llm_model") or "ollama/llama3.1"
+		api_key = site_config.get("llm_api_key") or ""
+		base_url = site_config.get("llm_base_url") or ""
+
+		system = (
+			"You are a Frappe changeset generator. Given a user request, produce a "
+			"deployable JSON changeset that can be applied via frappe.get_doc(data).insert().\n\n"
+			"OUTPUT FORMAT (STRICT):\n"
+			"- Output ONLY a raw JSON array. No prose, no markdown, no code fences, no commentary.\n"
+			"- Start with `[` and end with `]`.\n"
+			"- Each item: {\"op\": \"create\", \"doctype\": \"<type>\", \"data\": {...complete document...}}\n"
+			"- Every `data` object MUST include \"doctype\" matching the outer doctype plus all "
+			"mandatory fields for that document type.\n\n"
+			"STAY IN THE USER'S DOMAIN: use the DocType names and field names from the user's "
+			"request. Do NOT substitute a different DocType because an example is easier to "
+			"describe. If the user mentions Sales Order, emit Sales Order.\n\n"
+			"FRAPPE CUSTOMIZATION BASICS:\n"
+			"- Email alert -> use Notification doctype (not Server Script)\n"
+			"- New field on existing doctype -> Custom Field (not a new DocType)\n"
+			"- Required fields for Notification: name, subject, document_type, event, channel, "
+			"recipients, message, enabled\n"
+			"- Required fields for Server Script: name, script_type, reference_doctype, "
+			"doctype_event, script\n"
+			"- Required fields for Custom Field: name, dt, fieldname, fieldtype, label\n\n"
+			"The canonical templates for common idioms (approval notifications, audit logs, "
+			"validation scripts, etc.) live in the curated pattern library. Use the user's "
+			"intent to pick a pattern conceptually and adapt it to the target DocType. For "
+			"details like 'which event should this notification fire on' or 'which recipient "
+			"field should I use', follow the request literally - do not invent rules.\n\n"
+			"SHAPE OF EACH ITEM (placeholders in <angle brackets>):\n"
+			'[{"op":"create","doctype":"Notification","data":{"doctype":"Notification","name":"<descriptive name>","subject":"<subject with {{doc.<field>}} Jinja>","document_type":"<target DocType from user request>","event":"<New|Save|Submit|...>","channel":"Email","recipients":[{"receiver_by_document_field":"<link field holding the user>"}],"message":"<HTML body>","enabled":1}}]\n\n'
+			"If the request genuinely cannot be satisfied with any Frappe customization, "
+			"output `[]`."
+		)
+
+		user_msg_parts = [f"USER REQUEST:\n{original_prompt[:4000]}"]
+		if failed_output:
+			user_msg_parts.append(
+				"\n\nThe agent pipeline produced this output, which is not a valid changeset - "
+				"you may use it as hints but IGNORE its format:\n" + failed_output[:3000]
+			)
+		user_msg_parts.append("\n\nProduce the JSON changeset now. Raw JSON only.")
+
+		kwargs = {
+			"model": model,
+			"messages": [
+				{"role": "system", "content": system},
+				{"role": "user", "content": "".join(user_msg_parts)},
+			],
+			"max_tokens": 2048,
+			"temperature": 0.0,
+			"timeout": 90,
+		}
+		if api_key:
+			kwargs["api_key"] = api_key
+		if base_url:
+			kwargs["base_url"] = base_url
+			kwargs["api_base"] = base_url
+		num_ctx = int(site_config.get("llm_num_ctx") or 0)
+		if num_ctx > 0:
+			kwargs["num_ctx"] = num_ctx
+		elif str(model).startswith("ollama/"):
+			kwargs["num_ctx"] = 8192
+
+		await event_callback("reformat", {
+			"agent": "Rescue", "status": "running",
+			"message": "Crew drifted off-spec. Regenerating changeset from the original request...",
 		})
+
+		loop = asyncio.get_running_loop()
+
+		def _run():
+			resp = litellm.completion(**kwargs)
+			return resp.choices[0].message.content or ""
+
+		regenerated = await loop.run_in_executor(None, _run)
+		logger.info(
+			"Rescue regeneration result (first 500): %r", (regenerated or "")[:500],
+		)
+		changes = _extract_changes(regenerated)
+		if changes:
+			await event_callback("reformat", {
+				"agent": "Rescue", "status": "success",
+				"message": f"Rescue produced {len(changes)} item(s).",
+			})
+		else:
+			await event_callback("reformat", {
+				"agent": "Rescue", "status": "empty",
+				"message": "Rescue pass produced no changeset - request may be out of scope.",
+			})
+		return changes
+	except Exception as e:
+		logger.warning("Rescue regeneration failed: %s", e, exc_info=True)
+		return []
+
+
+async def _run_agent_pipeline(
+	conn: ConnectionState,
+	conversation_id: str,
+	prompt: str,
+	manual_mode: str = "auto",
+):
+	"""Run the full agent SDLC pipeline for a user prompt.
+
+	Thin wrapper over `AgentPipeline` (Phase 3 #12 state machine). The
+	orchestrator handles phase sequencing, tracer spans, and error boundaries.
+	Adding a new phase: edit `alfred/api/pipeline.py`, not here.
+
+	Args:
+		manual_mode: The user's chat-mode selection from the UI switcher.
+			One of "auto" | "dev" | "plan" | "insights". The orchestrator
+			phase decides the final mode from this + prompt + memory.
+	"""
+	from alfred.api.pipeline import AgentPipeline, PipelineContext
+
+	ctx = PipelineContext(
+		conn=conn,
+		conversation_id=conversation_id,
+		prompt=prompt,
+		manual_mode_override=manual_mode,
+	)
+	await AgentPipeline(ctx).run()
 
 
 async def _heartbeat_loop(websocket: WebSocket, interval: int = 30):
@@ -821,9 +1037,6 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 		"type": "auth_success",
 		"data": {"user": conn.user, "site_id": conn.site_id, "conversation_id": conversation_id},
 	})
-
-	redis = getattr(websocket.app.state, "redis", None)
-	store = StateStore(redis) if redis else None
 
 	heartbeat_interval = websocket.app.state.settings.WS_HEARTBEAT_INTERVAL
 	heartbeat_task = asyncio.create_task(_heartbeat_loop(websocket, heartbeat_interval))

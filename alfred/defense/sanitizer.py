@@ -1,10 +1,20 @@
 """Prompt injection defense - regex sanitizer + intent classifier.
 
-Layer 1: Fast regex sanitizer catches known injection patterns.
-Layer 2: LLM-based intent classifier categorizes the prompt.
-Unknown intents are flagged for admin review.
+Layer 1: Fast regex sanitizer catches known injection patterns. This is the
+ONLY hard gate - anything matching an injection pattern is blocked.
+
+Layer 2: Keyword intent classifier categorizes the prompt. This is an
+informational hint only - `unknown` classification does NOT block, it just
+flags `needs_review=True` for logging. Greetings, meta questions, and novel
+phrasings all fall through to the pipeline which has its own orchestrator
+to decide how to handle them.
 
 All patterns are configurable - stored in site_config from Alfred Settings.
+
+History: before the three-mode chat feature, unknown intents hard-blocked
+with "Unable to classify prompt intent. Flagged for admin review." This
+rejected greetings like "hi" and any prompt that didn't match a narrow
+keyword set. Fixed 2026-04-15.
 """
 
 import json
@@ -92,15 +102,31 @@ def sanitize_prompt(prompt: str, custom_patterns: list | None = None) -> dict:
 	return {"safe": len(threats) == 0, "threats": threats}
 
 
+_GREETING_WORDS = {
+	"hi", "hello", "hey", "yo", "hiya", "howdy", "greetings",
+	"good morning", "good afternoon", "good evening",
+	"thanks", "thank you", "thx", "ty",
+	"ok", "okay", "sure", "yes", "no", "cool",
+	"bye", "goodbye", "cya", "later",
+}
+
+
 def classify_intent(prompt: str) -> str:
 	"""Classify a prompt's intent using keyword heuristics.
 
-	For production, this would use a lightweight LLM call.
-	For now, uses keyword matching as a fast approximation.
-
-	Returns one of KNOWN_INTENTS or "unknown".
+	Returns one of KNOWN_INTENTS or "unknown". An "unknown" result is
+	informational only - it does NOT block the prompt. The sanitizer
+	(layer 1) is the only hard gate; anything that's not a known injection
+	pattern flows through to the orchestrator which decides the mode.
 	"""
-	prompt_lower = prompt.lower()
+	prompt_lower = prompt.lower().strip()
+
+	# Greetings / short conversational openers -> general_question
+	stripped = prompt_lower.rstrip("!.?,")
+	if stripped in _GREETING_WORDS or any(
+		stripped.startswith(g + " ") for g in _GREETING_WORDS
+	):
+		return "general_question"
 
 	# Keyword-based classification
 	if any(kw in prompt_lower for kw in ["create a doctype", "new doctype", "make a doctype", "build a doctype"]):
@@ -155,22 +181,16 @@ def check_prompt(prompt: str, custom_patterns: list | None = None) -> dict:
 			"rejection_reason": f"Prompt blocked by security filter: {reasons}",
 		}
 
-	# Step 2: Intent classification
+	# Step 2: Intent classification (informational only).
+	# Unknown intents are allowed through with needs_review=True - the
+	# sanitizer is the ONLY hard block. Downstream the orchestrator decides
+	# how to route conversational / novel prompts.
 	intent = classify_intent(prompt)
-
-	if intent == "unknown":
-		return {
-			"allowed": False,
-			"sanitizer": sanitizer_result,
-			"intent": intent,
-			"needs_review": True,
-			"rejection_reason": "Unable to classify prompt intent. Flagged for admin review.",
-		}
 
 	return {
 		"allowed": True,
 		"sanitizer": sanitizer_result,
 		"intent": intent,
-		"needs_review": False,
+		"needs_review": intent == "unknown",
 		"rejection_reason": None,
 	}

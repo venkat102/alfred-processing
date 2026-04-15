@@ -1,0 +1,46 @@
+{
+  "timestamp": "2026-04-13T16:37:31",
+  "model": "ollama/qwen2.5-coder:32b",
+  "base_url": "http://10.243.88.140:11434",
+  "runs_per_prompt": 1,
+  "results": [
+    {
+      "wall_clock_seconds": 186.8,
+      "llm_completion_count": 1873,
+      "llm_prompt_tokens": 54095,
+      "llm_completion_tokens": 2301,
+      "llm_total_tokens": 56396,
+      "mcp_tool_calls": 6,
+      "mcp_tool_calls_by_name": {
+        "get_doctype_schema": 1,
+        "check_permission": 1,
+        "get_existing_customizations": 1,
+        "dry_run_changeset": 2,
+        "check_has_records": 1
+      },
+      "first_try_extraction": true,
+      "rescue_triggered": false,
+      "dry_run_retries": 0,
+      "changeset_items": 1,
+      "changeset_valid": true,
+      "error": null,
+      "outbound_message_count": 9,
+      "prompt_id": 2,
+      "prompt_name": "custom_field_simple",
+      "prompt": "Add a priority Select field to Sales Order with values Low, Medium, High",
+      "run_index": 0
+    }
+  ],
+  "summary": {
+    "total_runs": 1,
+    "successful_runs": 1,
+    "avg_wall_clock_seconds": 186.8,
+    "avg_llm_total_tokens": 56396.0,
+    "avg_llm_completion_count": 1873.0,
+    "avg_mcp_tool_calls": 6.0,
+    "first_try_success_count": 1,
+    "first_try_success_rate": 1.0,
+    "rescue_triggered_count": 0,
+    "rescue_triggered_rate": 0.0
+  }
+}

@@ -18,14 +18,15 @@ from typing import Any
 
 from crewai import Agent, Crew, Process, Task
 
+from alfred.agents.condenser import make_condenser_callback
 from alfred.agents.definitions import build_agents
-from alfred.models.agent_outputs import (
-	RequirementSpec,
-	AssessmentResult,
-	ArchitectureBlueprint,
-	Changeset,
-	DeploymentResult,
-)
+
+# Pydantic output models (RequirementSpec, AssessmentResult,
+# ArchitectureBlueprint, Changeset, DeploymentResult) live in
+# `alfred.models.agent_outputs`. They're not imported here because
+# CrewAI's `output_json` path fights with Ollama's code-fenced output
+# (see the commented TODO near `task_definitions` below). When we flip
+# Pydantic validation back on via a task callback, re-import them then.
 
 logger = logging.getLogger("alfred.crew")
 
@@ -40,7 +41,7 @@ TASK_DESCRIPTIONS = {
 			"CRITICAL: Before proposing ANY new creation, identify what ALREADY EXISTS in Frappe/ERPNext.\n"
 			"Frappe and its apps (ERPNext, HRMS, Education, etc.) have hundreds of built-in DocTypes,\n"
 			"fields, workflows, and notifications. Your job is to find the MINIMAL change needed.\n\n"
-			"Step 1: Identify which existing DocTypes are involved (e.g., Expense Claim, Leave Application)\n"
+			"Step 1: Identify which existing DocTypes are involved (verify via get_doctype_schema)\n"
 			"Step 2: Check if the requested functionality already exists (built-in notifications, workflows, fields)\n"
 			"Step 3: Determine the SMALLEST customization needed:\n"
 			"  - Need an email alert? → Use the built-in Notification DocType\n"
@@ -121,42 +122,77 @@ TASK_DESCRIPTIONS = {
 	},
 	"generate_changeset": {
 		"description": (
-			"Generate production-ready Frappe document definitions that can be directly inserted via frappe.get_doc(data).insert().\n\n"
+			"OUTPUT FORMAT (STRICT): Your entire Final Answer MUST be a single JSON array.\n"
+			"Start with `[` and end with `]`. Do NOT include any prose, explanation, markdown\n"
+			"headers (###), bullet points, or commentary before or after the JSON. Do NOT\n"
+			"describe the schema - produce the changeset. If you only explain what exists,\n"
+			"the task has FAILED.\n\n"
+			"THINK FIRST, ACT SECOND (reasoning discipline - not in Final Answer):\n"
+			"Before calling any tool, your very first Thought: MUST be a short numbered plan\n"
+			"of the exact documents you will create. Use this format in your Thought block:\n"
+			"  PLAN:\n"
+			"  1. create <doctype> '<name>' - <why, 1 line>\n"
+			"  2. create <doctype> '<name>' - <why, 1 line>\n"
+			"  (one line per item, maximum 6 items, no sub-bullets)\n"
+			"Then, for each item in your plan, call `lookup_doctype(<target>, layer='framework')`\n"
+			"once to get the authoritative field list, and `lookup_pattern(<pattern name>,\n"
+			"kind='name')` if a matching curated template exists. Only after all lookups are\n"
+			"done do you emit the Final Answer.\n"
+			"The plan stays in Thought: - it never leaks into Final Answer. Final Answer is\n"
+			"raw JSON only. The plan is discipline for you, not output for the parser.\n\n"
+			"TASK: Generate production-ready Frappe document definitions that can be directly\n"
+			"inserted via frappe.get_doc(data).insert().\n\n"
 			"Technical design: {design}\n\n"
 			"For each item, produce the COMPLETE document definition with ALL required fields.\n\n"
-			"Examples of complete definitions:\n\n"
-			"Notification document:\n"
+			"SHAPE OF EACH ITEM (placeholders in <angle brackets> - substitute them with values\n"
+			"from the design, NOT from these examples):\n\n"
+			"Notification:\n"
 			'  {{"op": "create", "doctype": "Notification", "data": {{\n'
 			'    "doctype": "Notification",\n'
-			'    "name": "Notify Expense Approver",\n'
-			'    "subject": "New Expense Claim {{{{ doc.name }}}} from {{{{ doc.employee_name }}}}",\n'
-			'    "document_type": "Expense Claim",\n'
-			'    "event": "New",\n'
+			'    "name": "<short descriptive name>",\n'
+			'    "subject": "<subject line, may use {{{{ doc.<field> }}}} Jinja>",\n'
+			'    "document_type": "<exact DocType name from the design>",\n'
+			'    "event": "<New | Save | Submit | Cancel | Value Change | Days Before | Days After>",\n'
 			'    "channel": "Email",\n'
-			'    "recipients": [{{"receiver_by_document_field": "expense_approver"}}],\n'
-			'    "message": "<p>A new expense claim {{{{ doc.name }}}} has been submitted.</p>",\n'
+			'    "recipients": [{{"receiver_by_document_field": "<link field holding the user>"}}],\n'
+			'    "message": "<HTML/Jinja body>",\n'
 			'    "enabled": 1\n'
 			"  }}}}\n\n"
-			"Server Script document:\n"
+			"Server Script:\n"
 			'  {{"op": "create", "doctype": "Server Script", "data": {{\n'
 			'    "doctype": "Server Script",\n'
-			'    "name": "Validate Expense Claim",\n'
+			'    "name": "<short descriptive name>",\n'
 			'    "script_type": "DocType Event",\n'
-			'    "reference_doctype": "Expense Claim",\n'
-			'    "doctype_event": "Before Save",\n'
-			'    "script": "if not doc.expense_approver:\\n    frappe.throw(\\"Expense Approver is required\\")"\n'
+			'    "reference_doctype": "<exact DocType name>",\n'
+			'    "doctype_event": "<Before Insert | After Insert | Before Save | After Save | ...>",\n'
+			'    "script": "<python code that uses only fields verified via get_doctype_schema>"\n'
+			"  }}}}\n\n"
+			"Custom Field:\n"
+			'  {{"op": "create", "doctype": "Custom Field", "data": {{\n'
+			'    "doctype": "Custom Field",\n'
+			'    "dt": "<target DocType>",\n'
+			'    "fieldname": "<snake_case>",\n'
+			'    "label": "<Human Label>",\n'
+			'    "fieldtype": "<Data | Link | Select | Int | ...>"\n'
 			"  }}}}\n\n"
 			"CRITICAL RULES:\n"
 			"- Every 'data' object MUST include 'doctype' matching the outer doctype\n"
 			"- Include ALL mandatory fields for the document type\n"
-			"- For Notifications: subject, document_type, event, channel, recipients, message are required\n"
-			"- For Server Scripts: script_type, reference_doctype, doctype_event, script are required\n"
-			"- For Custom Fields: dt (target doctype), fieldname, fieldtype, label are required\n"
+			"- Mandatory field lists come from `lookup_doctype(name, layer='framework')` - verify\n"
+			"  against the live framework schema, do NOT recall from memory\n"
+			"- Use `lookup_doctype` to verify field names against the live site before writing\n"
+			"  the changeset, but DO NOT narrate what you found - use it internally\n"
+			"- Use `lookup_pattern` to retrieve canonical templates for common customization\n"
+			"  idioms (approval notification, validation script, audit log, etc.) - adapt the\n"
+			"  template rather than reinventing the pattern from scratch. Pattern templates\n"
+			"  carry their own event-selection and recipient rules; follow them.\n"
+			"- STAY IN THE USER'S DOMAIN: use the DocType names and field names from the design.\n"
+			"  Never substitute a different DocType even if it would be easier to describe.\n\n"
+			"FINAL ANSWER FORMAT: Raw JSON array only. No backticks, no code fences, no prose.\n"
+			'Start with `[{{` and end with `}}]`.'
 		),
 		"expected_output": (
-			"A changeset as a JSON array:\n"
-			'[{"op": "create", "doctype": "Notification", "data": {...COMPLETE document with ALL fields...}}]\n'
-			"Each entry must be a complete, valid Frappe document definition that can be inserted directly."
+			'[{"op": "create", "doctype": "<TYPE>", "data": {"doctype": "<TYPE>", "name": "<NAME>", ...all mandatory fields for that TYPE...}}]'
 		),
 	},
 	"validate_changeset": {
@@ -295,32 +331,179 @@ async def load_crew_state(store, site_id: str, conversation_id: str) -> CrewStat
 # existing changeset extraction and phase_map lookup work without modification.
 
 LITE_TASK_DESCRIPTION = (
-	"Complete the entire Frappe customization in one pass: understand the request, "
+	"OUTPUT FORMAT (STRICT): Your entire Final Answer MUST be a single JSON array.\n"
+	"Start with `[` and end with `]`. Do NOT include any prose, explanation, markdown\n"
+	"headers, bullet points, or commentary before or after the JSON. Do NOT describe\n"
+	"what a DocType contains - produce the changeset. If you only explain the schema,\n"
+	"the task has FAILED.\n\n"
+	"THINK FIRST, ACT SECOND (reasoning discipline - not in Final Answer):\n"
+	"Your very first Thought: MUST be a short numbered plan of the exact documents\n"
+	"you will create. Use this format in your Thought block:\n"
+	"  PLAN:\n"
+	"  1. create <doctype> '<name>' - <why, 1 line>\n"
+	"  2. create <doctype> '<name>' - <why, 1 line>\n"
+	"  (maximum 6 items, no sub-bullets)\n"
+	"Only after writing the plan do you start calling tools. The plan stays in Thought:\n"
+	"- Final Answer is raw JSON only, no plan text.\n\n"
+	"TASK: Complete the entire Frappe customization in one pass: understand the request, "
 	"verify DocType schemas against the LIVE site, design the minimal change, and "
 	"generate a deployable changeset.\n\n"
 	"User request: {prompt}\n"
 	"User context: {user_context}\n\n"
 	"MANDATORY STEPS (in order):\n"
-	"1. Call get_doctype_schema on EVERY DocType you reference to get the real field names.\n"
-	"2. Call check_permission for the operations you plan to perform.\n"
-	"3. Call get_existing_customizations to avoid duplicating already-installed items.\n"
-	"4. Apply the minimal change principle:\n"
-	"   - Email alert? → Notification DocType\n"
-	"   - New field? → Custom Field\n"
-	"   - Custom logic? → Server Script (with permission check)\n"
-	"   - New entity? → Only THEN create a new DocType\n"
-	"5. Produce a JSON array of complete document definitions.\n\n"
+	"1. Write PLAN in your first Thought (see above).\n"
+	"2. Call lookup_doctype on EVERY DocType your plan references to get real field names.\n"
+	"   Use the result internally - do NOT narrate it in your Final Answer.\n"
+	"3. Call lookup_pattern for any item that matches a curated idiom (approval_notification,\n"
+	"   validation_server_script, audit_log_server_script, etc.).\n"
+	"4. Call check_permission for the operations you plan to perform.\n"
+	"5. Call get_existing_customizations to avoid duplicating already-installed items.\n"
+	"6. Apply the minimal change principle:\n"
+	"   - Email alert? -> Notification DocType\n"
+	"   - New field? -> Custom Field\n"
+	"   - Custom logic? -> Server Script (with permission check)\n"
+	"   - New entity? -> Only THEN create a new DocType\n"
+	"7. Output a JSON array of complete document definitions - raw JSON, nothing else.\n\n"
 	"Every data object must be directly deployable via frappe.get_doc(data).insert(). "
 	"Downstream dry-run validation will reject any item with missing mandatory fields, "
-	"so be thorough in this single pass - there is no Tester agent to catch mistakes."
+	"so be thorough in this single pass - there is no Tester agent to catch mistakes.\n\n"
+	"FINAL ANSWER FORMAT: Raw JSON array only. No backticks, no code fences, no prose.\n"
+	"Start with `[{{` and end with `}}]`."
 )
 
 LITE_TASK_EXPECTED_OUTPUT = (
-	"A JSON array of complete Frappe document definitions:\n"
-	'[{"op": "create", "doctype": "...", "data": {...COMPLETE document with ALL fields...}}]\n'
-	"Every data object must include 'doctype' matching the outer doctype plus all "
-	"mandatory fields for that document type."
+	'[{"op": "create", "doctype": "Notification", "data": {"doctype": "Notification", "name": "...", "subject": "...", "document_type": "...", "event": "...", "channel": "...", "recipients": [...], "message": "..."}}]'
 )
+
+
+# ── Insights Pipeline (single-agent, read-only, markdown output) ─
+#
+# Phase B of the three-mode chat feature. One agent with read-only MCP tools
+# answers questions about the user's current Frappe site. Never produces a
+# changeset, never writes to the DB.
+#
+# Task is deliberately named "generate_insights_reply" so the pipeline can
+# route output to an `insights_reply` message type rather than the dev-mode
+# `changeset` message.
+
+INSIGHTS_TASK_DESCRIPTION = (
+	"You are answering a user's question about their current Frappe/ERPNext site.\n"
+	"This is READ-ONLY Insights mode. You must NOT produce a changeset, JSON,\n"
+	"code, or any build artefact. You produce a concise, factual answer in\n"
+	"plain markdown that the user can read in a chat UI.\n\n"
+	"User question: {prompt}\n"
+	"User context: {user_context}\n\n"
+	"HOW TO ANSWER:\n"
+	"1. Read the question carefully. Identify exactly what site information the\n"
+	"   user needs.\n"
+	"2. Use the read-only MCP tools available to you to gather the facts. You\n"
+	"   have access to: lookup_doctype, lookup_pattern, get_site_info,\n"
+	"   get_doctypes, get_existing_customizations, get_user_context,\n"
+	"   check_permission, has_active_workflow, check_has_records,\n"
+	"   validate_name_available. Prefer `lookup_doctype` with `layer=\"site\"`\n"
+	"   or `layer=\"both\"` over `get_doctype_schema`.\n"
+	"3. Budget your tool calls - you have a hard cap of 5 calls per turn. If you\n"
+	"   cannot get the full answer in 5 calls, say what you found and what's\n"
+	"   missing.\n"
+	"4. Ground every factual claim in a tool response. If you cannot verify a\n"
+	"   fact with a tool, say so explicitly - never guess about the user's site.\n"
+	"5. If the user's question cannot be answered with read-only tools (e.g.\n"
+	"   they are asking you to build something), respond with a short note\n"
+	"   suggesting they rephrase as a build request.\n\n"
+	"OUTPUT FORMAT (STRICT):\n"
+	"- Plain markdown, 2-8 sentences for most questions.\n"
+	"- Use markdown lists when enumerating (e.g. 'You have these workflows: ...').\n"
+	"- Do NOT output JSON, code fences around the whole answer, or any build\n"
+	"  artefact.\n"
+	"- Do NOT narrate your tool calls or internal reasoning - just the answer.\n"
+	"- Do NOT end with 'Would you like me to...' unless you have a concrete\n"
+	"  build suggestion that the user seemed to be leading toward.\n"
+)
+
+INSIGHTS_TASK_EXPECTED_OUTPUT = (
+	"A short markdown answer (2-8 sentences) that directly answers the user's "
+	"question using facts gathered from read-only MCP tools. No JSON, no code, "
+	"no changeset."
+)
+
+
+def build_insights_crew(
+	user_prompt: str,
+	user_context: dict | None = None,
+	site_config: dict | None = None,
+	insights_tools: list | None = None,
+) -> tuple[Crew, CrewState]:
+	"""Build the single-agent Insights crew.
+
+	Same shape as `build_lite_crew` - returns (crew, state) - but the agent
+	has a different role, a markdown-output task (not JSON), and is restricted
+	to read-only MCP tools. The task name is `generate_insights_reply` so the
+	pipeline's post-processing can route the output to an `insights_reply`
+	message type.
+
+	Args:
+		user_prompt: The user's raw question.
+		user_context: User roles/permissions (threaded into the task description).
+		site_config: LLM configuration from Alfred Settings.
+		insights_tools: CrewAI @tool list from `build_mcp_tools(...)["insights"]`.
+	"""
+	from alfred.agents import backstories
+	from alfred.agents.definitions import _resolve_llm
+
+	user_context = user_context or {}
+	site_config = site_config or {}
+	state = CrewState()
+
+	llm = _resolve_llm(site_config)
+
+	# Role deliberately distinct from "Frappe Developer" so the UI can badge
+	# this as Insights mode. The backstory is site-information-focused.
+	backstory = getattr(backstories, "INSIGHTS_AGENT", None) or (
+		"You are a Frappe/ERPNext site information specialist. Users ask you "
+		"questions about their current site - what DocTypes exist, which "
+		"workflows are active, what permissions they have, what customizations "
+		"are installed. You answer with facts gathered from read-only MCP "
+		"tools, never guessing, never building anything. You are concise and "
+		"helpful, and if a question cannot be answered from site state alone "
+		"you say so directly."
+	)
+
+	insights_agent = Agent(
+		role="Frappe Site Information Specialist",
+		goal="Answer the user's question about their Frappe site using read-only site data",
+		backstory=backstory,
+		tools=insights_tools or [],
+		llm=llm,
+		allow_delegation=False,
+		max_iter=4,
+		verbose=True,
+	)
+
+	description = INSIGHTS_TASK_DESCRIPTION.format(
+		prompt=user_prompt,
+		user_context=json.dumps(user_context, indent=2),
+	)
+
+	task = Task(
+		description=description,
+		expected_output=INSIGHTS_TASK_EXPECTED_OUTPUT,
+		agent=insights_agent,
+		human_input=False,
+	)
+
+	crew = Crew(
+		agents=[insights_agent],
+		tasks=[task],
+		process=Process.sequential,
+		memory=False,
+		verbose=True,
+		max_rpm=site_config.get("max_tasks_per_user_per_hour", 20),
+	)
+	# Named distinctly so the pipeline can tell this output apart from a
+	# dev-mode changeset run.
+	crew._alfred_task_names = ["generate_insights_reply"]
+
+	return crew, state
 
 
 def build_lite_crew(
@@ -490,6 +673,14 @@ def build_alfred_crew(
 			"context": context_tasks[-2:] if context_tasks else [],
 		}
 
+		# Phase 2: condense upstream task outputs in place so the next
+		# task's context aggregation reads a compact form instead of
+		# the full verbose output. Returns None for tasks we must not
+		# condense (generate_changeset is the final artifact).
+		condenser = make_condenser_callback(task_name)
+		if condenser is not None:
+			task_kwargs["callback"] = condenser
+
 		task = Task(**task_kwargs)
 		tasks.append(task)
 		task_map[task_name] = task
@@ -593,14 +784,23 @@ async def run_crew(
 			"gather_requirements", "assess_feasibility", "design_solution",
 			"generate_changeset", "validate_changeset", "deploy_changeset",
 		]
+		# When resuming a partial run, crew.tasks only contains the tasks that
+		# still need to execute - their indices don't line up with task_names.
+		# `_alfred_task_names` is attached by build_alfred_crew and lists the
+		# actual task names in execution order, so we prefer it when present.
+		active_task_names = getattr(crew, "_alfred_task_names", task_names)
+
 		changeset_output = None
 		for i, task in enumerate(crew.tasks):
 			if i < len(task_names) and task.output:
 				raw = task.output.raw if hasattr(task.output, "raw") else str(task.output)
 				state.mark_task_complete(task_names[i], raw)
-				# The developer's output (generate_changeset) has the full document definitions.
-				# Use it as the changeset instead of the deployer's plan summary.
-				actual_name = getattr(crew, "_alfred_task_names", task_names)[i] if i < len(getattr(crew, "_alfred_task_names", [])) else task_names[i]
+				# The developer's output (generate_changeset) has the full document
+				# definitions. Use it as the changeset instead of the deployer's
+				# plan summary.
+				actual_name = (
+					active_task_names[i] if i < len(active_task_names) else task_names[i]
+				)
 				if actual_name == "generate_changeset":
 					changeset_output = raw
 

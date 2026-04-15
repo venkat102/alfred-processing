@@ -87,6 +87,13 @@ class TestIntentClassifier:
 	def test_add_custom_field(self):
 		assert classify_intent("Add a custom field called 'priority' to ToDo") == "add_custom_field"
 
+	def test_greetings_classified_as_general_question(self):
+		for g in ["hi", "Hello", "hey!", "Thanks.", "thank you", "ok", "bye"]:
+			assert classify_intent(g) == "general_question", f"failed on {g!r}"
+
+	def test_greeting_prefix_classified_as_general_question(self):
+		assert classify_intent("hi there, can you help?") == "general_question"
+
 
 class TestCheckPrompt:
 	def test_safe_prompt_allowed(self):
@@ -101,11 +108,24 @@ class TestCheckPrompt:
 		assert result["needs_review"] is False
 		assert "blocked" in result["rejection_reason"].lower()
 
-	def test_unknown_intent_flagged(self):
+	def test_unknown_intent_allowed_with_flag(self):
+		"""Unknown intent no longer blocks - the orchestrator handles routing.
+
+		Historical note: pre-three-mode-chat this returned allowed=False. That
+		rejected greetings like "hi" and was the bug that prompted the mode
+		feature. The sanitizer now only hard-blocks real injection patterns.
+		"""
 		result = check_prompt("xyzzy plugh nothing happens")
-		assert result["allowed"] is False
+		assert result["allowed"] is True
 		assert result["needs_review"] is True
 		assert result["intent"] == "unknown"
+		assert result["rejection_reason"] is None
+
+	def test_greeting_allowed(self):
+		result = check_prompt("hi")
+		assert result["allowed"] is True
+		assert result["intent"] == "general_question"
+		assert result["needs_review"] is False
 
 
 # ── Error Handling (6.3) ─────────────────────────────────────────

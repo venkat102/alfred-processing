@@ -97,7 +97,7 @@ class TestLiteTaskShape:
 
 	def test_task_description_mandates_mcp_verification(self):
 		"""Without this, the lite agent hallucinates field names."""
-		assert "get_doctype_schema" in LITE_TASK_DESCRIPTION
+		assert "lookup_doctype" in LITE_TASK_DESCRIPTION
 
 
 class TestLiteCrewWithTools:

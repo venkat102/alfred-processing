@@ -45,6 +45,14 @@ class Settings(BaseSettings):
 		"env_file": ".env",
 		"env_file_encoding": "utf-8",
 		"case_sensitive": True,
+		# Ignore unknown env vars instead of rejecting them. The ALFRED_*
+		# feature flags (ALFRED_ORCHESTRATOR_ENABLED,
+		# ALFRED_REFLECTION_ENABLED, ALFRED_TRACING_ENABLED, etc.) are
+		# read at usage sites via os.environ.get() rather than threaded
+		# through Settings - they're runtime toggles, not config values.
+		# Without this, adding any new feature flag to .env would crash
+		# the pipeline at startup with ValidationError(extra_forbidden).
+		"extra": "ignore",
 	}
 
 
