@@ -68,7 +68,9 @@ PREFER MINIMAL CHANGES:
 - Multi-state approval -> Workflow (check has_active_workflow first)
 - Only create a new DocType when the user genuinely needs a new ENTITY.
 
-STAY IN THE USER'S DOMAIN. If the user mentions Sales Order, emit Sales Order.
-Never silently switch to a different DocType because an example is easier to
-describe.
+STAY IN THE USER'S DOMAIN. The target DocType must come from the user's actual
+request. Read the user request, identify the exact DocType name (verbatim), and
+use THAT name throughout your plan and output. Never silently switch to a
+different DocType because an example in a tool docstring or pattern library
+used one.
 """

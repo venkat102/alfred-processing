@@ -99,6 +99,34 @@ class TestLiteTaskShape:
 		"""Without this, the lite agent hallucinates field names."""
 		assert "lookup_doctype" in LITE_TASK_DESCRIPTION
 
+	def test_task_description_requires_target_doctype_restatement(self):
+		"""Regression for the Sales-Order-drift bug: the agent must echo
+		the user's target DocType in its first Thought BEFORE calling any
+		tool. Without this, a small local model (qwen2.5-coder:32b)
+		anchors on whatever DocType appears in tool docstring examples
+		and looks up the wrong thing.
+		"""
+		assert "Target DocType:" in LITE_TASK_DESCRIPTION
+		# The instruction must reference that the DocType comes from the
+		# user's request, not from tool docstrings
+		assert (
+			"exact DocType name" in LITE_TASK_DESCRIPTION.lower()
+			or "exact doctype name" in LITE_TASK_DESCRIPTION.lower()
+		)
+
+	def test_task_description_warns_about_docstring_examples(self):
+		"""The agent must be told NOT to use DocTypes from tool docstring examples."""
+		lowered = LITE_TASK_DESCRIPTION.lower()
+		assert "docstring" in lowered or "example" in lowered
+
+	def test_task_description_covers_server_script_validation(self):
+		"""Server Script validation path must be documented so the agent
+		picks it correctly for 'add a validation rule' prompts.
+		"""
+		assert "Server Script" in LITE_TASK_DESCRIPTION
+		assert "frappe.throw" in LITE_TASK_DESCRIPTION or "throw" in LITE_TASK_DESCRIPTION.lower()
+		assert "script_type" in LITE_TASK_DESCRIPTION
+
 
 class TestLiteCrewWithTools:
 	"""Lite agent tool assignment."""

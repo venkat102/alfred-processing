@@ -86,6 +86,72 @@ class TestExtractChanges:
 		assert len(result) == 1
 		assert result[0]["data"]["name"] == "Solo"
 
+	def test_prose_with_stray_example_doc_json_is_rejected(self):
+		"""Drift guard: agent writes documentation prose, then pastes an
+		example 'how to create <doctype>' snippet at the end. The trailing
+		JSON object has `doctype` and `customer` but NO `op`/`operation`
+		and no nested `data` dict - it's a user-facing example, not a
+		changeset item. Must NOT be coerced into a create operation.
+
+		Regression for the Employee-validation prompt that produced a
+		Sales Order documentation dump with this trailing example.
+		"""
+		text = (
+			"### Document Type: Sales Order\n\n"
+			"- **Module**: Selling - part of the Selling module.\n"
+			"- **Is Single**: 0 - multiple instances allowed.\n\n"
+			"### Example Usage\n\n"
+			"To create a new Sales Order in ERPNext, you would use:\n\n"
+			'```json\n'
+			'{\n'
+			'  "doctype": "Sales Order",\n'
+			'  "customer": "CUST-001",\n'
+			'  "items": [{"item_code": "ITEM-001", "qty": 10, "rate": 50.00}],\n'
+			'  "taxes_and_charges": "TAX-001"\n'
+			'}\n'
+			'```\n\n'
+			"This JSON would be sent to the API to create a new Sales Order."
+		)
+		result = _extract_changes(text)
+		# Must return empty so the rescue path can regenerate from the
+		# original user prompt (which was about Employee validation, not
+		# Sales Order creation)
+		assert result == []
+
+	def test_bare_dict_without_op_or_doctype_is_rejected(self):
+		"""Another drift variant: the agent outputs a dict with field
+		values but no op/doctype metadata. Not a changeset item.
+		"""
+		text = '{"customer": "CUST-001", "amount": 100.0, "items": []}'
+		result = _extract_changes(text)
+		assert result == []
+
+	def test_bare_dict_with_doctype_but_no_data_is_rejected(self):
+		"""A dict with just a top-level `doctype` but no `op` and no `data`
+		sub-dict is a description, not a changeset item.
+		"""
+		text = '{"doctype": "Sales Order", "description": "Records a sale"}'
+		result = _extract_changes(text)
+		assert result == []
+
+	def test_bare_dict_with_op_and_doctype_passes(self):
+		"""Sanity: a proper single-item dict with op/doctype/data still parses."""
+		text = '{"op": "create", "doctype": "Notification", "data": {"name": "N1"}}'
+		result = _extract_changes(text)
+		assert len(result) == 1
+		assert result[0]["doctype"] == "Notification"
+
+	def test_bare_dict_with_doctype_and_data_passes(self):
+		"""Sanity: a dict with doctype + nested data (but no explicit op)
+		is treated as an implicit create - same behavior as before the
+		drift guard.
+		"""
+		text = '{"doctype": "Notification", "data": {"name": "N1", "subject": "Hi"}}'
+		result = _extract_changes(text)
+		assert len(result) == 1
+		assert result[0]["doctype"] == "Notification"
+		assert result[0]["data"]["name"] == "N1"
+
 	def test_python_dict_repr_with_single_quotes(self):
 		"""LLMs occasionally emit Python dict repr (single quotes, True/None)
 		instead of strict JSON. ast.literal_eval should rescue it."""

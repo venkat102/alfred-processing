@@ -230,15 +230,70 @@ def _extract_changes(result_text) -> list[dict]:
 
 	# Extract the items list from various agent output formats
 	items = []
+
+	def _looks_like_changeset_item(obj: object) -> bool:
+		"""A dict that actually looks like a changeset item, not a
+		line-item from a Sales Order / Quotation / Invoice example.
+
+		Accepts:
+		  - Proper changeset items with `op` or `operation`
+		  - Requirement Analyst's `customizations_needed` entries with
+		    `type` (which the normalizer remaps to `doctype`)
+		  - Dicts with top-level `doctype` + nested `data` dict (some
+		    agents omit `op` and imply create)
+
+		Rejects line-item shapes like `{"item_code": "X", "qty": 10}`
+		that have none of the above markers.
+		"""
+		if not isinstance(obj, dict):
+			return False
+		return (
+			"op" in obj
+			or "operation" in obj
+			or "type" in obj
+			or ("doctype" in obj and isinstance(obj.get("data"), dict))
+		)
+
 	if isinstance(parsed, list):
 		items = parsed
 	elif isinstance(parsed, dict):
+		# Try the well-known list keys that CrewAI agents use for their
+		# changeset output (Changeset.items pydantic model, plus older
+		# orchestrator output shapes).
 		for key in ("plan", "items", "customizations_needed", "execution_log", "changes"):
 			if key in parsed and isinstance(parsed[key], list):
-				items = parsed[key]
-				break
+				candidate_list = parsed[key]
+				# Sanity check: the extracted list must contain
+				# changeset-shaped items. This prevents false positives
+				# from documents that happen to have an `items` field of
+				# LINE items (e.g. `{"doctype": "Sales Order", "items":
+				# [{"item_code": "X", "qty": 10}]}` — the `items` list is
+				# line items, NOT changeset operations).
+				if candidate_list and all(
+					_looks_like_changeset_item(it) for it in candidate_list
+				):
+					items = candidate_list
+					break
+
 		if not items:
-			items = [parsed]
+			# Drift guard: a bare dict is only a valid single-item changeset
+			# when it LOOKS like a changeset item. Otherwise it's likely
+			# stray example JSON that leaked into the agent's prose Final
+			# Answer (classic local-model drift: the agent explains what a
+			# DocType contains and pastes a `{"doctype": "Sales Order",
+			# "customer": "..."}` at the end). Coercing that into a create
+			# op would silently deploy the wrong doctype. Refuse to extract
+			# and let the rescue path regenerate from the original prompt.
+			if _looks_like_changeset_item(parsed):
+				items = [parsed]
+			else:
+				logger.warning(
+					"_extract_changes: parsed a bare dict that does not look "
+					"like a changeset item (keys=%s). Treating as drift and "
+					"returning empty so the rescue path can run.",
+					sorted(parsed.keys())[:10],
+				)
+				return []
 
 	# Normalize each item into { op, doctype, data: { name, ... } }
 	normalized = []
@@ -750,8 +805,10 @@ async def _clarify_requirements(
 			"- Recipient target: which user or role should receive a notification? When "
 			"the request says 'the manager' or 'the approver', which specific Link field "
 			"on the target DocType holds that user?\n"
-			"- Scope: which DocType(s) does the customization apply to? 'orders' could "
-			"mean Sales Order, Purchase Order, or both.\n"
+			"- Scope: which DocType(s) does the customization apply to? When the "
+			"user uses a category word ('orders', 'invoices', 'requests'), it may "
+			"map to more than one Frappe DocType; flag the ambiguity so the user "
+			"can name the exact target DocType.\n"
 			"- Permissions: 'only X can do Y' - which exact role or permission?\n\n"
 			"A NON-BLOCKING detail (do NOT ask about these):\n"
 			"- Field labels / naming conventions (agent can decide)\n"
@@ -897,12 +954,21 @@ async def _rescue_regenerate_changeset(
 			"- Each item: {\"op\": \"create\", \"doctype\": \"<type>\", \"data\": {...complete document...}}\n"
 			"- Every `data` object MUST include \"doctype\" matching the outer doctype plus all "
 			"mandatory fields for that document type.\n\n"
-			"STAY IN THE USER'S DOMAIN: use the DocType names and field names from the user's "
-			"request. Do NOT substitute a different DocType because an example is easier to "
-			"describe. If the user mentions Sales Order, emit Sales Order.\n\n"
+			"STAY IN THE USER'S DOMAIN - CRITICAL:\n"
+			"- Use the EXACT DocType name the user named in their request. Read the USER REQUEST "
+			"below, identify the target DocType, and use THAT name in your output.\n"
+			"- Do NOT substitute a different DocType because a previous agent output drifted, "
+			"because an example felt easier, or because the failed output shown below mentioned "
+			"one. The FAILED OUTPUT is noise, not signal.\n"
+			"- If the user said 'Employee', emit items targeting Employee. If the user said "
+			"'Leave Application', emit items targeting Leave Application. Do NOT change targets.\n"
+			"- Read the user request TWICE before deciding on the target DocType.\n\n"
 			"FRAPPE CUSTOMIZATION BASICS:\n"
 			"- Email alert -> use Notification doctype (not Server Script)\n"
 			"- New field on existing doctype -> Custom Field (not a new DocType)\n"
+			"- Validation rule / custom logic on save -> Server Script (doctype_event=before_save "
+			"or before_insert or validate, script_type=DocType Event). The script uses `doc.<field>` "
+			"and raises `frappe.throw('message')` to reject.\n"
 			"- Required fields for Notification: name, subject, document_type, event, channel, "
 			"recipients, message, enabled\n"
 			"- Required fields for Server Script: name, script_type, reference_doctype, "
@@ -914,7 +980,7 @@ async def _rescue_regenerate_changeset(
 			"details like 'which event should this notification fire on' or 'which recipient "
 			"field should I use', follow the request literally - do not invent rules.\n\n"
 			"SHAPE OF EACH ITEM (placeholders in <angle brackets>):\n"
-			'[{"op":"create","doctype":"Notification","data":{"doctype":"Notification","name":"<descriptive name>","subject":"<subject with {{doc.<field>}} Jinja>","document_type":"<target DocType from user request>","event":"<New|Save|Submit|...>","channel":"Email","recipients":[{"receiver_by_document_field":"<link field holding the user>"}],"message":"<HTML body>","enabled":1}}]\n\n'
+			'[{"op":"create","doctype":"<DocType kind from USER REQUEST>","data":{"doctype":"<DocType kind>","name":"<descriptive name>","...other mandatory fields for this DocType kind..."}}]\n\n'
 			"If the request genuinely cannot be satisfied with any Frappe customization, "
 			"output `[]`."
 		)

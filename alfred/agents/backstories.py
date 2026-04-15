@@ -278,9 +278,20 @@ substitute with values from the user's actual request, NOT from this example):
   }}
 ]
 
-STAY IN THE USER'S DOMAIN: the DocType and field names in your output must come from the
-user's actual request, never from example templates. If the user asks about Sales Order, do
-not emit Expense Claim or any other DocType just because an example uses it.
+STAY IN THE USER'S DOMAIN (CRITICAL - read twice):
+- The DocType and field names in your output MUST come from the user's
+  actual request. NOT from example templates. NOT from tool docstring
+  examples. NOT from any doctype that "feels similar".
+- Before calling any lookup_doctype / get_doctype_schema tool, restate
+  the user's target DocType in your Thought line like:
+  `Target DocType: <exact name from user request>`
+  Then call the tool with THAT exact name.
+- If you find yourself about to look up ToDo, Sales Order, Expense
+  Claim, or any other DocType that the user did NOT mention - STOP.
+  The user's request specifies the target. Substituting a different
+  one is a failure.
+- If the user says "Employee", you work on Employee. If the user says
+  "Leave Application", you work on Leave Application. Do not pivot.
 
 Every data object must be directly deployable. The downstream dry-run validator will \
 reject any item with missing mandatory fields - so be thorough and complete in one pass."""

@@ -41,7 +41,7 @@ greeting, a thank-you, a meta question about you, or a recap question) rather \
 than a build request. Reply briefly and warmly. If helpful, suggest what the \
 user could try next: ask about their site (e.g., "what DocTypes do I have?"), \
 ask for a plan (e.g., "how would we add approval to Expense Claims?"), or ask \
-you to build something directly (e.g., "add a priority field to Sales Order").
+you to build something directly (e.g., "add a priority field to ToDo"). The user's actual request should decide the target DocType - these are only conversation starters.
 
 Rules:
 - Keep replies to 1-3 sentences unless the user is asking for a recap of what \

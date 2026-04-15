@@ -228,8 +228,9 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 	def get_doctypes(module: str = "") -> str:
 		"""List DocType names and modules, optionally filtered by module.
 
-		Example: get_doctypes(module="Selling")
-		  -> {"doctypes": [{"name": "Sales Order", "module": "Selling"}, ...], "count": 12}
+		Substitute the module from YOUR plan, not from this docstring.
+		Example call: get_doctypes(module="Core")
+		  -> {"doctypes": [{"name": "ToDo", "module": "Desk"}, {"name": "Note", "module": "Desk"}, ...], "count": N}
 
 		Prefer `lookup_doctype` for detail lookups. Use this only to browse what exists in a module.
 		"""
@@ -242,8 +243,12 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 
 		Kept for backwards compatibility. New code should call `lookup_doctype(name, layer="site")` or `layer="both"` for a merged view.
 
-		Example: get_doctype_schema("Sales Order")
-		  -> {"doctype": "Sales Order", "fields": [{"fieldname": "customer", "fieldtype": "Link", "options": "Customer", "reqd": 1}, ...]}
+		Substitute the DocType from YOUR plan (the one the user actually
+		asked about), not from this docstring. The example uses "ToDo"
+		because it's a generic built-in doctype - it is NOT the doctype
+		you should pass.
+		Example call: get_doctype_schema("ToDo")
+		  -> {"doctype": "ToDo", "fields": [{"fieldname": "owner", "fieldtype": "Link", "options": "User", "reqd": 1}, ...]}
 		"""
 		return _mcp_call(mcp_client, "get_doctype_schema", {"doctype": doctype})
 
@@ -273,7 +278,8 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 	def check_permission(doctype: str, action: str = "read") -> str:
 		"""Check if the current user has a specific permission (read/write/create/delete) on a DocType.
 
-		Example: check_permission("Sales Order", "create")
+		Substitute the DocType from YOUR plan, not from this docstring.
+		Example call: check_permission("ToDo", "create")
 		  -> {"permitted": true, "reason": "System Manager role has create permission"}
 
 		Always use this tool - never guess permissions. Use BEFORE proposing any DocType modification.
@@ -306,8 +312,9 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 	def check_has_records(doctype: str) -> str:
 		"""Check if a DocType has existing data records.
 
-		Example: check_has_records("Sales Order")
-		  -> {"has_records": true, "count": 847}
+		Substitute the DocType from YOUR plan, not from this docstring.
+		Example call: check_has_records("ToDo")
+		  -> {"has_records": true, "count": 42}
 
 		Use BEFORE rollback or deletion to avoid destroying user data. The Deployer calls this before removing a DocType during rollback.
 		"""
@@ -338,8 +345,13 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		  - "site": live site schema (includes custom fields installed on this site)
 		  - "both" (default): merged view with both framework and site layers plus a `custom_fields` list
 
-		Example: lookup_doctype("Sales Order", layer="framework")
-		  -> {"name": "Sales Order", "is_submittable": 1, "fields": [{"fieldname": "customer", ...}, ...]}
+		CRITICAL: Pass the EXACT DocType name from the user's request.
+		Do NOT substitute a different DocType just because this docstring
+		uses one in its example. If the user's request mentions "Employee",
+		you call lookup_doctype("Employee"), not lookup_doctype("ToDo").
+
+		Example call shape: lookup_doctype("<DocType from user's request>", layer="framework")
+		  -> {"name": "<DocType>", "fields": [{"fieldname": "...", "fieldtype": "...", ...}, ...]}
 
 		Use BEFORE designing any change that touches an existing DocType so you know the real field names.
 		Prefer this over get_doctype_schema - lookup_doctype covers both framework facts and site customizations in one call.
