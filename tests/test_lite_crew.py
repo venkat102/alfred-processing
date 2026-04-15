@@ -127,6 +127,29 @@ class TestLiteTaskShape:
 		assert "frappe.throw" in LITE_TASK_DESCRIPTION or "throw" in LITE_TASK_DESCRIPTION.lower()
 		assert "script_type" in LITE_TASK_DESCRIPTION
 
+	def test_task_description_forbids_notification_for_validation(self):
+		"""Regression: Employee age validation prompt got routed to
+		post_approval_notification pre-fix. The decision tree must
+		explicitly say that a validation rule is NEVER a Notification
+		and NEVER a new DocType - those were the two wrong choices the
+		agent made before.
+		"""
+		lowered = LITE_TASK_DESCRIPTION.lower()
+		# Must explicitly rule out Notification as a validation target
+		assert "never a notification" in lowered
+		# Must explicitly rule out a new DocType for validation
+		assert "never a new doctype" in lowered
+
+	def test_task_description_lists_validation_verbs(self):
+		"""The decision tree must list the user-facing verbs that signal
+		a validation rule (validate, restrict, reject, throw, block,
+		prevent, require) so the agent routes by user wording, not by
+		guessing.
+		"""
+		lowered = LITE_TASK_DESCRIPTION.lower()
+		for verb in ("validate", "restrict", "reject", "throw", "block", "prevent"):
+			assert verb in lowered, f"decision tree should list '{verb}' as a validation signal"
+
 
 class TestLiteCrewWithTools:
 	"""Lite agent tool assignment."""

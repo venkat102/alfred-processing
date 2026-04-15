@@ -34,11 +34,24 @@ CRITICAL RULES - follow these strictly:
    actually asked for.
 
 2. PREFER MINIMAL CHANGES.
-   - Email / alert requirement -> built-in Notification DocType (NOT a Server Script)
+   - **Validation rule / business rule / custom constraint (ANY request that says
+     "validate", "restrict", "reject", "throw", "block", "prevent", "only allow",
+     "require that ...", "cannot be ... unless", or "must be ..." on an EXISTING
+     DocType) -> Server Script with script_type='DocType Event', reference_doctype=
+     the user's target DocType, doctype_event='before_save' or 'before_insert' or
+     'validate', and a body that calls `frappe.throw('<user-facing message>')` to
+     reject the save. This is the single most important mapping - do NOT create
+     a new DocType for a validation rule, and do NOT use a Notification for a
+     validation rule. The user's ACTUAL wording matters: if they say "throw a
+     message", that is a `frappe.throw` call, not an email.**
+   - Email / alert / notification when a document changes -> built-in Notification
+     DocType (NOT a Server Script, NOT a new DocType)
    - New field on an existing DocType -> Custom Field (NOT a new DocType)
    - Multi-state approval -> Workflow (check if one already exists on that DocType first)
    - Pre-built report requirement -> check if a standard report already covers it
-   - Only create a new DocType when the user genuinely needs a new entity that doesn't exist
+   - Only create a new DocType when the user genuinely needs a new entity that
+     doesn't exist. "Add a validation to Employee" is NOT a new entity - it is a
+     Server Script on Employee.
 
 3. STAY IN THE USER'S DOMAIN.
    Do NOT invent examples, DocTypes, or fields that the user did not mention. If the user \
