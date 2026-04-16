@@ -683,8 +683,39 @@ async def _dry_run_with_retry(
 
 	# Self-heal: re-run the Developer agent once with the validation issues injected
 	state.dry_run_retries = 1
-	issues_json = json.dumps(dry_run.get("issues", []), indent=2)
+	issues_list = dry_run.get("issues", [])
+	issues_json = json.dumps(issues_list, indent=2)
 	changes_json = json.dumps(changes, indent=2)
+
+	# Detect the "Server Script used `import`" flavour of failure and surface
+	# a specific banner so the retry doesn't treat it as a generic issue.
+	# The failure is deterministic (RestrictedPython's Import_ guard) and the
+	# fix is mechanical (drop the import line, use pre-bound names), so a
+	# targeted reminder lets the model converge in one shot.
+	import_violation = any(
+		isinstance(issue, dict)
+		and "import" in str(issue.get("issue", "")).lower()
+		and "server script" in str(issue.get("issue", "")).lower()
+		for issue in issues_list
+	)
+	import_banner = ""
+	if import_violation:
+		import_banner = (
+			"\n=== SERVER SCRIPT IMPORT VIOLATION (read this first) ===\n"
+			"Your previous Server Script contains an `import` statement.\n"
+			"Frappe Server Scripts run under RestrictedPython, which bans `import`\n"
+			"at compile time. Remove EVERY import line and use the pre-bound\n"
+			"names directly:\n"
+			"  - `json`      -> json.loads(s), json.dumps(obj)\n"
+			"  - `datetime`  -> datetime.datetime, datetime.date, datetime.timedelta\n"
+			"  - dates       -> frappe.utils.nowdate(), frappe.utils.now_datetime(),\n"
+			"                   frappe.utils.getdate(x), frappe.utils.add_days(d, n),\n"
+			"                   frappe.utils.date_diff(a, b)\n"
+			"  - `requests`  -> frappe.make_get_request(url) / frappe.make_post_request(url, data=...)\n"
+			"  - numbers     -> frappe.utils.flt(x), frappe.utils.cint(x)\n"
+			"The retry MUST NOT contain any `import` anywhere in the Server Script.\n"
+			"=========================================================\n\n"
+		)
 
 	await event_callback("validation", {
 		"agent": "Developer", "status": "dry_run_retry",
@@ -711,6 +742,7 @@ async def _dry_run_with_retry(
 				"include markdown code fences. Do NOT include any prose, commentary, or\n"
 				"duplicate copies. If you have nothing to change, output the input array\n"
 				"unchanged - still as a single clean array.\n\n"
+				f"{import_banner}"
 				"The changeset you produced failed dry-run validation against the live site. "
 				"Fix the issues below and produce a corrected changeset.\n\n"
 				f"Validation issues:\n{issues_json}\n\n"
