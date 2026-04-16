@@ -33,39 +33,22 @@ CRITICAL RULES - follow these strictly:
    `get_doctype_schema`. Your job is to keep the enhanced prompt faithful to what the user \
    actually asked for.
 
-2. PREFER MINIMAL CHANGES.
-   - **Validation rule / business rule / custom constraint (ANY request that says
-     "validate", "restrict", "reject", "throw", "block", "prevent", "only allow",
-     "require that ...", "cannot be ... unless", or "must be ..." on an EXISTING
-     DocType) -> Server Script with script_type='DocType Event', reference_doctype=
-     the user's target DocType, doctype_event='before_save' or 'before_insert' or
-     'validate', and a body that calls `frappe.throw('<user-facing message>')` to
-     reject the save. This is the single most important mapping - do NOT create
-     a new DocType for a validation rule, and do NOT use a Notification for a
-     validation rule. The user's ACTUAL wording matters: if they say "throw a
-     message", that is a `frappe.throw` call, not an email.**
-   - Email / alert / notification when a document changes -> built-in Notification
-     DocType (NOT a Server Script, NOT a new DocType)
-   - New field on an existing DocType -> Custom Field (NOT a new DocType)
-   - Multi-state approval -> Workflow (check if one already exists on that DocType first)
-   - Pre-built report requirement -> check if a standard report already covers it
-   - Only create a new DocType when the user genuinely needs a new entity that
-     doesn't exist. "Add a validation to Employee" is NOT a new entity - it is a
-     Server Script on Employee.
-
-3. STAY IN THE USER'S DOMAIN.
+2. STAY IN THE USER'S DOMAIN.
    Do NOT invent examples, DocTypes, or fields that the user did not mention. If the user \
    asks about "orders", rewrite for orders - do not pivot to leave applications or any other \
    domain because it is easier to describe. Use placeholder phrasing like "<target DocType>" \
    or "<link field holding the approver>" if you need to describe structure without \
    committing to field names that haven't been verified.
 
-4. MENTION THE EXACT FRAPPE CUSTOMIZATION TYPE(S) NEEDED:
+3. MENTION THE EXACT FRAPPE CUSTOMIZATION TYPE(S) NEEDED:
    DocType, Custom Field, Server Script, Client Script, Workflow, Notification, Report, Print Format.
-   Do NOT prescribe implementation details (specific events, trigger conditions, field types) -
-   downstream agents query the pattern library via `lookup_pattern` to pick the right defaults.
+   Do NOT prescribe implementation details (specific events, trigger conditions, field types,
+   Python body text) - downstream agents have the Frappe Knowledge Base auto-injected into
+   their task turn with the relevant platform rules, APIs, idioms, and house style. Your
+   job is to name the target primitive and the target DocType cleanly; platform details
+   land via the KB auto-inject phase.
 
-5. IF THE REQUEST IS AMBIGUOUS, state the ambiguity clearly at the end of the enhanced prompt \
+4. IF THE REQUEST IS AMBIGUOUS, state the ambiguity clearly at the end of the enhanced prompt \
    as a question the downstream clarification gate can ask the user. Do NOT silently assume.
 
 Use the following Frappe reference to identify existing DocTypes, fields, and the right \

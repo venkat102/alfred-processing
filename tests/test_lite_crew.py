@@ -122,10 +122,17 @@ class TestLiteTaskShape:
 	def test_task_description_covers_server_script_validation(self):
 		"""Server Script validation path must be documented so the agent
 		picks it correctly for 'add a validation rule' prompts.
+
+		Post Phase E: the Server Script JSON shape (`script_type`,
+		`doctype_event`, etc.) moved out of the static prompt and into
+		the FKB's `validation_server_script` pattern, auto-injected by
+		the pipeline when the user says "validate". What the static
+		prompt must still contain is the primitive name and the verb
+		that signals validation - which is what the minimal-change
+		reminder preserves.
 		"""
 		assert "Server Script" in LITE_TASK_DESCRIPTION
-		assert "frappe.throw" in LITE_TASK_DESCRIPTION or "throw" in LITE_TASK_DESCRIPTION.lower()
-		assert "script_type" in LITE_TASK_DESCRIPTION
+		assert "throw" in LITE_TASK_DESCRIPTION.lower()
 
 	def test_task_description_forbids_notification_for_validation(self):
 		"""Regression: Employee age validation prompt got routed to

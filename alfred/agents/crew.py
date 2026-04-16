@@ -41,15 +41,13 @@ TASK_DESCRIPTIONS = {
 			"CRITICAL: Before proposing ANY new creation, identify what ALREADY EXISTS in Frappe/ERPNext.\n"
 			"Frappe and its apps (ERPNext, HRMS, Education, etc.) have hundreds of built-in DocTypes,\n"
 			"fields, workflows, and notifications. Your job is to find the MINIMAL change needed.\n\n"
-			"Step 1: Identify which existing DocTypes are involved (verify via get_doctype_schema)\n"
+			"Step 1: Identify which existing DocTypes are involved (verify via lookup_doctype)\n"
 			"Step 2: Check if the requested functionality already exists (built-in notifications, workflows, fields)\n"
-			"Step 3: Determine the SMALLEST customization needed:\n"
-			"  - Need an email alert? → Use the built-in Notification DocType\n"
-			"  - Need a new field? → Add a Custom Field to the existing DocType\n"
-			"  - Need custom logic? → Add a Server Script on the existing DocType\n"
-			"  - Need a truly new entity? → Only THEN create a new DocType\n\n"
-			"Do NOT create new DocTypes for things that already exist.\n"
-			"Do NOT create Server Scripts when a Notification DocType would suffice.\n\n"
+			"Step 3: Pick the smallest Frappe primitive. The decision tree (which primitive\n"
+			"  for which user request shape) is part of the Frappe Knowledge Base and will be\n"
+			"  auto-injected into the Developer's task; your RequirementSpec should name the\n"
+			"  target primitive (Custom Field / Notification / Server Script / Workflow / DocType)\n"
+			"  so the Developer can build against it.\n\n"
 			"Ask clarifying questions if anything is ambiguous."
 		),
 		"expected_output": (
@@ -169,7 +167,7 @@ TASK_DESCRIPTIONS = {
 			'    "script_type": "DocType Event",\n'
 			'    "reference_doctype": "<exact DocType name>",\n'
 			'    "doctype_event": "<Before Insert | After Insert | Before Save | After Save | ...>",\n'
-			'    "script": "<python code that uses only fields verified via get_doctype_schema>"\n'
+			'    "script": "<python body following the FKB rules (pre-bound names, no imports)>"\n'
 			"  }}}}\n\n"
 			"Custom Field:\n"
 			'  {{"op": "create", "doctype": "Custom Field", "data": {{\n'
@@ -359,20 +357,22 @@ LITE_TASK_DESCRIPTION = (
 	"If task type is notification, call lookup_pattern(\"approval_notification\", kind=\"name\").\n"
 	"Adapt the template to the Target DocType.\n\n"
 	"STEP 4 - Output the changeset as a JSON array. Raw JSON only, no prose.\n\n"
-	# ── DECISION TREE (short) ──
-	"PICKING THE RIGHT FRAPPE PRIMITIVE (minimal change principle - read carefully):\n"
-	"- The user says validate / restrict / reject / throw / block / prevent / require /\n"
-	"  only allow / cannot unless / must be -> ONE Server Script on the existing target\n"
-	"  DocType. A validation is NEVER a Notification. A validation is NEVER a new DocType.\n"
-	"  Shape:\n"
-	"    op=create, doctype='Server Script', data.script_type='DocType Event',\n"
-	"    data.reference_doctype=<Target DocType>, data.doctype_event='before_save' or\n"
-	"    'before_insert' or 'validate', data.script=Python body that calls\n"
-	"    frappe.throw('<user-facing message>') when the rule fails.\n"
-	"- The user wants an email/alert when a document changes -> Notification DocType.\n"
-	"- The user wants a new data column -> Custom Field on the existing DocType.\n"
-	"- The user wants a multi-state approval flow -> Workflow.\n"
-	"- Only create a NEW DocType when the user explicitly asks for a new kind of record.\n\n"
+	# Platform rules, API reference, and house style are auto-injected from
+	# the Frappe Knowledge Base into the banner prepended to this task turn
+	# (look above the USER REQUEST block). That banner covers: which
+	# primitive to pick for the user's request, Server Script sandbox
+	# constraints (no `import`), naming conventions, error-handling style.
+	# Read it and follow it - do NOT re-derive the rules here.
+	#
+	# Short regression-protection reminder for the MOST COMMON failure
+	# mode: routing a validation request to a Notification. The KB entry
+	# `minimal_change_principle` covers this in depth; the stub here is
+	# belt-and-braces so even without auto-inject the Lite agent gets it.
+	"MINIMAL-CHANGE REMINDER:\n"
+	"- validate / restrict / reject / throw / block / prevent / require\n"
+	"  on an existing DocType -> Server Script (NEVER a Notification,\n"
+	"  NEVER a new DocType). See the auto-injected KB banner for the\n"
+	"  full decision tree and shape.\n\n"
 	"OUTPUT FORMAT (STRICT):\n"
 	"- Final Answer is a RAW JSON ARRAY. Starts with `[`, ends with `]`.\n"
 	"- No prose, no markdown, no headers, no code fences before or after.\n"
