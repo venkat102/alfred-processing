@@ -84,12 +84,21 @@ class TestPipelineOrder:
 			"orchestrate",
 			"enhance",
 			"clarify",
+			"inject_kb",
 			"resolve_mode",
 			"build_crew",
 			"run_crew",
 			"post_crew",
 		]
 		assert AgentPipeline.PHASES == expected
+
+	def test_inject_kb_sits_between_clarify_and_resolve_mode(self):
+		"""Phase B invariant: auto-inject must run AFTER the clarified prompt
+		is final, and BEFORE the crew is built. Shifting it breaks the
+		guarantee that the banner is in front of the crew's task description."""
+		phases = AgentPipeline.PHASES
+		assert phases.index("inject_kb") == phases.index("clarify") + 1
+		assert phases.index("inject_kb") + 1 == phases.index("resolve_mode")
 
 	def test_every_phase_has_method(self):
 		ctx = _make_ctx()
@@ -806,3 +815,539 @@ class TestDetectDrift:
 	def test_empty_result_is_not_drift(self):
 		assert _detect_drift("", "validate Employee age") is None
 		assert _detect_drift(None, "validate Employee age") is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase B: inject_kb auto-injection tests
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _kb_entry(
+	entry_id: str = "server_script_no_imports",
+	kind: str = "rule",
+	title: str = "Server Scripts cannot use import",
+	summary: str = "RestrictedPython has no __import__.",
+	body: str = "- import is forbidden in Server Script bodies.",
+	mode: str = "keyword",
+):
+	"""Shape-compatible stand-in for a single KB entry returned by
+	fkb.search_hybrid. Includes the `_mode` tag the hybrid function stamps
+	onto each hit so the pipeline's banner header includes it."""
+	return {
+		"id": entry_id, "kind": kind, "title": title,
+		"summary": summary, "body": body,
+		"_score": 18, "_mode": mode,
+	}
+
+
+class TestInjectKB:
+	"""Phase B + B.5 + C: inject_kb pipeline phase.
+
+	After Phase C, the FKB retrieval layer no longer goes through MCP -
+	it's a direct call into alfred.knowledge.fkb.search_hybrid on the
+	processing side. These tests patch that symbol directly instead of
+	the MCP mock (which only matters for site-recon now).
+	"""
+
+	def _setup_ctx(self, mcp_client_present=True):
+		"""Build a Dev-mode context. MCP client is wired by default because
+		site-recon (Phase B.5) still uses MCP; pass mcp_client_present=False
+		to simulate a no-MCP environment and verify FKB still works."""
+		ctx = _make_ctx(prompt="add a validation to Employee age <24")
+		ctx.mode = "dev"
+		ctx.enhanced_prompt = (
+			"The user wants a validation on the Employee DocType that throws "
+			"when date_of_birth indicates age < 24. Use a Server Script."
+		)
+
+		if mcp_client_present:
+			mcp_client = MagicMock()
+			# Default: site-detail returns not_found so site-recon no-ops.
+			mcp_client.call_tool = AsyncMock(
+				return_value={"error": "not_found", "message": "DocType not found"}
+			)
+			ctx.conn.mcp_client = mcp_client
+		else:
+			ctx.conn.mcp_client = None
+		return ctx
+
+	def _run_with_fkb(self, ctx, fkb_hits=None, fkb_raises=None):
+		"""Run _phase_inject_kb with alfred.knowledge.fkb.search_hybrid
+		patched to return `fkb_hits` (or raise `fkb_raises`). Returns the
+		patch mock so callers can assert on call args."""
+		from alfred.knowledge import fkb as _fkb_mod
+
+		side_effect = fkb_raises if fkb_raises is not None else None
+		return_value = fkb_hits if fkb_raises is None else None
+
+		with patch.object(
+			_fkb_mod, "search_hybrid",
+			side_effect=side_effect,
+			return_value=return_value,
+		) as mock_fkb:
+			pipeline = AgentPipeline(ctx)
+			_run(pipeline._phase_inject_kb())
+			return mock_fkb
+
+	def test_skipped_when_not_dev_mode(self):
+		"""Plan / Insights / Chat don't produce code, so no KB injection."""
+		for mode in ("plan", "insights", "chat"):
+			ctx = self._setup_ctx()
+			ctx.mode = mode
+			original = ctx.enhanced_prompt
+			mock_fkb = self._run_with_fkb(ctx, fkb_hits=[_kb_entry()])
+			assert ctx.enhanced_prompt == original, f"{mode} mode should skip"
+			assert ctx.injected_kb == []
+			# FKB retrieval should not even run in non-dev modes.
+			assert mock_fkb.call_count == 0
+
+	def test_no_mcp_client_still_runs_fkb(self):
+		"""Phase C: FKB retrieval is local and doesn't need MCP. Only the
+		site-recon portion is gated on mcp_client. Verify that without MCP,
+		FKB still injects but site-recon doesn't run."""
+		ctx = self._setup_ctx(mcp_client_present=False)
+		self._run_with_fkb(ctx, fkb_hits=[_kb_entry()])
+		# FKB injected
+		assert ctx.injected_kb == ["server_script_no_imports"]
+		assert "FRAPPE KB CONTEXT" in ctx.enhanced_prompt
+		# Site-recon skipped
+		assert ctx.injected_site_state == {}
+
+	def test_skipped_when_empty_prompt(self):
+		ctx = self._setup_ctx()
+		ctx.enhanced_prompt = ""
+		mock_fkb = self._run_with_fkb(ctx, fkb_hits=[_kb_entry()])
+		assert ctx.enhanced_prompt == ""
+		assert ctx.injected_kb == []
+		# Empty-prompt gate runs BEFORE FKB call.
+		assert mock_fkb.call_count == 0
+
+	def test_skipped_when_stop_signal_set(self):
+		ctx = self._setup_ctx()
+		ctx.should_stop = True
+		original = ctx.enhanced_prompt
+		mock_fkb = self._run_with_fkb(ctx, fkb_hits=[_kb_entry()])
+		assert ctx.enhanced_prompt == original
+		assert mock_fkb.call_count == 0
+
+	def test_injects_banner_on_single_match(self):
+		"""Happy path: fkb.search_hybrid returns one entry, banner is prepended."""
+		ctx = self._setup_ctx()
+		original = ctx.enhanced_prompt
+		self._run_with_fkb(ctx, fkb_hits=[_kb_entry()])
+
+		assert ctx.injected_kb == ["server_script_no_imports"]
+		assert ctx.enhanced_prompt != original
+		assert "FRAPPE KB CONTEXT" in ctx.enhanced_prompt
+		assert "server_script_no_imports" in ctx.enhanced_prompt
+		assert "Server Scripts cannot use import" in ctx.enhanced_prompt
+		# Original prompt must still be present, AFTER the banner.
+		banner_end = ctx.enhanced_prompt.index("USER REQUEST (interpret this verbatim)")
+		orig_start = ctx.enhanced_prompt.index(original)
+		assert banner_end < orig_start
+
+	def test_banner_includes_mode_tag(self):
+		"""Phase C: the hybrid retrieval tags each hit with _mode ('keyword'
+		or 'semantic'). The banner includes this tag in the per-entry header
+		so traces can tell which retriever won each slot."""
+		ctx = self._setup_ctx()
+		self._run_with_fkb(ctx, fkb_hits=[_kb_entry(mode="semantic")])
+		# The per-entry header reads "[rule: <id> via semantic] <title>"
+		assert "via semantic" in ctx.enhanced_prompt
+
+	def test_injects_multiple_entries(self):
+		entries = [
+			_kb_entry(entry_id="server_script_no_imports"),
+			_kb_entry(entry_id="minimal_change_principle",
+			          title="Pick smallest Frappe primitive"),
+			_kb_entry(entry_id="custom_field_vs_new_doctype",
+			          title="Extend with Custom Field"),
+		]
+		ctx = self._setup_ctx()
+		self._run_with_fkb(ctx, fkb_hits=entries)
+
+		assert ctx.injected_kb == [
+			"server_script_no_imports",
+			"minimal_change_principle",
+			"custom_field_vs_new_doctype",
+		]
+		for entry in entries:
+			assert entry["title"] in ctx.enhanced_prompt
+
+	def test_no_inject_on_empty_hits(self):
+		"""search_hybrid returning [] -> no banner, no crash."""
+		ctx = self._setup_ctx()
+		original = ctx.enhanced_prompt
+		self._run_with_fkb(ctx, fkb_hits=[])
+		assert ctx.enhanced_prompt == original
+		assert ctx.injected_kb == []
+
+	def test_no_inject_when_fkb_raises(self):
+		"""Infrastructure failure in search_hybrid -> swallow, pipeline continues."""
+		ctx = self._setup_ctx()
+		original = ctx.enhanced_prompt
+		self._run_with_fkb(ctx, fkb_raises=RuntimeError("embedding model crashed"))
+		assert ctx.enhanced_prompt == original
+		assert ctx.injected_kb == []
+
+	def test_fkb_called_with_enhanced_prompt(self):
+		"""search_hybrid receives the enhanced_prompt as query and k=3."""
+		ctx = self._setup_ctx()
+		source_prompt = ctx.enhanced_prompt
+		mock_fkb = self._run_with_fkb(ctx, fkb_hits=[_kb_entry()])
+
+		assert mock_fkb.call_count == 1
+		args, kwargs = mock_fkb.call_args
+		# First positional arg is the query; k=3 is passed as kwarg.
+		assert args[0] == source_prompt
+		assert kwargs.get("k") == 3
+
+	def test_malformed_entry_is_skipped(self):
+		ctx = self._setup_ctx()
+		self._run_with_fkb(ctx, fkb_hits=[
+			"not a dict",
+			_kb_entry(entry_id="server_script_no_imports"),
+			42,
+		])
+		assert ctx.injected_kb == ["server_script_no_imports"]
+		assert "server_script_no_imports" in ctx.enhanced_prompt
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase B.5: target extraction + site reconnaissance tests
+# ──────────────────────────────────────────────────────────────────────
+
+from alfred.api.pipeline import (  # noqa: E402
+	_extract_target_doctypes,
+	_render_site_state_block,
+	_site_detail_has_artefacts,
+)
+
+
+def _site_detail(
+	doctype="Employee",
+	workflows=None,
+	server_scripts=None,
+	custom_fields=None,
+	notifications=None,
+	client_scripts=None,
+):
+	"""Shape-compatible stand-in for get_site_customization_detail responses."""
+	return {
+		"doctype": doctype,
+		"workflows": workflows or [],
+		"server_scripts": server_scripts or [],
+		"custom_fields": custom_fields or [],
+		"notifications": notifications or [],
+		"client_scripts": client_scripts or [],
+	}
+
+
+class TestExtractTargetDoctypes:
+	def test_picks_single_doctype_from_validation_prompt(self):
+		prompt = (
+			"The user wants a validation on the Employee DocType that throws "
+			"when date_of_birth indicates age < 24."
+		)
+		targets = _extract_target_doctypes(prompt)
+		assert "Employee" in targets
+
+	def test_filters_common_english_words(self):
+		"""Words like 'Python', 'Draft', 'Frappe' must not be treated as targets
+		even when they start with a capital letter."""
+		prompt = "Python Draft Frappe User Note"
+		targets = _extract_target_doctypes(prompt)
+		# All of these are in _NON_DOCTYPE_CAPITALIZED or too short.
+		for noise in ("Python", "Draft", "Frappe", "User"):
+			assert noise not in targets
+
+	def test_respects_limit(self):
+		prompt = (
+			"I want to touch Employee, Sales Order, Purchase Order, Leave "
+			"Application, and Material Request."
+		)
+		targets = _extract_target_doctypes(prompt, limit=2)
+		assert len(targets) == 2
+		# First-seen ordering preserved
+		assert targets[0] == "Employee"
+
+	def test_dedups_case_sensitive(self):
+		prompt = "Employee here, Employee there, Employee everywhere"
+		targets = _extract_target_doctypes(prompt)
+		assert targets == ["Employee"]
+
+	def test_skips_short_single_words(self):
+		"""A short single-word capitalised token (e.g. 'HR', 'API') is noise."""
+		targets = _extract_target_doctypes("ToDo ok", limit=2)
+		# "ToDo" is 4 chars, below the 6-char single-word threshold.
+		assert "ToDo" not in targets
+
+	def test_multi_word_candidate_kept_even_if_each_word_is_short(self):
+		"""Multi-word candidates pass the short-word filter since the hyphen
+		between words makes them specific enough to be a real DocType."""
+		# "Work Order" is a real DocType; enhanced_prompts usually start with
+		# a noise word like 'The' or 'This' which would greedy-match past the
+		# target, so construct a prompt where the target stands alone.
+		assert _extract_target_doctypes(
+			"add priority to Work Order records"
+		) == ["Work Order"]
+
+	def test_empty_prompt(self):
+		assert _extract_target_doctypes("") == []
+		assert _extract_target_doctypes(None) == []
+
+
+class TestSiteDetailHasArtefacts:
+	def test_empty_detail_returns_false(self):
+		assert _site_detail_has_artefacts({}) is False
+		assert _site_detail_has_artefacts(_site_detail()) is False
+
+	def test_non_dict_returns_false(self):
+		assert _site_detail_has_artefacts(None) is False
+		assert _site_detail_has_artefacts("oops") is False
+
+	def test_any_non_empty_list_returns_true(self):
+		assert _site_detail_has_artefacts(
+			_site_detail(custom_fields=[{"fieldname": "x"}])
+		) is True
+		assert _site_detail_has_artefacts(
+			_site_detail(workflows=[{"name": "W"}])
+		) is True
+		assert _site_detail_has_artefacts(
+			_site_detail(server_scripts=[{"name": "S"}])
+		) is True
+
+
+class TestRenderSiteStateBlock:
+	def test_empty_artefacts_renders_safe_fallback(self):
+		block = _render_site_state_block("Employee", _site_detail(), budget=2000)
+		assert 'SITE STATE FOR "Employee"' in block
+		assert "(no major artefacts)" in block
+
+	def test_workflow_renders_states_and_transitions(self):
+		detail = _site_detail(workflows=[{
+			"name": "Employee Approval",
+			"is_active": 1,
+			"workflow_state_field": "workflow_state",
+			"states": [
+				{"state": "Draft", "doc_status": "0", "allow_edit": "Employee"},
+				{"state": "Approved", "doc_status": "1", "allow_edit": "HR"},
+			],
+			"transitions": [
+				{"state": "Draft", "action": "Submit",
+				 "next_state": "Approved", "allowed": "HR Manager"},
+			],
+		}])
+		block = _render_site_state_block("Employee", detail, budget=2000)
+		assert "Workflow: Employee Approval (active" in block
+		assert "Draft [Employee]" in block
+		assert "Draft --Submit--> Approved" in block
+
+	def test_server_script_body_is_indented(self):
+		detail = _site_detail(server_scripts=[{
+			"name": "Validate DoJ",
+			"script_type": "DocType Event",
+			"doctype_event": "Before Save",
+			"disabled": 0,
+			"script": "if not doc.date_of_joining:\n    frappe.throw('required')",
+		}])
+		block = _render_site_state_block("Employee", detail, budget=2000)
+		assert "Server Script: Validate DoJ" in block
+		assert "(Before Save, enabled)" in block
+		# Indented body preview
+		assert "    if not doc.date_of_joining:" in block
+
+	def test_budget_cap_adds_truncation_footer(self):
+		"""When the per-target budget is too small for everything, the lowest
+		priority artefact gets dropped and a '(more artefacts omitted...)'
+		footer is appended."""
+		# Workflow renders first and takes most of a small budget; client
+		# scripts should be dropped.
+		detail = _site_detail(
+			workflows=[{
+				"name": "W",
+				"is_active": 1,
+				"workflow_state_field": "workflow_state",
+				"states": [{"state": "Draft", "doc_status": "0", "allow_edit": "A"}],
+				"transitions": [{"state": "Draft", "action": "Go",
+				                  "next_state": "Done", "allowed": "A"}],
+			}],
+			client_scripts=[{"name": "C1", "view": "Form", "enabled": 1}],
+		)
+		block = _render_site_state_block("Employee", detail, budget=120)
+		assert "more artefacts omitted" in block or "(no major artefacts)" in block
+
+
+class TestInjectKBSiteRecon:
+	"""Phase B.5 + C: site reconnaissance combined with hybrid FKB retrieval.
+
+	After Phase C, FKB retrieval is local (alfred.knowledge.fkb.search_hybrid).
+	Site reconnaissance still goes through MCP. These tests patch both
+	independently so FKB hits and site-detail results can be controlled
+	separately."""
+
+	def _setup_ctx(self, site_results=None, site_raises=None):
+		"""Build a Dev-mode context with an MCP client that answers per-
+		DocType site-detail based on the `doctype` arg.
+
+		`site_results` is a dict {doctype -> detail_dict}. Unknown doctypes
+		get {"error": "not_found"}. If `site_raises` is set, site-detail
+		calls raise that exception. FKB behaviour is controlled via the
+		fkb.search_hybrid patch in _run_with_fkb."""
+		ctx = _make_ctx(prompt="add a validation to Employee")
+		ctx.mode = "dev"
+		ctx.enhanced_prompt = (
+			"The user wants a validation on the Employee DocType that throws "
+			"when date_of_birth indicates age < 24."
+		)
+
+		mcp_client = MagicMock()
+		site_results = site_results or {}
+
+		async def fake_call_tool(name, args=None):
+			args = args or {}
+			# Site-recon is the only MCP call inject_kb makes after Phase C.
+			if name == "get_site_customization_detail":
+				if site_raises:
+					raise site_raises
+				doctype = args.get("doctype")
+				if doctype in site_results:
+					return site_results[doctype]
+				return {"error": "not_found",
+				        "message": f"DocType {doctype!r} not found"}
+			# FKB used to go through MCP before Phase C; fall through to a
+			# benign empty response in case a test still triggers one.
+			return {"error": "unknown_tool"}
+
+		mcp_client.call_tool = AsyncMock(side_effect=fake_call_tool)
+		ctx.conn.mcp_client = mcp_client
+		return ctx, mcp_client
+
+	def _run_with_fkb(self, ctx, fkb_hits=None, fkb_raises=None):
+		"""Run _phase_inject_kb with alfred.knowledge.fkb.search_hybrid patched."""
+		from alfred.knowledge import fkb as _fkb_mod
+
+		side_effect = fkb_raises if fkb_raises is not None else None
+		return_value = fkb_hits if fkb_raises is None else None
+
+		with patch.object(
+			_fkb_mod, "search_hybrid",
+			side_effect=side_effect,
+			return_value=return_value,
+		):
+			pipeline = AgentPipeline(ctx)
+			_run(pipeline._phase_inject_kb())
+
+	def test_extracts_target_and_calls_site_detail(self):
+		"""DocType mentioned in the prompt triggers a site-detail MCP call."""
+		ctx, mcp = self._setup_ctx(
+			site_results={"Employee": _site_detail(
+				custom_fields=[{"fieldname": "emp_code", "fieldtype": "Data",
+				                "label": "Employee Code", "reqd": 1}],
+			)},
+		)
+		self._run_with_fkb(ctx, fkb_hits=[])
+
+		# Only site-detail goes through MCP after Phase C. FKB is local.
+		call_names = [c.args[0] for c in mcp.call_tool.await_args_list]
+		assert "get_site_customization_detail" in call_names
+		assert "lookup_frappe_knowledge" not in call_names, (
+			"FKB should no longer go through MCP (Phase C)"
+		)
+		site_args = [c.args[1] for c in mcp.call_tool.await_args_list
+		              if c.args[0] == "get_site_customization_detail"]
+		assert any(a.get("doctype") == "Employee" for a in site_args)
+
+	def test_injects_site_state_block_when_artefacts_exist(self):
+		ctx, _ = self._setup_ctx(
+			site_results={"Employee": _site_detail(
+				server_scripts=[{
+					"name": "Validate DoJ",
+					"script_type": "DocType Event",
+					"doctype_event": "Before Save",
+					"disabled": 0,
+					"script": "if not doc.date_of_joining: frappe.throw('x')",
+				}],
+			)},
+		)
+		self._run_with_fkb(ctx, fkb_hits=[])
+
+		assert "Employee" in ctx.injected_site_state
+		assert 'SITE STATE FOR "Employee"' in ctx.enhanced_prompt
+		assert "Validate DoJ" in ctx.enhanced_prompt
+		assert "if not doc.date_of_joining" in ctx.enhanced_prompt
+
+	def test_skips_site_block_when_doctype_has_no_artefacts(self):
+		ctx, _ = self._setup_ctx(site_results={"Employee": _site_detail()})
+		self._run_with_fkb(ctx, fkb_hits=[])
+		assert ctx.injected_site_state == {}
+		assert 'SITE STATE FOR "Employee"' not in ctx.enhanced_prompt
+
+	def test_skips_site_block_when_doctype_unknown(self):
+		"""Site-detail returns not_found for everything → no site block. With
+		empty FKB hits, no banner is injected at all."""
+		ctx, _ = self._setup_ctx(site_results={})
+		original = ctx.enhanced_prompt
+		self._run_with_fkb(ctx, fkb_hits=[])
+
+		assert ctx.injected_site_state == {}
+		assert ctx.enhanced_prompt == original
+
+	def test_site_detail_failure_does_not_break_pipeline(self):
+		"""Site-detail MCP exception is swallowed; FKB still injects."""
+		ctx, _ = self._setup_ctx(site_raises=RuntimeError("network"))
+		self._run_with_fkb(ctx, fkb_hits=[_kb_entry()])
+
+		assert ctx.injected_kb == ["server_script_no_imports"]
+		assert "FRAPPE KB CONTEXT" in ctx.enhanced_prompt
+		assert ctx.injected_site_state == {}
+
+	def test_fkb_failure_does_not_break_site_recon(self):
+		"""Symmetric: FKB raising still allows site-recon to inject."""
+		ctx, _ = self._setup_ctx(
+			site_results={"Employee": _site_detail(
+				custom_fields=[{"fieldname": "x", "fieldtype": "Data", "label": "X"}],
+			)},
+		)
+		self._run_with_fkb(ctx, fkb_raises=RuntimeError("embedding failed"))
+
+		assert ctx.injected_kb == []
+		assert "FRAPPE KB CONTEXT" not in ctx.enhanced_prompt
+		assert "Employee" in ctx.injected_site_state
+		assert 'SITE STATE FOR "Employee"' in ctx.enhanced_prompt
+
+	def test_site_state_placed_after_fkb_and_before_user_request(self):
+		"""Ordering invariant: FKB block -> SITE STATE block -> USER REQUEST."""
+		ctx, _ = self._setup_ctx(
+			site_results={"Employee": _site_detail(
+				custom_fields=[{"fieldname": "x", "fieldtype": "Data", "label": "X"}],
+			)},
+		)
+		self._run_with_fkb(ctx, fkb_hits=[_kb_entry()])
+
+		text = ctx.enhanced_prompt
+		fkb_pos = text.index("FRAPPE KB CONTEXT")
+		site_pos = text.index('SITE STATE FOR "Employee"')
+		user_pos = text.index("USER REQUEST (interpret this verbatim)")
+		assert fkb_pos < site_pos < user_pos
+
+	def test_non_dev_mode_skips_both_retrievals(self):
+		"""Plan/Insights/Chat must make zero MCP calls and zero FKB calls."""
+		ctx, mcp = self._setup_ctx(
+			site_results={"Employee": _site_detail(
+				server_scripts=[{"name": "x", "script_type": "DocType Event",
+				                  "doctype_event": "Before Save", "disabled": 0,
+				                  "script": "pass"}],
+			)},
+		)
+		ctx.mode = "plan"
+		# Patch fkb.search_hybrid and assert it wasn't called either.
+		from alfred.knowledge import fkb as _fkb_mod
+		with patch.object(_fkb_mod, "search_hybrid", return_value=[_kb_entry()]) as fm:
+			pipeline = AgentPipeline(ctx)
+			_run(pipeline._phase_inject_kb())
+
+			assert mcp.call_tool.await_count == 0
+			assert fm.call_count == 0
+		assert ctx.injected_kb == []
+		assert ctx.injected_site_state == {}

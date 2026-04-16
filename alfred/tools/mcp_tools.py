@@ -264,6 +264,36 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		return _mcp_call(mcp_client, "get_existing_customizations")
 
 	@tool
+	def get_site_customization_detail(doctype: str) -> str:
+		"""Deep recon of ALL customizations on one DocType: Server Script bodies,
+		Workflow graphs (states + transitions), Custom Fields, Notifications,
+		Client Scripts.
+
+		Use this BEFORE proposing changes to an existing DocType. The pipeline
+		already auto-injects this for the target DocType extracted from the
+		user's request; call explicitly if you need depth on an additional
+		DocType not mentioned verbatim.
+
+		Example: get_site_customization_detail("Employee")
+		  -> {"doctype": "Employee",
+		       "custom_fields": [...],
+		       "server_scripts": [{"name": "...", "doctype_event": "Before Save",
+		                             "script": "<first 600 chars>...", "disabled": 0}, ...],
+		       "workflows":  [{"name": "Employee Approval", "is_active": 1,
+		                         "states": [...], "transitions": [...]}, ...],
+		       "notifications":  [...],
+		       "client_scripts": [...]}
+
+		Returns {"error": "not_found"} if the DocType isn't on this site,
+		{"error": "permission_denied"} if you can't read it.
+
+		Script bodies are truncated (Server Scripts: 600 chars, Client Scripts:
+		300, Notification subjects: 120). Full bodies are not needed for the
+		"should I extend this or add a sibling?" decision.
+		"""
+		return _mcp_call(mcp_client, "get_site_customization_detail", {"doctype": doctype})
+
+	@tool
 	def get_user_context() -> str:
 		"""Get the current user's email, roles, permissions, and permitted modules.
 
@@ -380,11 +410,43 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		"""
 		return _mcp_call(mcp_client, "lookup_pattern", {"query": query, "kind": kind})
 
+	@tool
+	def lookup_frappe_knowledge(query: str = "", kind: str = "", k: int = 3) -> str:
+		"""Retrieve Frappe platform knowledge (rules, APIs, idioms) from the FKB.
+
+		Third knowledge layer alongside `lookup_doctype` (schemas) and
+		`lookup_pattern` (recipes). Holds platform rules ("Server Scripts
+		cannot use import"), Frappe API reference, and Frappe idioms
+		(hooks, lifecycle, rename flows). The pipeline auto-injects top
+		matches from this KB into the Developer task based on the enhanced
+		prompt - but you can call this yourself for additional context.
+
+		Args:
+			query: Free text (e.g. "server script import", "db.get_value",
+				"workflow states"). Short keywords work well.
+			kind: Optional filter - "rule" | "api" | "idiom" | "style" | empty string (all).
+			k: Number of top matches to return (default 3).
+
+		Example:
+			lookup_frappe_knowledge("server script import")
+			  -> {"entries": [{id: "server_script_no_imports", title: ..., body: ..., _score: 16}, ...]}
+			lookup_frappe_knowledge("", kind="rule")
+			  -> {"entries": [...summary of all rule entries...]}
+
+		Use this before generating code for a primitive you haven't written
+		recently, or when dry-run returned an error you don't understand.
+		"""
+		args: dict = {"query": query, "k": k}
+		if kind:
+			args["kind"] = kind
+		return _mcp_call(mcp_client, "lookup_frappe_knowledge", args)
+
 	# Lite pipeline: one agent handles the whole SDLC, so it gets the union of
 	# every tool the specialist agents would need (deduped while preserving order).
 	_lite_source = [
-		lookup_doctype, lookup_pattern,
+		lookup_doctype, lookup_pattern, lookup_frappe_knowledge,
 		get_site_info, get_doctypes, get_doctype_schema, get_existing_customizations,
+		get_site_customization_detail,
 		get_user_context, check_permission, validate_name_available, has_active_workflow,
 		check_has_records, validate_python_syntax_stub, validate_js_syntax_stub,
 		dry_run_changeset,
@@ -404,9 +466,11 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 	insights_tools = [
 		lookup_doctype,              # primary DocType schema lookup
 		lookup_pattern,              # show curated customization patterns
+		lookup_frappe_knowledge,     # platform rules / APIs / idioms
 		get_site_info,               # version, installed apps
 		get_doctypes,                # browse DocTypes by module
 		get_existing_customizations, # what's custom on this site
+		get_site_customization_detail,  # deep per-DocType recon
 		get_user_context,            # current user + roles
 		check_permission,            # "can I do X?"
 		has_active_workflow,         # workflow presence check
@@ -434,6 +498,8 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		"developer": [
 			lookup_doctype,              # verify field names for the changeset
 			lookup_pattern,              # retrieve template to adapt
+			lookup_frappe_knowledge,     # platform rules (no-import, permissions, etc.)
+			get_site_customization_detail,  # existing site artefacts on the target
 		],
 		"tester": [
 			validate_python_syntax_stub, validate_js_syntax_stub, validate_name_available,

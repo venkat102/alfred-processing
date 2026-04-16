@@ -100,6 +100,15 @@ _ERPNEXT_FIELD_SMELLS = (
 
 _DOCTYPE_NAME_RE = _re.compile(r"\b([A-Z][a-z]+(?:\s[A-Z][a-z]+){0,3})\b")
 
+# Cap on how many target DocTypes we'll deep-recon per turn. Users rarely
+# ask about more than one in a single prompt; capping prevents a prompt
+# that name-drops 6 DocTypes from triggering 6 MCP calls and blowing the
+# inject-banner budget.
+_INJECT_MAX_TARGETS = 2
+# Max chars of site-state banner content per turn (not counting the
+# decorative header/footer). At ~4 chars/token this is roughly 500 tokens.
+_INJECT_SITE_BUDGET = 2000
+
 # Words that look like DocType names by capitalization but aren't
 # doctypes (common English nouns, section headers). Exclude them from
 # the foreign-doctype check.
@@ -119,6 +128,187 @@ _NON_DOCTYPE_CAPITALIZED = frozenset({
 	"North", "South", "East", "West",
 	"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
 })
+
+
+def _extract_target_doctypes(prompt: str, limit: int = _INJECT_MAX_TARGETS) -> list[str]:
+	"""Pull likely-target DocType names out of an enhanced prompt.
+
+	Uses the same regex + noise-word filter as `_detect_drift` so extraction
+	is consistent across the two call sites. A candidate is kept when:
+	  - it isn't in _NON_DOCTYPE_CAPITALIZED (common English, section headers)
+	  - it has a space (multi-word) OR is >= 6 chars (single-word DocTypes
+	    like "Employee", "Customer", "ToDo" - shorter tokens are noise)
+	  - it hasn't already been picked (dedup, first-occurrence-wins)
+
+	Does NOT validate against the framework KG here - that's left to the
+	site-detail MCP call, which already returns {error: not_found} for
+	unknown DocTypes. Avoiding the extra MCP round-trip is important for
+	pipeline latency (this runs on every Dev-mode turn).
+
+	Returns up to `limit` candidates, preserving the order they appear in
+	the prompt.
+	"""
+	if not prompt:
+		return []
+	picked: list[str] = []
+	seen: set[str] = set()
+	for cand in _DOCTYPE_NAME_RE.findall(prompt):
+		if cand in seen:
+			continue
+		first_word = cand.split()[0]
+		if first_word in _NON_DOCTYPE_CAPITALIZED:
+			continue
+		# Single-word candidate must be long enough to be a real DocType
+		# name. "Draft", "Python" etc. are already in the exclude list; this
+		# catches residual short capitalised words like "API" or "HR".
+		if " " not in cand and len(cand) < 6:
+			continue
+		picked.append(cand)
+		seen.add(cand)
+		if len(picked) >= limit:
+			break
+	return picked
+
+
+def _site_detail_has_artefacts(detail: dict) -> bool:
+	"""True if a site-detail dict contains at least one artefact worth rendering.
+
+	Prevents rendering a "SITE STATE FOR X" block for a DocType that exists
+	but has zero customizations on this site - would just be banner noise.
+	"""
+	if not isinstance(detail, dict):
+		return False
+	for key in ("workflows", "server_scripts", "custom_fields", "notifications", "client_scripts"):
+		if detail.get(key):
+			return True
+	return False
+
+
+def _render_site_state_block(doctype: str, detail: dict, budget: int) -> str:
+	"""Format one DocType's site-state into a compact banner block.
+
+	Relevance order (highest-signal first so low-value artefacts get truncated
+	when the budget runs low):
+	  1. Workflows (graph is the most structural artefact)
+	  2. Server Scripts (logic that might collide with user's request)
+	  3. Custom Fields (schema extension)
+	  4. Notifications (communication - lower priority for Dev mode)
+	  5. Client Scripts (UI, lowest priority)
+
+	`budget` is the max chars this function may emit (decorative header/footer
+	excluded). As we render, we track cumulative length and stop adding new
+	artefacts once the next one would push past the budget - callers get a
+	"... (N more)" footer line so the agent knows there's unseen state.
+	"""
+	lines: list[str] = []
+	remaining = budget
+	truncated_kinds: list[tuple[str, int]] = []
+
+	def _try_add(block: str) -> bool:
+		nonlocal remaining
+		if len(block) + 1 > remaining:
+			return False
+		lines.append(block)
+		remaining -= len(block) + 1
+		return True
+
+	# Workflows - full graph
+	for wf in detail.get("workflows") or []:
+		states = wf.get("states") or []
+		transitions = wf.get("transitions") or []
+		state_line = " -> ".join(
+			f"{s.get('state')} [{s.get('allow_edit') or '-'}]"
+			for s in states
+		) or "-"
+		txn_summary = (
+			", ".join(
+				f"{t.get('state')} --{t.get('action')}--> {t.get('next_state')}"
+				for t in transitions[:4]
+			)
+			+ (f" (+{len(transitions) - 4} more)" if len(transitions) > 4 else "")
+		) if transitions else "no transitions"
+		active = "active" if wf.get("is_active") else "inactive"
+		block = (
+			f"Workflow: {wf.get('name')} ({active}, field: "
+			f"{wf.get('workflow_state_field') or '-'})\n"
+			f"  states: {state_line}\n"
+			f"  transitions: {txn_summary}"
+		)
+		if not _try_add(block):
+			truncated_kinds.append(("workflow", 1))
+			break
+
+	# Server Scripts - body preview
+	scripts = detail.get("server_scripts") or []
+	# Active first, then disabled
+	scripts = sorted(scripts, key=lambda s: int(s.get("disabled") or 0))
+	for idx, s in enumerate(scripts):
+		state = "disabled" if s.get("disabled") else "enabled"
+		# Indent the body snippet so it reads as a nested block
+		body = (s.get("script") or "").strip()
+		body_indented = "\n".join("    " + ln for ln in body.splitlines()[:8]) or "    (empty)"
+		block = (
+			f"Server Script: {s.get('name')} "
+			f"({s.get('doctype_event') or s.get('script_type') or '?'}, {state})\n"
+			f"  body preview:\n{body_indented}"
+		)
+		if not _try_add(block):
+			truncated_kinds.append(("server_script", len(scripts) - idx))
+			break
+
+	# Custom Fields - one line each
+	fields = detail.get("custom_fields") or []
+	if fields:
+		field_lines: list[str] = []
+		for f in fields:
+			opt = f.get("options")
+			ft = f.get("fieldtype")
+			extra = f" (options: {opt.replace(chr(10), ',')})" if opt and ft in ("Select", "Link") else ""
+			reqd = ", required" if f.get("reqd") else ""
+			field_lines.append(
+				f"  - {f.get('fieldname')} ({ft}{reqd}) label={f.get('label')!r}{extra}"
+			)
+		block = "Custom Fields:\n" + "\n".join(field_lines)
+		if not _try_add(block):
+			truncated_kinds.append(("custom_field", len(fields)))
+
+	# Notifications
+	notifs = detail.get("notifications") or []
+	if notifs:
+		notif_lines = [
+			f"  - {n.get('name')} ({n.get('event')}, {n.get('channel')}): "
+			f"{n.get('subject')!r}"
+			for n in notifs
+		]
+		block = "Notifications:\n" + "\n".join(notif_lines)
+		if not _try_add(block):
+			truncated_kinds.append(("notification", len(notifs)))
+
+	# Client Scripts - headline only
+	clients = detail.get("client_scripts") or []
+	if clients:
+		client_lines = [
+			f"  - {c.get('name')} (view: {c.get('view')}, "
+			f"{'enabled' if c.get('enabled') else 'disabled'})"
+			for c in clients
+		]
+		block = "Client Scripts:\n" + "\n".join(client_lines)
+		if not _try_add(block):
+			truncated_kinds.append(("client_script", len(clients)))
+
+	if truncated_kinds:
+		tail = ", ".join(f"{kind}: {n}" for kind, n in truncated_kinds)
+		lines.append(f"(more artefacts omitted for brevity: {tail})")
+
+	body = "\n\n".join(lines) if lines else "(no major artefacts)"
+	return (
+		f'=== SITE STATE FOR "{doctype}" (already on this site) ===\n'
+		f"DO NOT propose anything that conflicts with or duplicates these "
+		f"existing customizations. Extend, replace, or build atop them as "
+		f"appropriate.\n\n"
+		f"{body}\n"
+		f"=========================================================="
+	)
 
 
 def _detect_drift(result_text: str, user_prompt: str) -> str | None:
@@ -224,6 +414,18 @@ class PipelineContext:
 	plan_pipeline_mode: str | None = None
 	enhanced_prompt: str = ""
 	clarify_qa_pairs: list[tuple[str, str]] = field(default_factory=list)
+	# Frappe KB auto-inject (Phase B). `injected_kb` is the list of entry ids
+	# (e.g. ["server_script_no_imports"]) that were matched by keyword scan on
+	# `enhanced_prompt` and prepended to it as a reference banner before the
+	# crew runs. Empty list = no match / keyword score below threshold / KB
+	# tool not available. Logged by the tracer so a still-wrong output can be
+	# triaged as "rule wasn't injected" vs. "rule was injected but ignored".
+	injected_kb: list[str] = field(default_factory=list)
+	# Site reconnaissance auto-inject (Phase B.5). Per-DocType deep recon
+	# fetched via get_site_customization_detail for each DocType mentioned
+	# in `enhanced_prompt`. Empty = no target DocType extracted / MCP call
+	# failed / DocType has no customizations. Keyed by DocType name.
+	injected_site_state: dict = field(default_factory=dict)
 	pipeline_mode: str = "full"
 	pipeline_mode_source: str = "site_config"
 	custom_tools: dict | None = None
@@ -265,6 +467,7 @@ class AgentPipeline:
 		"orchestrate",
 		"enhance",
 		"clarify",
+		"inject_kb",
 		"resolve_mode",
 		"build_crew",
 		"run_crew",
@@ -817,6 +1020,193 @@ class AgentPipeline:
 		)
 		if ctx.clarify_qa_pairs and ctx.conversation_memory is not None:
 			ctx.conversation_memory.add_clarifications(ctx.clarify_qa_pairs)
+
+	async def _phase_inject_kb(self) -> None:
+		"""Auto-inject Frappe KB entries + site state into the enhanced prompt.
+
+		Two retrievals, one combined banner:
+		  (1) FKB keyword search (Phase B) - platform rules, APIs, idioms
+		      matching the user's enhanced prompt.
+		  (2) Site reconnaissance (Phase B.5) - for each DocType named in the
+		      prompt, fetch existing artefacts (workflows, server scripts,
+		      custom fields, notifications, client scripts) via the
+		      get_site_customization_detail MCP tool.
+
+		Both retrievals run off the same source-of-truth (the user's enhanced
+		prompt, BEFORE we prepend anything). Their renderings are concatenated
+		into a single banner:
+
+		    === FRAPPE KB CONTEXT ===
+		    [rule/api/idiom entries]
+		    ==========================
+
+		    === SITE STATE FOR "Employee" ===
+		    [existing artefacts on the target DocType]
+		    ==================================
+
+		    --- USER REQUEST ---
+		    [original enhanced prompt]
+
+		Skips when mode != "dev" / stop signal set / no MCP client / empty
+		prompt. Individual retrievals fail open - if FKB search errors out,
+		site-state still injects; if site-detail fails for one target, the
+		other target still gets recon. A total failure just leaves the
+		enhanced_prompt unchanged and lets the crew run with the pre-Phase-E
+		hardcoded rule blocks.
+		"""
+		ctx = self.ctx
+		span = tracer.current()
+
+		if ctx.mode != "dev":
+			if span: span.set(skipped="not-dev-mode")
+			return
+		if ctx.should_stop:
+			if span: span.set(skipped="stop-signal")
+			return
+		if not ctx.enhanced_prompt:
+			if span: span.set(skipped="empty-prompt")
+			logger.debug("inject_kb: empty enhanced_prompt - skipping")
+			return
+		# Note: no MCP-client short-circuit. FKB retrieval is local; only
+		# site-recon needs MCP. The site-recon block below guards itself.
+
+		# Snapshot the source prompt BEFORE we prepend anything. Target
+		# DocType extraction and FKB search both run off this snapshot so
+		# neither sees doctype-looking names we add in the banners.
+		source_prompt = ctx.enhanced_prompt
+
+		# ── (1) FKB hybrid search (local, no MCP round-trip) ──────────
+		# Phase C: retrieval moved from the Frappe-side MCP tool to the
+		# processing-local `alfred.knowledge.fkb` module so we can layer
+		# semantic (sentence-transformers) on top of keyword without
+		# installing ML deps in the bench venv. The module reads the same
+		# YAML source-of-truth and falls back to keyword-only if the model
+		# can't load (e.g. missing weights, import error) - the pipeline
+		# keeps running either way.
+		from alfred.knowledge import fkb as _fkb
+
+		fkb_rendered: list[str] = []
+		try:
+			fkb_hits = _fkb.search_hybrid(source_prompt, k=3)
+		except Exception as e:
+			if span: span.set(fkb_error=f"fkb:{type(e).__name__}")
+			logger.warning("inject_kb: FKB search failed: %s", e)
+			fkb_hits = []
+
+		for entry in fkb_hits:
+			if not isinstance(entry, dict):
+				continue
+			entry_id = entry.get("id") or "<unknown>"
+			kind = entry.get("kind") or "entry"
+			title = (entry.get("title") or "").strip()
+			summary = (entry.get("summary") or "").strip()
+			body = (entry.get("body") or "").strip()
+			# `_mode` is "keyword" or "semantic" - include it in the block
+			# header so the agent (and traces) can see which retriever
+			# surfaced each entry.
+			mode_tag = entry.get("_mode", "kb")
+
+			block_parts = [f"[{kind}: {entry_id} via {mode_tag}] {title}"]
+			if summary:
+				block_parts.append(f"Summary: {summary}")
+			if body:
+				block_parts.append(body)
+			fkb_rendered.append("\n".join(block_parts))
+			ctx.injected_kb.append(entry_id)
+
+		# ── (2) Site reconnaissance (requires MCP) ────────────────────
+		# Unlike FKB (local YAML), site-recon queries the live Frappe app
+		# via MCP. Skip cleanly if no MCP client is wired - FKB still
+		# injects.
+		site_rendered: list[str] = []
+		site_artefact_count = 0
+		if ctx.conn.mcp_client:
+			targets = _extract_target_doctypes(source_prompt)
+			# Per-DocType char budget - split the total budget evenly so one
+			# heavily-customized DocType can't starve the other.
+			per_target_budget = (
+				_INJECT_SITE_BUDGET // max(len(targets), 1) if targets else 0
+			)
+			for doctype in targets:
+				try:
+					detail = await ctx.conn.mcp_client.call_tool(
+						"get_site_customization_detail",
+						{"doctype": doctype},
+					)
+				except Exception as e:
+					logger.warning(
+						"inject_kb: site-detail call failed for %r: %s", doctype, e,
+					)
+					continue
+				if not isinstance(detail, dict) or detail.get("error"):
+					# Unknown DocType, permission denied, or infra error - silently
+					# skip. Don't treat "not_found" as a real failure; it's the
+					# common case for targets extracted from prompt noise.
+					continue
+				if not _site_detail_has_artefacts(detail):
+					# DocType exists but has no customizations on this site - no
+					# point injecting a block that says "nothing to see here".
+					continue
+
+				ctx.injected_site_state[doctype] = detail
+				site_rendered.append(
+					_render_site_state_block(doctype, detail, per_target_budget)
+				)
+				site_artefact_count += sum(
+					len(detail.get(k) or [])
+					for k in ("workflows", "server_scripts", "custom_fields",
+							  "notifications", "client_scripts")
+				)
+
+		# ── (3) Combine + prepend ─────────────────────────────────────
+		parts: list[str] = []
+
+		if fkb_rendered:
+			parts.append(
+				"=== FRAPPE KB CONTEXT (auto-injected, reference only) ===\n"
+				"The following platform rules / APIs / idioms were retrieved from\n"
+				"the Frappe Knowledge Base based on your request. Follow them\n"
+				"alongside the user request; they are NOT part of the request.\n\n"
+				+ "\n---\n".join(fkb_rendered)
+				+ "\n=========================================================="
+			)
+
+		if site_rendered:
+			parts.extend(site_rendered)
+
+		if not parts:
+			# Nothing to inject from either layer. Record the no-op state so
+			# the tracer can distinguish "injected nothing" from "phase didn't
+			# run".
+			if span:
+				span.set(
+					injected_kb=[],
+					injected_count=0,
+					injected_site_doctypes=[],
+					injected_site_count=0,
+				)
+			return
+
+		banner = (
+			"\n\n".join(parts)
+			+ "\n\n--- USER REQUEST (interpret this verbatim) ---\n"
+		)
+		ctx.enhanced_prompt = banner + source_prompt
+
+		if span:
+			span.set(
+				injected_kb=list(ctx.injected_kb),
+				injected_count=len(ctx.injected_kb),
+				injected_site_doctypes=list(ctx.injected_site_state.keys()),
+				injected_site_count=site_artefact_count,
+				banner_chars=len(banner),
+			)
+		logger.info(
+			"inject_kb: FKB=%s site=%s for conversation=%s",
+			ctx.injected_kb,
+			list(ctx.injected_site_state.keys()),
+			ctx.conversation_id,
+		)
 
 	async def _phase_resolve_mode(self) -> None:
 		"""Pick full vs lite. Admin-portal override beats site config which
