@@ -21,9 +21,7 @@ responsible for emitting the `chat_reply` message to the WebSocket.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -76,15 +74,7 @@ async def handle_chat(
 		A plain-text reply string. Falls back to a generic acknowledgement
 		on any LLM error - never raises.
 	"""
-	import litellm
-
-	model = (
-		site_config.get("llm_model")
-		or os.environ.get("FALLBACK_LLM_MODEL")
-		or "ollama/llama3.1"
-	)
-	api_key = site_config.get("llm_api_key") or os.environ.get("FALLBACK_LLM_API_KEY") or ""
-	base_url = site_config.get("llm_base_url") or os.environ.get("FALLBACK_LLM_BASE_URL") or ""
+	from alfred.llm_client import ollama_chat
 
 	memory_context = ""
 	if memory is not None:
@@ -98,43 +88,21 @@ async def handle_chat(
 		system_parts.append("")
 		system_parts.append(memory_context)
 
-	kwargs: dict = {
-		"model": model,
-		"messages": [
-			{"role": "system", "content": "\n".join(system_parts)},
-			{"role": "user", "content": prompt},
-		],
-		"max_tokens": 256,
-		"temperature": 0.3,
-		"stream": True,
-		"timeout": 60,
-	}
-	if api_key:
-		kwargs["api_key"] = api_key
-	if base_url:
-		kwargs["base_url"] = base_url
-		kwargs["api_base"] = base_url
-
-	num_ctx = int(site_config.get("llm_num_ctx") or 0)
-	if num_ctx > 0:
-		kwargs["num_ctx"] = num_ctx
-	elif model.startswith("ollama/"):
-		kwargs["num_ctx"] = 2048
-
 	try:
-		loop = asyncio.get_event_loop()
-
-		def _run() -> str:
-			chunks = []
-			for chunk in litellm.completion(**kwargs):
-				token = chunk.choices[0].delta.content
-				if token:
-					chunks.append(token)
-			return "".join(chunks).strip()
-
-		reply = await loop.run_in_executor(None, _run)
-		if reply:
-			return reply
+		reply = await ollama_chat(
+			messages=[
+				{"role": "system", "content": "\n".join(system_parts)},
+				{"role": "user", "content": prompt},
+			],
+			site_config=site_config,
+			tier="triage",
+			max_tokens=256,
+			temperature=0.3,
+			num_ctx_override=2048,
+			timeout=60,
+		)
+		if reply and reply.strip():
+			return reply.strip()
 	except Exception as e:
 		logger.warning("Chat handler LLM call failed: %s", e)
 

@@ -55,7 +55,11 @@ def _resolve_llm(site_config: dict | None = None) -> LLM:
 		"temperature": temperature,
 		"max_tokens": max_tokens,
 		"stream": True,
-		"timeout": config.get("llm_timeout", 120),
+		# 300s default because 32B+ models on remote Ollama (no GPU on the
+		# host) can easily take 2-3 min per call on the first cold request.
+		# The previous 120s default was tuned for smaller local models and
+		# is too tight for production-sized ones.
+		"timeout": config.get("llm_timeout", 300),
 	}
 
 	if api_key:
@@ -79,6 +83,35 @@ def _resolve_llm(site_config: dict | None = None) -> LLM:
 	logger.info("Resolved LLM: model=%s, base_url=%s, temperature=%s, max_tokens=%s, num_ctx=%s",
 		model, base_url or "(default)", temperature, max_tokens, llm_kwargs.get("num_ctx", "(default)"))
 	return LLM(**llm_kwargs)
+
+
+def _resolve_llm_for_tier(
+	site_config: dict | None = None,
+	tier: str | None = None,
+) -> LLM:
+	"""Resolve the LLM for a specific tier.
+
+	If the tier has a model override in site_config (e.g. llm_model_agent),
+	use that. Otherwise fall back to the default _resolve_llm().
+	"""
+	config = site_config or {}
+
+	tier_model = ""
+	tier_num_ctx = 0
+	if tier:
+		tier_model = (config.get(f"llm_model_{tier}") or "").strip()
+		tier_num_ctx = int(config.get(f"llm_model_{tier}_num_ctx") or 0)
+
+	if not tier_model:
+		return _resolve_llm(config)
+
+	# Build a tier-specific config by overriding model + num_ctx
+	tier_config = dict(config)
+	tier_config["llm_model"] = tier_model
+	if tier_num_ctx > 0:
+		tier_config["llm_num_ctx"] = tier_num_ctx
+	logger.info("Resolved tier=%s LLM override: model=%s", tier, tier_model)
+	return _resolve_llm(tier_config)
 
 
 def _build_agent(
@@ -136,7 +169,7 @@ def build_agents(
 			"orchestrator": Agent(...),
 		}
 	"""
-	llm = _resolve_llm(site_config)
+	llm = _resolve_llm_for_tier(site_config, tier="agent")
 	tools = custom_tools or TOOL_ASSIGNMENTS
 
 	agents = {

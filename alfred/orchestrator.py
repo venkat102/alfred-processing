@@ -31,10 +31,8 @@ Design notes:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -273,17 +271,9 @@ async def _classify_with_llm(
 	memory_context: str,
 	site_config: dict,
 ) -> tuple[str | None, str, str]:
-	"""Call litellm to classify the prompt. Returns (mode, reason, confidence)
+	"""Call the LLM to classify the prompt. Returns (mode, reason, confidence)
 	or (None, "", "low") on any failure."""
-	import litellm  # local import - keeps module import cheap
-
-	model = (
-		site_config.get("llm_model")
-		or os.environ.get("FALLBACK_LLM_MODEL")
-		or "ollama/llama3.1"
-	)
-	api_key = site_config.get("llm_api_key") or os.environ.get("FALLBACK_LLM_API_KEY") or ""
-	base_url = site_config.get("llm_base_url") or os.environ.get("FALLBACK_LLM_BASE_URL") or ""
+	from alfred.llm_client import ollama_chat
 
 	user_parts = []
 	if memory_context:
@@ -291,45 +281,25 @@ async def _classify_with_llm(
 		user_parts.append("")
 	user_parts.append(f"Prompt: {prompt}")
 
-	kwargs: dict = {
-		"model": model,
-		"messages": [
-			{"role": "system", "content": _CLASSIFIER_SYSTEM_PROMPT},
-			{"role": "user", "content": "\n".join(user_parts)},
-		],
-		"max_tokens": 128,
-		"temperature": 0.0,
-		"stream": True,
-		"timeout": 30,
-	}
-	if api_key:
-		kwargs["api_key"] = api_key
-	if base_url:
-		kwargs["base_url"] = base_url
-		kwargs["api_base"] = base_url
-
-	num_ctx = int(site_config.get("llm_num_ctx") or 0)
-	if num_ctx > 0:
-		kwargs["num_ctx"] = num_ctx
-	elif model.startswith("ollama/"):
-		kwargs["num_ctx"] = 2048  # Classifier prompt + user block is small
+	timeout = int(site_config.get("classifier_timeout", 60))
 
 	try:
-		loop = asyncio.get_event_loop()
-
-		def _run() -> str:
-			chunks = []
-			for chunk in litellm.completion(**kwargs):
-				token = chunk.choices[0].delta.content
-				if token:
-					chunks.append(token)
-			return "".join(chunks).strip()
-
-		raw = await loop.run_in_executor(None, _run)
+		raw = await ollama_chat(
+			messages=[
+				{"role": "system", "content": _CLASSIFIER_SYSTEM_PROMPT},
+				{"role": "user", "content": "\n".join(user_parts)},
+			],
+			site_config=site_config,
+			tier="triage",
+			max_tokens=128,
+			temperature=0.0,
+			num_ctx_override=2048,  # Classifier prompt is small
+			timeout=timeout,
+		)
 		logger.debug("Orchestrator classifier raw output: %r", raw[:300])
 		return _parse_classifier_output(raw)
 	except Exception as e:
-		logger.warning("Orchestrator classifier call failed: %s", e)
+		logger.warning("Orchestrator classifier call failed: %s: %s", type(e).__name__, e)
 		return None, "", "low"
 
 

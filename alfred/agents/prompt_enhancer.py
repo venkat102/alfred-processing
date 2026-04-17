@@ -9,11 +9,7 @@ Runs a single LLM call before the agent pipeline to:
 This keeps the agent pipeline focused on execution rather than interpretation.
 """
 
-import asyncio
 import logging
-import os
-
-import litellm
 
 from alfred.agents.frappe_knowledge import FRAPPE_REFERENCE
 
@@ -84,9 +80,7 @@ async def enhance_prompt(
     Returns:
         Enhanced prompt string. Falls back to original prompt on any error.
     """
-    model = site_config.get("llm_model") or os.environ.get("FALLBACK_LLM_MODEL") or "ollama/llama3.1"
-    api_key = site_config.get("llm_api_key") or os.environ.get("FALLBACK_LLM_API_KEY") or ""
-    base_url = site_config.get("llm_base_url") or os.environ.get("FALLBACK_LLM_BASE_URL") or ""
+    from alfred.llm_client import ollama_chat
 
     # Only send relevant roles (not all 45+) to save tokens
     all_roles = user_context.get("roles", [])
@@ -106,43 +100,22 @@ async def enhance_prompt(
     user_message_parts.append("")
     user_message_parts.append(f"Request: {raw_prompt}")
 
-    kwargs = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": "\n".join(user_message_parts)},
-        ],
-        "max_tokens": 512,
-        "temperature": 0.1,
-        "stream": True,
-        "timeout": 120,
-    }
-    if api_key:
-        kwargs["api_key"] = api_key
-    if base_url:
-        kwargs["base_url"] = base_url
-        kwargs["api_base"] = base_url
-
-    # Ollama context window limit
-    num_ctx = int(site_config.get("llm_num_ctx") or 0)
-    if num_ctx > 0:
-        kwargs["num_ctx"] = num_ctx
-    elif model.startswith("ollama/"):
-        kwargs["num_ctx"] = 8192  # Needs room for Frappe reference (~3k tokens) + prompt + response
-
     try:
-        logger.info("Enhancing prompt: model=%s, original_length=%d", model, len(raw_prompt))
-        loop = asyncio.get_event_loop()
+        logger.info("Enhancing prompt: original_length=%d", len(raw_prompt))
 
-        def _run():
-            chunks = []
-            for chunk in litellm.completion(**kwargs):
-                token = chunk.choices[0].delta.content
-                if token:
-                    chunks.append(token)
-            return "".join(chunks).strip()
-
-        enhanced = await loop.run_in_executor(None, _run)
+        enhanced = await ollama_chat(
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": "\n".join(user_message_parts)},
+            ],
+            site_config=site_config,
+            tier="reasoning",
+            max_tokens=512,
+            temperature=0.1,
+            # Needs room for Frappe reference (~3k tokens) + prompt + response
+            num_ctx_override=8192,
+            timeout=120,
+        )
         logger.info("Prompt enhanced: original=%d chars, enhanced=%d chars", len(raw_prompt), len(enhanced))
         return enhanced if enhanced else raw_prompt
     except Exception as e:

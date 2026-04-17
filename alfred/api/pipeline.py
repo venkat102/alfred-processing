@@ -463,6 +463,7 @@ class AgentPipeline:
 	PHASES: list[str] = [
 		"sanitize",
 		"load_state",
+		"warmup",
 		"plan_check",
 		"orchestrate",
 		"enhance",
@@ -558,6 +559,70 @@ class AgentPipeline:
 			"roles": ctx.conn.roles,
 			"site_id": ctx.conn.site_id,
 		}
+
+	async def _phase_warmup(self) -> None:
+		"""Pre-warm Ollama models that this pipeline will use.
+
+		Fires a minimal /api/generate call (1 token) for each distinct model
+		the pipeline needs. Ollama loads the model on first request and keeps
+		it warm for 5 minutes by default; we pass keep_alive=10m to extend
+		the window past the full pipeline duration.
+
+		Only runs when multiple distinct models are configured (per-tier
+		overrides). With a single model, the first real call warms it.
+		Never fails the pipeline - exceptions are logged and swallowed.
+		"""
+		import urllib.request as _urllib_request
+
+		ctx = self.ctx
+		site_config = ctx.conn.site_config or {}
+
+		from alfred.llm_client import (
+			TIER_AGENT, TIER_REASONING, TIER_TRIAGE,
+			_resolve_ollama_config_for_tier,
+		)
+
+		models_to_warm: set[tuple[str, str]] = set()
+		for tier in (TIER_TRIAGE, TIER_REASONING, TIER_AGENT):
+			model, base_url, _ = _resolve_ollama_config_for_tier(site_config, tier)
+			if model.startswith("ollama/"):
+				models_to_warm.add((model.removeprefix("ollama/"), base_url))
+
+		if len(models_to_warm) <= 1:
+			return
+
+		async def _warm_one(ollama_model: str, base_url: str):
+			payload = json.dumps({
+				"model": ollama_model,
+				"prompt": "hi",
+				"stream": False,
+				"keep_alive": "10m",
+				"options": {"num_predict": 1},
+			}).encode()
+			url = f"{base_url.rstrip('/')}/api/generate"
+			req = _urllib_request.Request(
+				url, data=payload,
+				headers={"Content-Type": "application/json"},
+			)
+			loop = asyncio.get_event_loop()
+			await loop.run_in_executor(
+				None, lambda: _urllib_request.urlopen(req, timeout=30)
+			)
+
+		tasks = [
+			asyncio.create_task(_warm_one(m, u))
+			for m, u in models_to_warm
+		]
+		results = await asyncio.gather(*tasks, return_exceptions=True)
+
+		warmed = []
+		for (model, _), result in zip(models_to_warm, results):
+			if isinstance(result, Exception):
+				logger.debug("Model warmup failed for %s: %s", model, result)
+			else:
+				warmed.append(model)
+		if warmed:
+			logger.info("Pre-warmed %d model(s): %s", len(warmed), ", ".join(warmed))
 
 	async def _phase_plan_check(self) -> None:
 		"""Ask the admin portal whether this site is allowed to run + what

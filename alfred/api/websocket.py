@@ -818,12 +818,9 @@ async def _clarify_requirements(
 		return enhanced_prompt, []
 
 	try:
-		import litellm
+		from alfred.llm_client import ollama_chat
 
 		site_config = conn.site_config or {}
-		model = site_config.get("llm_model") or "ollama/llama3.1"
-		api_key = site_config.get("llm_api_key") or ""
-		base_url = site_config.get("llm_base_url") or ""
 
 		system = (
 			"You are a Frappe requirements analyst. You receive an enhanced user "
@@ -857,39 +854,23 @@ async def _clarify_requirements(
 			"If nothing to ask, output exactly `[]`."
 		)
 
-		kwargs = {
-			"model": model,
-			"messages": [
-				{"role": "system", "content": system},
-				{"role": "user", "content": f"ENHANCED REQUEST:\n{enhanced_prompt[:6000]}"},
-			],
-			"max_tokens": 1024,
-			"temperature": 0.0,
-			"timeout": 60,
-		}
-		if api_key:
-			kwargs["api_key"] = api_key
-		if base_url:
-			kwargs["base_url"] = base_url
-			kwargs["api_base"] = base_url
-		num_ctx = int(site_config.get("llm_num_ctx") or 0)
-		if num_ctx > 0:
-			kwargs["num_ctx"] = num_ctx
-		elif str(model).startswith("ollama/"):
-			kwargs["num_ctx"] = 8192
-
 		await event_callback("clarify", {
 			"agent": "Requirements", "status": "checking",
 			"message": "Checking for ambiguities that need your input...",
 		})
 
-		loop = asyncio.get_running_loop()
-
-		def _run():
-			resp = litellm.completion(**kwargs)
-			return resp.choices[0].message.content or ""
-
-		raw = await loop.run_in_executor(None, _run)
+		raw = await ollama_chat(
+			messages=[
+				{"role": "system", "content": system},
+				{"role": "user", "content": f"ENHANCED REQUEST:\n{enhanced_prompt[:6000]}"},
+			],
+			site_config=site_config,
+			tier="reasoning",
+			max_tokens=1024,
+			temperature=0.0,
+			num_ctx_override=8192,
+			timeout=60,
+		)
 		logger.info("Clarify pass result (first 500): %r", (raw or "")[:500])
 
 		questions = []
@@ -994,11 +975,7 @@ async def _rescue_regenerate_changeset(
 		return []
 
 	try:
-		import litellm
-
-		model = site_config.get("llm_model") or "ollama/llama3.1"
-		api_key = site_config.get("llm_api_key") or ""
-		base_url = site_config.get("llm_base_url") or ""
+		from alfred.llm_client import ollama_chat
 
 		# Drift-aware preamble. When the upstream crew produced drift, we
 		# tell the rescue LLM explicitly that a previous attempt went
@@ -1069,39 +1046,23 @@ async def _rescue_regenerate_changeset(
 			)
 		user_msg_parts.append("\n\nProduce the JSON changeset now. Raw JSON only.")
 
-		kwargs = {
-			"model": model,
-			"messages": [
-				{"role": "system", "content": system},
-				{"role": "user", "content": "".join(user_msg_parts)},
-			],
-			"max_tokens": 2048,
-			"temperature": 0.0,
-			"timeout": 90,
-		}
-		if api_key:
-			kwargs["api_key"] = api_key
-		if base_url:
-			kwargs["base_url"] = base_url
-			kwargs["api_base"] = base_url
-		num_ctx = int(site_config.get("llm_num_ctx") or 0)
-		if num_ctx > 0:
-			kwargs["num_ctx"] = num_ctx
-		elif str(model).startswith("ollama/"):
-			kwargs["num_ctx"] = 8192
-
 		await event_callback("reformat", {
 			"agent": "Rescue", "status": "running",
 			"message": "Crew drifted off-spec. Regenerating changeset from the original request...",
 		})
 
-		loop = asyncio.get_running_loop()
-
-		def _run():
-			resp = litellm.completion(**kwargs)
-			return resp.choices[0].message.content or ""
-
-		regenerated = await loop.run_in_executor(None, _run)
+		regenerated = await ollama_chat(
+			messages=[
+				{"role": "system", "content": system},
+				{"role": "user", "content": "".join(user_msg_parts)},
+			],
+			site_config=site_config,
+			tier="reasoning",
+			max_tokens=2048,
+			temperature=0.0,
+			num_ctx_override=8192,
+			timeout=90,
+		)
 		logger.info(
 			"Rescue regeneration result (first 500): %r", (regenerated or "")[:500],
 		)

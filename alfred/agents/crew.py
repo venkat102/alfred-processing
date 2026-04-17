@@ -463,13 +463,13 @@ def build_insights_crew(
 		insights_tools: CrewAI @tool list from `build_mcp_tools(...)["insights"]`.
 	"""
 	from alfred.agents import backstories
-	from alfred.agents.definitions import _resolve_llm
+	from alfred.agents.definitions import _resolve_llm_for_tier
 
 	user_context = user_context or {}
 	site_config = site_config or {}
 	state = CrewState()
 
-	llm = _resolve_llm(site_config)
+	llm = _resolve_llm_for_tier(site_config, tier="agent")
 
 	# Role deliberately distinct from "Frappe Developer" so the UI can badge
 	# this as Insights mode. The backstory is site-information-focused.
@@ -544,13 +544,13 @@ def build_lite_crew(
 			production this is build_mcp_tools(mcp_client)["lite"].
 	"""
 	from alfred.agents import backstories
-	from alfred.agents.definitions import _resolve_llm
+	from alfred.agents.definitions import _resolve_llm_for_tier
 
 	user_context = user_context or {}
 	site_config = site_config or {}
 	state = previous_state or CrewState()
 
-	llm = _resolve_llm(site_config)
+	llm = _resolve_llm_for_tier(site_config, tier="agent")
 
 	# Role deliberately matches the full-mode Developer so the UI's
 	# AGENT_PHASE_MAP and run_crew's phase_map both resolve correctly without

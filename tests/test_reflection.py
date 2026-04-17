@@ -226,7 +226,7 @@ class TestReflectMinimalityWithLLM:
 			{"op": "create", "doctype": "Server Script", "data": {"name": "LogScript"}},
 		]
 		response = '{"remove": [1, 2], "reasons": ["audit not asked", "log not asked"]}'
-		with patch("litellm.completion", return_value=self._make_fake_response(response)):
+		with patch("alfred.llm_client.ollama_chat", new_callable=AsyncMock, return_value=response):
 			kept, removed = self._run(
 				reflect_minimality("Send an email when a leave is approved", changes, {})
 			)
@@ -243,7 +243,7 @@ class TestReflectMinimalityWithLLM:
 			{"op": "create", "doctype": "Notification", "data": {"name": "B"}},
 		]
 		response = '{"remove": [0, 1], "reasons": ["no", "no"]}'
-		with patch("litellm.completion", return_value=self._make_fake_response(response)):
+		with patch("alfred.llm_client.ollama_chat", new_callable=AsyncMock, return_value=response):
 			kept, removed = self._run(
 				reflect_minimality("Send notifications", changes, {})
 			)
@@ -257,7 +257,7 @@ class TestReflectMinimalityWithLLM:
 			{"op": "create", "doctype": "Notification", "data": {"name": "Y"}},
 		]
 		response = '{"remove": [], "reasons": []}'
-		with patch("litellm.completion", return_value=self._make_fake_response(response)):
+		with patch("alfred.llm_client.ollama_chat", new_callable=AsyncMock, return_value=response):
 			kept, removed = self._run(reflect_minimality("request", changes, {}))
 		assert kept == changes
 		assert removed == []
@@ -267,7 +267,7 @@ class TestReflectMinimalityWithLLM:
 			{"op": "create", "doctype": "A", "data": {"name": "a"}},
 			{"op": "create", "doctype": "B", "data": {"name": "b"}},
 		]
-		with patch("litellm.completion", side_effect=RuntimeError("network down")):
+		with patch("alfred.llm_client.ollama_chat", new_callable=AsyncMock, side_effect=RuntimeError("network down")):
 			kept, removed = self._run(reflect_minimality("request", changes, {}))
 		assert kept == changes
 		assert removed == []
@@ -277,7 +277,7 @@ class TestReflectMinimalityWithLLM:
 			{"op": "create", "doctype": "A", "data": {"name": "a"}},
 			{"op": "create", "doctype": "B", "data": {"name": "b"}},
 		]
-		with patch("litellm.completion", return_value=self._make_fake_response("not json at all")):
+		with patch("alfred.llm_client.ollama_chat", new_callable=AsyncMock, return_value="not json at all"):
 			kept, removed = self._run(reflect_minimality("request", changes, {}))
 		assert kept == changes
 		assert removed == []
@@ -290,7 +290,7 @@ class TestReflectMinimalityWithLLM:
 			{"op": "create", "doctype": "D", "data": {"name": "d"}},
 		]
 		response = '{"remove": [1, 2], "reasons": ["x", "y"]}'
-		with patch("litellm.completion", return_value=self._make_fake_response(response)):
+		with patch("alfred.llm_client.ollama_chat", new_callable=AsyncMock, return_value=response):
 			kept, removed = self._run(reflect_minimality("request", changes, {}))
 		assert len(kept) == 2
 		assert kept[0]["data"]["name"] == "a"

@@ -178,11 +178,7 @@ async def reflect_minimality(
 		return changeset, []
 
 	try:
-		import litellm
-
-		model = site_config.get("llm_model") or os.environ.get("FALLBACK_LLM_MODEL") or "ollama/llama3.1"
-		api_key = site_config.get("llm_api_key") or os.environ.get("FALLBACK_LLM_API_KEY") or ""
-		base_url = site_config.get("llm_base_url") or os.environ.get("FALLBACK_LLM_BASE_URL") or ""
+		from alfred.llm_client import ollama_chat
 
 		items_text = "\n".join(
 			f"  [{i}] {_describe_item(item)}" for i, item in enumerate(changeset)
@@ -193,31 +189,18 @@ async def reflect_minimality(
 			"Which items (if any) are NOT strictly needed? Return the JSON object."
 		)
 
-		kwargs = {
-			"model": model,
-			"messages": [
+		raw = await ollama_chat(
+			messages=[
 				{"role": "system", "content": _SYSTEM_PROMPT},
 				{"role": "user", "content": user_msg},
 			],
-			"max_tokens": 256,
-			"temperature": 0.0,
-			"timeout": 30,
-		}
-		if api_key:
-			kwargs["api_key"] = api_key
-		if base_url:
-			kwargs["base_url"] = base_url
-			kwargs["api_base"] = base_url
-		if str(model).startswith("ollama/"):
-			kwargs["num_ctx"] = int(site_config.get("llm_num_ctx") or 0) or 8192
-
-		loop = asyncio.get_running_loop()
-
-		def _run() -> str:
-			resp = litellm.completion(**kwargs)
-			return resp.choices[0].message.content or ""
-
-		raw = await loop.run_in_executor(None, _run)
+			site_config=site_config,
+			tier="triage",
+			max_tokens=256,
+			temperature=0.0,
+			num_ctx_override=8192,
+			timeout=30,
+		)
 		logger.info("Reflection raw response (first 300): %r", (raw or "")[:300])
 
 		indices, reasons = _parse_indices_strict(raw, len(changeset))

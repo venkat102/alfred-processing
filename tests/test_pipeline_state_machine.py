@@ -80,6 +80,7 @@ class TestPipelineOrder:
 		expected = [
 			"sanitize",
 			"load_state",
+			"warmup",
 			"plan_check",
 			"orchestrate",
 			"enhance",
