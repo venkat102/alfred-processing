@@ -33,6 +33,14 @@ ENV WORKERS=2
 ENV HOST=0.0.0.0
 ENV PORT=8000
 
+# CrewAI ships with outbound telemetry to its own SaaS endpoint. Disable
+# by default - agents running on customer sites should not phone home.
+# All three flags set to cover older and newer CrewAI versions; they also
+# short-circuit the OTel SDK init so cold-start is faster.
+ENV CREWAI_DISABLE_TELEMETRY=true
+ENV CREWAI_DISABLE_TRACKING=true
+ENV OTEL_SDK_DISABLED=true
+
 CMD uvicorn alfred.main:app \
     --host ${HOST} \
     --port ${PORT} \
