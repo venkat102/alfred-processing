@@ -12,7 +12,14 @@ dependencies = [
 	"fastapi>=0.100,<1.0",
 	"uvicorn[standard]>=0.20,<1.0",
 	"websockets>=12.0,<14.0",
-	"crewai>=0.80,<1.0",
+	# Pinned exactly because CrewAI's API surface churns fast (0.80 -> 0.203
+	# in our original window) and our crew-builder + rescue paths sit on
+	# specific internals (Task.callback shape, crew.tasks iteration, the
+	# retry/drift quirks we handle in agents/reflection.py and api/websocket
+	# _rescue_regenerate_changeset). Bump deliberately: update this version,
+	# run the full pytest suite + bench tests, confirm no drift/rescue
+	# regression, then commit.
+	"crewai==0.203.2",
 	"litellm>=1.40,<2.0",
 	"redis[hiredis]>=5.0,<6.0",
 	"pydantic>=2.0,<3.0",

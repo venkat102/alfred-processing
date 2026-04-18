@@ -23,6 +23,8 @@ from alfred.llm_client import OllamaError
 from alfred.main import create_app
 from alfred.obs import metrics
 from alfred.obs.metrics import (
+	crew_drift_total,
+	crew_rescue_total,
 	llm_errors_total,
 	mcp_calls_total,
 	orchestrator_decisions_total,
@@ -62,6 +64,8 @@ class TestMetricsEndpoint:
 		mcp_calls_total.labels(tool="get_site_info", outcome="success").inc()
 		orchestrator_decisions_total.labels(source="fast_path", mode="chat").inc()
 		llm_errors_total.labels(tier="triage", error_type="timeout").inc()
+		crew_drift_total.labels(reason="training_data_dump").inc()
+		crew_rescue_total.labels(outcome="produced").inc()
 
 		text = await _scrape(app)
 		# Name presence is what matters. Exposition format pads them with
@@ -71,6 +75,8 @@ class TestMetricsEndpoint:
 			"alfred_mcp_calls_total",
 			"alfred_orchestrator_decisions_total",
 			"alfred_llm_errors_total",
+			"alfred_crew_drift_total",
+			"alfred_crew_rescue_total",
 		):
 			assert name in text, f"{name} not in /metrics output"
 
@@ -147,6 +153,130 @@ class TestOrchestratorCounter:
 			if s.labels.get("source") == "override"
 		]
 		assert any(s.value == 1.0 for s in override)
+
+
+class TestCrewRecoveryCounters:
+	"""Exercise the drift + rescue counter wiring inside the post_crew
+	phase. We don't run a real crew - we just poke the minimum ctx
+	state and assert the counters move."""
+
+	def _ctx(self, result_text: str, prompt: str = "Add a field to ToDo"):
+		from unittest.mock import AsyncMock, MagicMock
+
+		conn = MagicMock()
+		conn.send = AsyncMock()
+		conn.site_id = "test-site"
+		conn.user = "t@t.com"
+		conn.roles = ["System Manager"]
+		conn.site_config = {"llm_model": "ollama/test"}
+		conn.mcp_client = None
+		conn.websocket = MagicMock()
+		conn.websocket.app.state.redis = None
+		conn.websocket.app.state.settings = MagicMock(
+			ADMIN_PORTAL_URL="", ADMIN_SERVICE_KEY="",
+		)
+
+		from alfred.api.pipeline import PipelineContext
+
+		ctx = PipelineContext(conn=conn, conversation_id="c1", prompt=prompt)
+		ctx.result_text = result_text
+		ctx.enhanced_prompt = prompt
+		ctx.event_callback = AsyncMock()
+		ctx.changes = []
+		ctx.removed_by_reflection = []
+		return ctx
+
+	def test_drift_detection_increments_drift_counter(self):
+		# _detect_drift returns a non-empty reason when the Developer's
+		# output is clearly off-topic relative to the prompt. We feed it
+		# a large Sales Order schema dump alongside a ToDo-adding prompt.
+		from alfred.api.pipeline import AgentPipeline
+
+		# Triggers _detect_drift signal 1: mentions an ERPNext field
+		# (customer_name) that the user never asked about.
+		schema_dump = (
+			"Here's a breakdown of the Sales Order schema: "
+			"customer_name is the linked party, transaction_date is the "
+			"posting date, grand_total is the calculated amount."
+		)
+		ctx = self._ctx(result_text=schema_dump, prompt="Add a priority field to ToDo")
+		ctx.mode = "dev"
+		# post_crew reads the crew output from ctx.crew_result, not from
+		# ctx.result_text directly - the assignment happens inside the phase.
+		ctx.crew_result = {"status": "completed", "result": schema_dump}
+		pipeline = AgentPipeline(ctx)
+
+		# Rescue is imported at call time from alfred.api.websocket so
+		# patch the source module.
+		from unittest.mock import patch
+
+		async def fake_rescue(*args, **kwargs):
+			return []
+
+		with patch("alfred.api.websocket._rescue_regenerate_changeset", new=fake_rescue):
+			asyncio.new_event_loop().run_until_complete(pipeline._phase_post_crew())
+
+		drift_samples = [
+			s for m in crew_drift_total.collect() for s in m.samples
+			if s.labels
+		]
+		rescue_empty = [
+			s for m in crew_rescue_total.collect() for s in m.samples
+			if s.labels.get("outcome") == "empty"
+		]
+		assert any(s.value >= 1.0 for s in drift_samples), (
+			"drift counter should have fired on the schema-dump output"
+		)
+		assert any(s.value >= 1.0 for s in rescue_empty), (
+			"rescue counter should record outcome=empty when regeneration fails"
+		)
+
+	def test_successful_rescue_increments_produced_label(self):
+		# No drift, but first-pass extraction yields nothing. Rescue
+		# returns a valid-shaped changeset. outcome should be 'produced'.
+		# We don't care whether post_crew continues past the rescue hook
+		# (dry-run retry needs an MCP client), so we let it abort cleanly.
+		from unittest.mock import patch
+
+		from alfred.api.pipeline import AgentPipeline
+
+		prose = "I'll explain the approach: ..."
+		ctx = self._ctx(result_text=prose, prompt="Add a field to ToDo")
+		ctx.mode = "dev"
+		ctx.crew_result = {"status": "completed", "result": prose}
+		pipeline = AgentPipeline(ctx)
+
+		changeset = [{"op": "create", "doctype": "Custom Field", "data": {"name": "x"}}]
+
+		async def fake_rescue(*args, **kwargs):
+			return changeset
+
+		# Raise inside reflection so we exit post_crew right after the
+		# rescue counter has fired and before the dry-run/retry path that
+		# needs an MCP client. The outer try/except in run() would catch
+		# this, but we're calling _phase_post_crew directly so it bubbles
+		# - we swallow it here.
+		from alfred.llm_client import OllamaError
+
+		async def fake_reflect(*args, **kwargs):
+			raise OllamaError("stop-after-rescue")
+
+		with patch("alfred.api.websocket._rescue_regenerate_changeset", new=fake_rescue), \
+		     patch("alfred.agents.reflection.reflect_minimality", new=fake_reflect):
+			try:
+				asyncio.new_event_loop().run_until_complete(
+					pipeline._phase_post_crew(),
+				)
+			except OllamaError:
+				pass  # expected
+
+		produced = [
+			s for m in crew_rescue_total.collect() for s in m.samples
+			if s.labels.get("outcome") == "produced"
+		]
+		assert any(s.value >= 1.0 for s in produced), (
+			"rescue counter should record outcome=produced on recovery"
+		)
 
 
 class TestLlmErrorCounter:

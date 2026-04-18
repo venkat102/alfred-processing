@@ -65,6 +65,30 @@ llm_errors_total = Counter(
 	labelnames=("tier", "error_type"),
 )
 
+# These two counters exist specifically to quantify CrewAI's
+# framework-quirk tax. The Developer agent sometimes pivots out of the
+# task structure and emits prose or training-data dumps instead of a
+# changeset ("drift"). When that happens we invoke a direct LLM call to
+# regenerate the changeset ("rescue"). Both paths cost extra latency +
+# tokens, so we want numbers - not vibes - to tell us whether the
+# framework is earning its keep.
+crew_drift_total = Counter(
+	"alfred_crew_drift_total",
+	"How often the crew's Developer agent drifts off the task structure. "
+	"Reason is the classifier keyword from _detect_drift (e.g. "
+	"'training_data_dump', 'prose_only'). High rates mean the framework "
+	"quirks are actively costing us.",
+	labelnames=("reason",),
+)
+
+crew_rescue_total = Counter(
+	"alfred_crew_rescue_total",
+	"How often the rescue LLM regeneration path ran, and whether it "
+	"produced a usable changeset. outcome is 'produced' or 'empty'. "
+	"A growing 'empty' share means rescue is not recovering real misses.",
+	labelnames=("outcome",),
+)
+
 
 def reset_for_tests() -> None:
 	"""Reset all metric samples. Call from test setup only.
@@ -78,6 +102,8 @@ def reset_for_tests() -> None:
 		mcp_calls_total,
 		orchestrator_decisions_total,
 		llm_errors_total,
+		crew_drift_total,
+		crew_rescue_total,
 	):
 		try:
 			m._metrics.clear()  # type: ignore[attr-defined]

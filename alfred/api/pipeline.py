@@ -1454,6 +1454,13 @@ class AgentPipeline:
 		# the garbage to the UI or feeding it into rescue which itself
 		# would just drift in sympathy.
 		drift_reason = _detect_drift(ctx.result_text, ctx.prompt)
+		if drift_reason:
+			# Counter: quantify how often the framework-quirk tax fires.
+			try:
+				from alfred.obs.metrics import crew_drift_total
+				crew_drift_total.labels(reason=drift_reason).inc()
+			except Exception:
+				pass
 
 		# Extract
 		ctx.changes = _extract_changes(ctx.result_text) if not drift_reason else []
@@ -1472,6 +1479,15 @@ class AgentPipeline:
 				user_prompt=ctx.prompt,
 				drift_reason=drift_reason,
 			)
+			# Counter: did rescue actually recover a changeset, or are we
+			# just burning tokens on a lost cause?
+			try:
+				from alfred.obs.metrics import crew_rescue_total
+				crew_rescue_total.labels(
+					outcome="produced" if ctx.changes else "empty",
+				).inc()
+			except Exception:
+				pass
 
 		if not ctx.changes:
 			logger.warning(
