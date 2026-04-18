@@ -13,6 +13,8 @@ Covers:
 """
 
 import asyncio
+from contextlib import ExitStack
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -351,6 +353,62 @@ class TestErrorBoundaries:
 		assert data["code"] == "TEST_CODE"
 		assert data["error"] == "no luck"
 		assert data["detail"] == "extra"
+
+	@pytest.mark.parametrize("failing_phase", AgentPipeline.PHASES)
+	def test_every_phase_exception_is_caught_and_stops_pipeline(self, failing_phase):
+		"""Inject a RuntimeError into each phase one at a time and verify:
+		- the error is caught at run() level (no bubble to caller)
+		- a PIPELINE_ERROR message is sent to the client
+		- every phase AFTER the failing one is skipped (no silent continuation)
+		"""
+		ctx = _make_ctx()
+		pipeline = AgentPipeline(ctx)
+
+		async def boom():
+			raise RuntimeError(f"{failing_phase} went boom")
+
+		# Replace the failing phase with the raiser and every subsequent
+		# phase with a sentinel we can assert was NOT called.
+		phases = AgentPipeline.PHASES
+		fail_idx = phases.index(failing_phase)
+		patches = {failing_phase: boom}
+		sentinels = {}
+		for later in phases[fail_idx + 1:]:
+			sentinels[later] = AsyncMock()
+			patches[later] = sentinels[later]
+
+		with ExitStack() as stack:
+			for name, side in patches.items():
+				if isinstance(side, AsyncMock):
+					stack.enter_context(patch.object(pipeline, f"_phase_{name}", new=side))
+				else:
+					stack.enter_context(
+						patch.object(pipeline, f"_phase_{name}", side_effect=side)
+					)
+			# All pre-failure phases also neutralised so we don't hit side effects
+			for earlier in phases[:fail_idx]:
+				if earlier != failing_phase:
+					stack.enter_context(
+						patch.object(pipeline, f"_phase_{earlier}", new=AsyncMock()),
+					)
+			_run(pipeline.run())
+
+		# Pipeline emitted the error cleanly
+		sent_types = [call[0][0].get("type") for call in ctx.conn.send.call_args_list]
+		assert "error" in sent_types, f"No error message sent after {failing_phase} failed"
+		error_payload = next(
+			call[0][0]["data"] for call in ctx.conn.send.call_args_list
+			if call[0][0].get("type") == "error"
+		)
+		assert error_payload["code"] == "PIPELINE_ERROR"
+		assert failing_phase in error_payload["error"], (
+			f"Error message should mention the failing phase: {error_payload['error']}"
+		)
+		# Downstream phases were NOT invoked
+		for later, sentinel in sentinels.items():
+			assert not sentinel.called, (
+				f"Phase {later} ran after {failing_phase} raised - pipeline did not stop"
+			)
 
 
 class TestTracerIntegration:
