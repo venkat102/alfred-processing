@@ -38,8 +38,6 @@ class Settings(BaseSettings):
 
 	# WebSocket
 	WS_HEARTBEAT_INTERVAL: int = 30
-	WS_MESSAGE_BUFFER_TTL: int = 3600
-	WS_MESSAGE_BUFFER_MAX: int = 1000
 
 	model_config = {
 		"env_file": ".env",

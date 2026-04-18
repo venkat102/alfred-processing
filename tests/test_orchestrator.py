@@ -165,6 +165,52 @@ class TestParseClassifierOutput:
 		mode, _, _ = _parse_classifier_output("this is not json at all")
 		assert mode is None
 
+	def test_json_with_extra_fields_still_parses(self):
+		text = (
+			'{"mode": "dev", "reason": "build", "confidence": "high", '
+			'"extra_noise": "ignored", "telemetry": {"k": 1}}'
+		)
+		mode, reason, conf = _parse_classifier_output(text)
+		assert mode == "dev"
+		assert conf == "high"
+
+	def test_mixed_case_mode_normalized(self):
+		mode, _, _ = _parse_classifier_output(
+			'{"mode": "DEV", "reason": "ok", "confidence": "high"}'
+		)
+		assert mode == "dev"
+
+	def test_array_returns_none(self):
+		# Top-level array, not object - must not crash.
+		mode, _, _ = _parse_classifier_output('[{"mode": "dev"}]')
+		assert mode is None
+
+	def test_huge_response_with_embedded_json(self):
+		# A verbose local model may produce prose before AND after the JSON.
+		text = (
+			"Here is a detailed analysis of the prompt:\n\n" * 50
+			+ '{"mode": "insights", "reason": "user asks about site", "confidence": "high"}\n'
+			+ "That's my final answer.\n" * 20
+		)
+		mode, _, conf = _parse_classifier_output(text)
+		assert mode == "insights"
+		assert conf == "high"
+
+	def test_confidence_with_surrounding_whitespace(self):
+		mode, _, conf = _parse_classifier_output(
+			'{"mode": "dev", "reason": "", "confidence": "  HIGH  "}'
+		)
+		assert conf == "high"
+
+	def test_null_fields_fall_back_cleanly(self):
+		# Some models emit null instead of omitting keys.
+		mode, reason, conf = _parse_classifier_output(
+			'{"mode": "dev", "reason": null, "confidence": null}'
+		)
+		assert mode == "dev"
+		assert reason == ""
+		assert conf == "medium"
+
 
 class TestClassifyMode:
 	def test_manual_override_bypasses_llm(self):

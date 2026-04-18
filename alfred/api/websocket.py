@@ -7,7 +7,11 @@ Protocol:
 4. Bidirectional messaging begins - each message has a msg_id for ack tracking
 5. MCP (JSON-RPC) messages are identified by "jsonrpc" field, all others by "type" field
 6. Heartbeat ping every 30 seconds
-7. On disconnect, unacked messages buffered in Redis for replay on reconnect
+7. On disconnect: the in-flight pipeline is cancelled so orphaned crews
+   don't keep burning LLM calls. Durable queueing of inbound prompts lives
+   on the client side (alfred_client's connection_manager persists to Redis
+   and drains on reconnect); the processing app itself is stateless across
+   disconnects.
 """
 
 import ast
