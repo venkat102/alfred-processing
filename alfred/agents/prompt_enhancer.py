@@ -114,7 +114,7 @@ async def enhance_prompt(
             temperature=0.1,
             # Needs room for Frappe reference (~3k tokens) + prompt + response
             num_ctx_override=8192,
-            timeout=120,
+            timeout=int(site_config.get("llm_timeout") or 120),
         )
         logger.info("Prompt enhanced: original=%d chars, enhanced=%d chars", len(raw_prompt), len(enhanced))
         return enhanced if enhanced else raw_prompt

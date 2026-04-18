@@ -397,7 +397,7 @@ class ConnectionState:
 			"data": {"question": question, "choices": choices or [], "timeout_seconds": timeout},
 		}
 
-		loop = asyncio.get_event_loop()
+		loop = asyncio.get_running_loop()
 		future = loop.create_future()
 		self._pending_questions[msg_id] = future
 
@@ -869,7 +869,7 @@ async def _clarify_requirements(
 			max_tokens=1024,
 			temperature=0.0,
 			num_ctx_override=8192,
-			timeout=60,
+			timeout=int(site_config.get("llm_timeout") or 60),
 		)
 		logger.info("Clarify pass result (first 500): %r", (raw or "")[:500])
 
@@ -1061,7 +1061,7 @@ async def _rescue_regenerate_changeset(
 			max_tokens=2048,
 			temperature=0.0,
 			num_ctx_override=8192,
-			timeout=90,
+			timeout=int(site_config.get("llm_timeout") or 90),
 		)
 		logger.info(
 			"Rescue regeneration result (first 500): %r", (regenerated or "")[:500],

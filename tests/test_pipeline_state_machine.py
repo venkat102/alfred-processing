@@ -179,6 +179,76 @@ class TestSanitizePhase:
 		assert ctx.stop_signal.code == "NEEDS_REVIEW"
 
 
+class TestWarmupPhase:
+	def _ctx_with_models(self, **extra):
+		ctx = _make_ctx()
+		ctx.conn.site_config = {
+			"llm_model": "ollama/default",
+			"llm_base_url": "http://fake-ollama:11434",
+			**extra,
+		}
+		return ctx
+
+	def test_no_warmup_when_single_model(self):
+		ctx = self._ctx_with_models()
+		pipeline = AgentPipeline(ctx)
+		with patch("urllib.request.urlopen") as stub:
+			_run(pipeline._phase_warmup())
+		stub.assert_not_called()
+
+	def test_warms_each_distinct_tier_model(self):
+		ctx = self._ctx_with_models(
+			llm_model_triage="ollama/gemma:2b",
+			llm_model_reasoning="ollama/qwen3.5:latest",
+			llm_model_agent="ollama/qwen2.5-coder:32b",
+		)
+		pipeline = AgentPipeline(ctx)
+		with patch("urllib.request.urlopen") as stub:
+			_run(pipeline._phase_warmup())
+		# Three distinct tier models -> three warmup calls.
+		assert stub.call_count == 3
+		# Each call should hit /api/generate (not /api/chat) with keep_alive set.
+		urls_called = []
+		bodies = []
+		for call in stub.call_args_list:
+			req = call.args[0]
+			urls_called.append(req.full_url)
+			import json as _j
+			bodies.append(_j.loads(req.data))
+		for url in urls_called:
+			assert url == "http://fake-ollama:11434/api/generate"
+		for body in bodies:
+			assert body["keep_alive"] == "10m"
+			assert body["options"]["num_predict"] == 1
+
+	def test_warmup_dedupes_identical_models_across_tiers(self):
+		ctx = self._ctx_with_models(
+			llm_model_triage="ollama/same-model",
+			llm_model_reasoning="ollama/same-model",
+			llm_model_agent="ollama/different",
+		)
+		pipeline = AgentPipeline(ctx)
+		with patch("urllib.request.urlopen") as stub:
+			_run(pipeline._phase_warmup())
+		# Two distinct models, not three.
+		assert stub.call_count == 2
+
+	def test_warmup_swallows_network_failure(self):
+		ctx = self._ctx_with_models(
+			llm_model_triage="ollama/gemma:2b",
+			llm_model_agent="ollama/qwen2.5-coder:32b",
+		)
+		pipeline = AgentPipeline(ctx)
+		import urllib.error
+		with patch(
+			"urllib.request.urlopen",
+			side_effect=urllib.error.URLError("ollama unreachable"),
+		):
+			# Must not raise; pipeline must not be stopped.
+			_run(pipeline._phase_warmup())
+		assert ctx.should_stop is False
+
+
 class TestResolveModePhase:
 	def test_plan_mode_beats_site_config(self):
 		ctx = _make_ctx()

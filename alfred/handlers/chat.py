@@ -99,7 +99,7 @@ async def handle_chat(
 			max_tokens=256,
 			temperature=0.3,
 			num_ctx_override=2048,
-			timeout=60,
+			timeout=int(site_config.get("llm_timeout") or 60),
 		)
 		if reply and reply.strip():
 			return reply.strip()

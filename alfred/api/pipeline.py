@@ -604,7 +604,7 @@ class AgentPipeline:
 				url, data=payload,
 				headers={"Content-Type": "application/json"},
 			)
-			loop = asyncio.get_event_loop()
+			loop = asyncio.get_running_loop()
 			await loop.run_in_executor(
 				None, lambda: _urllib_request.urlopen(req, timeout=30)
 			)

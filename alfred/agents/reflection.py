@@ -199,7 +199,7 @@ async def reflect_minimality(
 			max_tokens=256,
 			temperature=0.0,
 			num_ctx_override=8192,
-			timeout=30,
+			timeout=int(site_config.get("llm_timeout") or 30),
 		)
 		logger.info("Reflection raw response (first 300): %r", (raw or "")[:300])
 

@@ -57,7 +57,7 @@ class UserInteractionHandler:
 			},
 		}
 
-		loop = asyncio.get_event_loop()
+		loop = asyncio.get_running_loop()
 		future = loop.create_future()
 		self._pending[msg_id] = future
 
@@ -123,15 +123,16 @@ def build_ask_user_tool(handler: UserInteractionHandler):
 		choice_list = [c.strip() for c in choices.split(",") if c.strip()] if choices else None
 
 		try:
-			loop = asyncio.get_event_loop()
-			if loop.is_running():
+			try:
+				loop = asyncio.get_running_loop()
+			except RuntimeError:
+				loop = None
+
+			if loop is not None and loop.is_running():
 				import concurrent.futures
 				with concurrent.futures.ThreadPoolExecutor() as pool:
 					future = pool.submit(asyncio.run, handler.ask_user(question, choice_list))
 					return future.result(timeout=handler._timeout + 5)
-			else:
-				return loop.run_until_complete(handler.ask_user(question, choice_list))
-		except RuntimeError:
 			return asyncio.run(handler.ask_user(question, choice_list))
 		except TimeoutError:
 			return "[TIMEOUT] User did not respond. Consider escalating to a human operator."

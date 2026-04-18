@@ -5,6 +5,9 @@ a thread pool executor inside an asyncio event loop (the anyio backend hangs
 on socket reads to remote Ollama). This module uses urllib (stdlib) instead,
 which works reliably in all contexts.
 
+All network + JSON parsing errors are raised as OllamaError so callers can
+catch a single exception type without depending on urllib/http internals.
+
 Used by: orchestrator classifier, prompt enhancer, chat handler, reflection.
 NOT used by: CrewAI agent calls (CrewAI manages its own litellm internally).
 """
@@ -15,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import urllib.error
 import urllib.request
 from typing import Any
 
@@ -24,6 +28,10 @@ logger = logging.getLogger("alfred.llm_client")
 TIER_TRIAGE = "triage"
 TIER_REASONING = "reasoning"
 TIER_AGENT = "agent"
+
+
+class OllamaError(RuntimeError):
+	"""Raised for any network or protocol failure from the Ollama client."""
 
 
 def _resolve_ollama_config(site_config: dict) -> tuple[str, str, int]:
@@ -137,10 +145,46 @@ def ollama_chat_sync(
         url, data=payload,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        raise OllamaError(
+            f"Ollama HTTP {e.code} from {url} (model={ollama_model}): {body}"
+        ) from e
+    except urllib.error.URLError as e:
+        raise OllamaError(
+            f"Ollama network error from {url} (model={ollama_model}): {e.reason}"
+        ) from e
+    except TimeoutError as e:
+        raise OllamaError(
+            f"Ollama timeout after {timeout}s from {url} (model={ollama_model})"
+        ) from e
 
-    return (data.get("message", {}).get("content") or "").strip()
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError) as e:
+        snippet = raw[:200] if isinstance(raw, (bytes, bytearray)) else str(raw)[:200]
+        raise OllamaError(
+            f"Ollama returned non-JSON response from {url} (model={ollama_model}): {snippet!r}"
+        ) from e
+
+    if not isinstance(data, dict):
+        raise OllamaError(
+            f"Ollama returned unexpected payload type {type(data).__name__} "
+            f"(expected object) from {url} (model={ollama_model})"
+        )
+    message = data.get("message")
+    if not isinstance(message, dict):
+        raise OllamaError(
+            f"Ollama response missing 'message' object from {url} (model={ollama_model}): {data!r}"
+        )
+    return (message.get("content") or "").strip()
 
 
 async def ollama_chat(
@@ -151,7 +195,7 @@ async def ollama_chat(
     **kwargs,
 ) -> str:
     """Async wrapper - runs ollama_chat_sync in a thread executor."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None, lambda: ollama_chat_sync(messages, site_config, tier=tier, **kwargs)
     )

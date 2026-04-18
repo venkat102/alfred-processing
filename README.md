@@ -7,11 +7,14 @@ workflows against a live customer site over MCP.
 ## Architecture
 
 - **FastAPI** WebSocket server - one connection per active conversation.
-- **AgentPipeline state machine** (`alfred/api/pipeline.py`) - 10 named phases
-  over a shared `PipelineContext`: `sanitize` → `load_state` → `plan_check`
-  → `orchestrate` → `enhance` → `clarify` → `resolve_mode` → `build_crew`
-  → `run_crew` → `post_crew`. Each phase is unit-testable in isolation,
-  auto-wrapped in a tracer span, and can abort via `ctx.stop(error, code)`.
+- **AgentPipeline state machine** (`alfred/api/pipeline.py`) - 12 named phases
+  over a shared `PipelineContext`: `sanitize` → `load_state` → `warmup`
+  → `plan_check` → `orchestrate` → `enhance` → `clarify` → `inject_kb`
+  → `resolve_mode` → `build_crew` → `run_crew` → `post_crew`. Each phase is
+  unit-testable in isolation, auto-wrapped in a tracer span, and can abort via
+  `ctx.stop(error, code)`. The `warmup` phase pre-pulls distinct models across
+  the triage / reasoning / agent tiers with `keep_alive=10m` to eliminate the
+  cold-load penalty when a pipeline hits each tier.
 - **Three-mode chat orchestrator** (`alfred/orchestrator.py`,
   feature-flagged via `ALFRED_ORCHESTRATOR_ENABLED`) - classifies every
   prompt into `dev` / `plan` / `insights` / `chat`. Conversational and
@@ -31,7 +34,7 @@ workflows against a live customer site over MCP.
   - **Lite Dev**: single-agent fast pass, ~1 min per task, ~5x cheaper
     - for simple customizations.
 - **MCP client** (`alfred/tools/mcp_client.py`) - sends JSON-RPC requests
-  to the client-app MCP server (12 tools) over the same WebSocket so agents
+  to the client-app MCP server (14 tools) over the same WebSocket so agents
   query the live Frappe site during reasoning. Uses `run_coroutine_threadsafe`
   to dispatch from CrewAI's synchronous tool-invocation threads back to the
   main async loop.
@@ -71,6 +74,13 @@ workflows against a live customer site over MCP.
   (Notification, Server Script, Client Script, ...) use savepoint + rollback.
   Failed validations trigger one automatic self-heal retry with just the
   Developer agent.
+- **Multi-model tiers** (`alfred/llm_client.py`) - standalone LLM calls
+  (classifier, chat, reflection, enhancer, clarifier, rescue) and CrewAI
+  agents each resolve a model from one of three tiers (`triage`, `reasoning`,
+  `agent`). Each tier is configured from Alfred Settings; empty fields fall
+  back to the default model, so existing single-model deployments keep
+  working unchanged. All standalone calls go through urllib rather than
+  litellm to sidestep the httpcore/anyio read-hang under thread executors.
 - **Activity streaming** - every MCP tool call fires an `agent_activity`
   WebSocket event so the browser UI shows concrete progress instead of a
   silent spinner.
