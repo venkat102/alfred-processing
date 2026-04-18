@@ -143,16 +143,65 @@ class TestJWT:
 			verify_jwt_token(token, API_KEY)
 
 	def test_missing_claims(self):
-		payload = {"user": USER}
+		import time as _time
+		# user-only token (missing roles + site_id). exp is present so we
+		# reach the required-claim aggregator rather than the exp gate.
+		payload = {"user": USER, "exp": int(_time.time()) + 3600}
 		token = jwt.encode(payload, API_KEY, algorithm="HS256")
 		with pytest.raises(ValueError, match="missing required claims"):
 			verify_jwt_token(token, API_KEY)
 
 	def test_empty_site_id(self):
-		payload = {"user": USER, "roles": ROLES, "site_id": ""}
+		import time as _time
+		payload = {
+			"user": USER, "roles": ROLES, "site_id": "",
+			"exp": int(_time.time()) + 3600,
+		}
 		token = jwt.encode(payload, API_KEY, algorithm="HS256")
 		with pytest.raises(ValueError, match="site_id claim cannot be empty"):
 			verify_jwt_token(token, API_KEY)
+
+	def test_empty_token_string_rejected(self):
+		with pytest.raises(ValueError, match="empty"):
+			verify_jwt_token("", API_KEY)
+		with pytest.raises(ValueError, match="empty"):
+			verify_jwt_token(None, API_KEY)
+
+	def test_missing_exp_claim_rejected(self):
+		# Token without an exp - previously would have been accepted and
+		# never expired. Now rejected up-front.
+		payload = {"user": USER, "roles": ROLES, "site_id": SITE_ID}
+		token = jwt.encode(payload, API_KEY, algorithm="HS256")
+		with pytest.raises(ValueError, match="required claim"):
+			verify_jwt_token(token, API_KEY)
+
+	def test_algorithm_confusion_none_rejected(self):
+		# An attacker crafts a token with alg=none hoping the verifier will
+		# accept it unsigned. PyJWT should reject because we pin HS256.
+		payload = {
+			"user": USER, "roles": ROLES, "site_id": SITE_ID,
+			"exp": 9999999999,
+		}
+		try:
+			unsigned = jwt.encode(payload, "", algorithm="none")
+		except Exception:
+			# Newer PyJWT refuses to encode with alg=none. That's even safer.
+			return
+		with pytest.raises(ValueError):
+			verify_jwt_token(unsigned, API_KEY)
+
+	def test_cross_site_token_keeps_its_site_id(self):
+		# A token issued for site A carries site_id=site-a. The processing
+		# app MUST use the JWT's site_id for namespace isolation, not any
+		# client-supplied field. Verifies the claim round-trips cleanly.
+		token = create_jwt_token(USER, ROLES, "site-alpha", API_KEY)
+		payload = verify_jwt_token(token, API_KEY)
+		assert payload["site_id"] == "site-alpha"
+		# And a second token for site-beta carries the other id cleanly.
+		token_b = create_jwt_token(USER, ROLES, "site-beta", API_KEY)
+		payload_b = verify_jwt_token(token_b, API_KEY)
+		assert payload_b["site_id"] == "site-beta"
+		assert payload["site_id"] != payload_b["site_id"]
 
 
 # ── Task CRUD Endpoints ─────────────────────────────────────────

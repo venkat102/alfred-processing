@@ -64,23 +64,35 @@ def verify_jwt_token(token: str, secret_key: str) -> dict:
 		secret_key: The secret key used to sign the token.
 
 	Returns:
-		Dict with keys: user, roles, site_id, iat.
+		Dict with keys: user, roles, site_id, iat, exp.
 
 	Raises:
-		ValueError: If the token is expired, tampered, or missing required claims.
+		ValueError: If the token is empty, expired, tampered, signed with a
+			different algorithm, or missing any required claim (user, roles,
+			site_id, exp).
 	"""
+	if not token:
+		raise ValueError("JWT token is empty")
+
 	try:
-		payload = jwt.decode(token, secret_key, algorithms=["HS256"])
+		# require=["exp"] rejects tokens that lack an expiry - without this,
+		# a handcrafted token with valid signature would never expire.
+		payload = jwt.decode(
+			token, secret_key, algorithms=["HS256"],
+			options={"require": ["exp"]},
+		)
 	except jwt.ExpiredSignatureError:
 		raise ValueError("JWT token has expired")
 	except jwt.InvalidSignatureError:
 		raise ValueError("JWT signature verification failed - token may be tampered")
+	except jwt.MissingRequiredClaimError as e:
+		raise ValueError(f"JWT missing required claim: {e.claim}")
 	except jwt.DecodeError:
 		raise ValueError("JWT token is malformed")
 	except jwt.InvalidTokenError as e:
 		raise ValueError(f"Invalid JWT token: {e}")
 
-	# Validate required claims
+	# Validate required claims (PyJWT only enforces exp via options["require"])
 	required_claims = ["user", "roles", "site_id"]
 	missing = [c for c in required_claims if c not in payload]
 	if missing:
@@ -94,6 +106,7 @@ def verify_jwt_token(token: str, secret_key: str) -> dict:
 		"roles": payload["roles"],
 		"site_id": payload["site_id"],
 		"iat": payload.get("iat", 0),
+		"exp": payload["exp"],
 	}
 
 
