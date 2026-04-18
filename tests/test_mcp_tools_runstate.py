@@ -106,6 +106,35 @@ class TestDedup:
 		_mcp_call(client, "get_user_context", {})
 		assert len(client.call_log) == 2
 
+	def test_dedup_insensitive_to_dict_key_order(self):
+		"""Same args in different key order must dedup. If the agent emits
+		{"a": 1, "b": 2} on one call and {"b": 2, "a": 1} on the next, they
+		are semantically identical and must hit the cache."""
+		client = FakeMCPClient(canned_response={"fields": []})
+		init_run_state(client)
+		_mcp_call(client, "get_doctype_schema", {"doctype": "Sales Order", "include_fields": True})
+		_mcp_call(client, "get_doctype_schema", {"include_fields": True, "doctype": "Sales Order"})
+		assert len(client.call_log) == 1, (
+			"Dedup must be insensitive to argument dict key order"
+		)
+		assert client.run_state["dedup_hits"] == 1
+
+	def test_cached_call_does_not_consume_budget(self):
+		"""A cache hit must not count against the call budget - otherwise
+		a tight dedup cache could starve the agent artificially."""
+		client = FakeMCPClient(canned_response={"ok": True})
+		init_run_state(client, budget=3)
+		_mcp_call(client, "get_site_info", {})   # 1 real call
+		_mcp_call(client, "get_site_info", {})   # cached
+		_mcp_call(client, "get_site_info", {})   # cached
+		_mcp_call(client, "get_site_info", {})   # cached
+		assert len(client.call_log) == 1
+		assert client.run_state["calls_made"] == 1
+		# Budget is not exhausted - three more fresh calls still work
+		_mcp_call(client, "get_doctypes", {})
+		_mcp_call(client, "get_user_context", {})
+		assert client.run_state["calls_made"] == 3
+
 
 class TestFailureCounter:
 	def test_error_response_counted(self):
