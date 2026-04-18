@@ -2,8 +2,8 @@
 
 Alfred supports four modes:
   - dev: run the agent crew and produce a deployable changeset
-  - plan: run the planning crew and produce a plan doc (Phase C, not yet wired)
-  - insights: read-only Q&A about the site state (Phase B, shipped)
+  - plan: run the 3-agent planning crew and produce a plan doc
+  - insights: read-only Q&A about the site state
   - chat: pure conversational reply, no crew, no tools
 
 This module is the decision point. It returns one of those four modes per
@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -44,6 +45,25 @@ logger = logging.getLogger("alfred.orchestrator")
 
 _VALID_MODES = ("dev", "plan", "insights", "chat")
 _VALID_OVERRIDES = ("auto", "dev", "plan", "insights")
+
+# Cap on conversation memory text sent to the classifier. The classifier
+# runs with num_ctx=2048; the system prompt already consumes ~350 tokens
+# and we need room for the user prompt + generated JSON, so leave memory
+# at ~1000 chars (~250 tokens). Longer memory is truncated with a marker
+# so the LLM knows the context was clipped.
+_MEMORY_CONTEXT_CHAR_CAP = 1000
+
+
+def is_enabled() -> bool:
+	"""Feature-flag check for the mode orchestrator.
+
+	Off by default. Accepts 1/true/yes (case-insensitive) - matches the
+	parsing convention used by ALFRED_REFLECTION_ENABLED and
+	ALFRED_TRACING_ENABLED.
+	"""
+	return os.environ.get("ALFRED_ORCHESTRATOR_ENABLED", "").strip().lower() in {
+		"1", "true", "yes", "on",
+	}
 
 # Exact-match greetings and short conversational turns. Hit here means no
 # LLM call. Keep this set small and obvious - anything borderline should
@@ -126,9 +146,10 @@ Modes:
         conversational that doesn't fit the above.
         Examples: "hi", "thanks", "what can you do?", "how does Alfred work?".
 
-If the user refers to "it", "that", "the plan", check the conversation context.
-If the conversation has an APPROVED PLAN and the user says "build it" / "do it" /
-"go ahead", pick dev.
+If the user refers to "it" / "that" / "the plan", resolve the referent from
+the conversation context block if one is present. Short follow-ups like
+"build it" / "do it" / "go ahead" after a plan-mode discussion should be
+classified as dev.
 
 Return ONLY valid JSON, nothing else:
 {"mode": "dev|plan|insights|chat", "reason": "one-sentence justification", "confidence": "high|medium|low"}
@@ -266,6 +287,17 @@ def _parse_classifier_output(text: str) -> tuple[str | None, str, str]:
 	return mode, reason, confidence
 
 
+def _clip_memory_context(text: str, cap: int = _MEMORY_CONTEXT_CHAR_CAP) -> str:
+	"""Truncate memory context to keep it within the classifier num_ctx budget.
+
+	Keeps the tail of the context (most recent turns) and prepends a clipped
+	marker so the classifier knows the context is partial.
+	"""
+	if len(text) <= cap:
+		return text
+	return "[... older context clipped ...]\n" + text[-cap:]
+
+
 async def _classify_with_llm(
 	prompt: str,
 	memory_context: str,
@@ -277,7 +309,7 @@ async def _classify_with_llm(
 
 	user_parts = []
 	if memory_context:
-		user_parts.append(memory_context)
+		user_parts.append(_clip_memory_context(memory_context))
 		user_parts.append("")
 	user_parts.append(f"Prompt: {prompt}")
 

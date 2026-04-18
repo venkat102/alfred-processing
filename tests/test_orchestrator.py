@@ -19,11 +19,13 @@ import pytest
 
 from alfred.orchestrator import (
 	ModeDecision,
+	_clip_memory_context,
 	_fast_path,
 	_normalize_mode,
 	_normalize_override,
 	_parse_classifier_output,
 	classify_mode,
+	is_enabled,
 )
 from alfred.state.conversation_memory import ConversationMemory
 
@@ -340,3 +342,44 @@ class TestClassifyMode:
 		# so the result is the fallback chat.
 		assert decision.mode == "chat"
 		assert decision.source == "fallback"
+
+
+class TestIsEnabled:
+	def test_unset_is_disabled(self, monkeypatch):
+		monkeypatch.delenv("ALFRED_ORCHESTRATOR_ENABLED", raising=False)
+		assert is_enabled() is False
+
+	def test_explicit_zero_is_disabled(self, monkeypatch):
+		monkeypatch.setenv("ALFRED_ORCHESTRATOR_ENABLED", "0")
+		assert is_enabled() is False
+
+	def test_accepts_common_truthy_strings(self, monkeypatch):
+		for val in ("1", "true", "TRUE", "Yes", "on", "  true  "):
+			monkeypatch.setenv("ALFRED_ORCHESTRATOR_ENABLED", val)
+			assert is_enabled() is True, f"expected {val!r} to enable"
+
+	def test_rejects_garbage(self, monkeypatch):
+		for val in ("maybe", "0", "false", ""):
+			monkeypatch.setenv("ALFRED_ORCHESTRATOR_ENABLED", val)
+			assert is_enabled() is False, f"expected {val!r} to stay off"
+
+
+class TestClipMemoryContext:
+	def test_short_context_passes_through(self):
+		text = "short context"
+		assert _clip_memory_context(text) == text
+
+	def test_long_context_clipped_with_marker(self):
+		text = "a" * 5000
+		result = _clip_memory_context(text, cap=1000)
+		assert result.startswith("[... older context clipped ...]")
+		# Tail preserved: last 1000 chars of original must still be present.
+		assert result.endswith("a" * 1000)
+		# Total is the marker + the 1000-char tail.
+		assert len(result) == len("[... older context clipped ...]\n") + 1000
+
+	def test_exactly_at_cap_not_clipped(self):
+		text = "b" * 1000
+		result = _clip_memory_context(text, cap=1000)
+		assert result == text
+		assert "clipped" not in result

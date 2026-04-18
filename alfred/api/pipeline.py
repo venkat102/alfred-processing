@@ -669,21 +669,20 @@ class AgentPipeline:
 	async def _phase_orchestrate(self) -> None:
 		"""Classify the prompt into a mode (dev/plan/insights/chat).
 
-		Gated by ALFRED_ORCHESTRATOR_ENABLED. When the flag is unset the
-		pipeline behaves exactly as before (mode stays "dev", no LLM call,
-		no skip). Chat mode short-circuits: the handler runs inline, emits
-		a chat_reply message, and the pipeline stops via ctx.should_stop.
+		Gated by ALFRED_ORCHESTRATOR_ENABLED (parsed by orchestrator.is_enabled).
+		When the flag is off the pipeline behaves exactly as before (mode stays
+		"dev", no LLM call, no skip). Chat mode short-circuits: the handler
+		runs inline, emits a chat_reply message, and the pipeline stops via
+		ctx.should_stop.
 		"""
-		import os as _os
+		from alfred.orchestrator import classify_mode, is_enabled
 
 		ctx = self.ctx
 
-		if _os.environ.get("ALFRED_ORCHESTRATOR_ENABLED") != "1":
+		if not is_enabled():
 			# Feature flag off - preserve pre-feature behavior.
 			ctx.mode = "dev"
 			return
-
-		from alfred.orchestrator import classify_mode
 
 		decision = await classify_mode(
 			prompt=ctx.prompt,
