@@ -483,16 +483,26 @@ class AgentPipeline:
 	async def run(self) -> None:
 		"""Execute each phase in order. Catches timeouts + unexpected errors
 		at the outer level and converts them to user-visible error messages."""
+		import time as _time
+
+		from alfred.obs.metrics import pipeline_phase_duration_seconds
+
 		try:
 			for name in self.PHASES:
 				if self.ctx.should_stop:
 					break
 				method = getattr(self, f"_phase_{name}")
+				phase_started = _time.perf_counter()
 				async with tracer.span(
 					f"pipeline.{name}",
 					conversation_id=self.ctx.conversation_id,
 				):
-					await method()
+					try:
+						await method()
+					finally:
+						pipeline_phase_duration_seconds.labels(phase=name).observe(
+							_time.perf_counter() - phase_started
+						)
 		except asyncio.TimeoutError:
 			logger.error(
 				"Pipeline timeout for conversation=%s", self.ctx.conversation_id

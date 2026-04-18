@@ -145,6 +145,17 @@ def ollama_chat_sync(
         url, data=payload,
         headers={"Content-Type": "application/json"},
     )
+    def _record_error(error_type: str) -> None:
+        # Prometheus counter for dashboards + alerting. Import inside the
+        # helper so a broken metrics import never shadows the real LLM error.
+        try:
+            from alfred.obs.metrics import llm_errors_total
+            llm_errors_total.labels(
+                tier=tier or "default", error_type=error_type,
+            ).inc()
+        except Exception:
+            pass
+
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
@@ -154,14 +165,17 @@ def ollama_chat_sync(
             body = e.read().decode("utf-8", errors="replace")[:500]
         except Exception:
             pass
+        _record_error("http_error")
         raise OllamaError(
             f"Ollama HTTP {e.code} from {url} (model={ollama_model}): {body}"
         ) from e
     except urllib.error.URLError as e:
+        _record_error("network_error")
         raise OllamaError(
             f"Ollama network error from {url} (model={ollama_model}): {e.reason}"
         ) from e
     except TimeoutError as e:
+        _record_error("timeout")
         raise OllamaError(
             f"Ollama timeout after {timeout}s from {url} (model={ollama_model})"
         ) from e
@@ -169,18 +183,21 @@ def ollama_chat_sync(
     try:
         data = json.loads(raw)
     except (ValueError, TypeError) as e:
+        _record_error("non_json")
         snippet = raw[:200] if isinstance(raw, (bytes, bytearray)) else str(raw)[:200]
         raise OllamaError(
             f"Ollama returned non-JSON response from {url} (model={ollama_model}): {snippet!r}"
         ) from e
 
     if not isinstance(data, dict):
+        _record_error("unexpected_payload")
         raise OllamaError(
             f"Ollama returned unexpected payload type {type(data).__name__} "
             f"(expected object) from {url} (model={ollama_model})"
         )
     message = data.get("message")
     if not isinstance(message, dict):
+        _record_error("missing_message")
         raise OllamaError(
             f"Ollama response missing 'message' object from {url} (model={ollama_model}): {data!r}"
         )

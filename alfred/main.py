@@ -92,6 +92,18 @@ def create_app() -> FastAPI:
 	app.include_router(router)
 	app.include_router(ws_router)
 
+	# Prometheus /metrics endpoint. Metrics are registered in
+	# alfred.obs.metrics and written to from each instrumented module.
+	# Using make_asgi_app() keeps the scrape endpoint on its own ASGI
+	# mount so there's no FastAPI middleware overhead on the hot path.
+	from prometheus_client import make_asgi_app
+
+	# Touching alfred.obs.metrics here ensures the histogram/counter
+	# classes are instantiated before any scrape arrives.
+	from alfred.obs import metrics  # noqa: F401
+
+	app.mount("/metrics", make_asgi_app())
+
 	return app
 
 

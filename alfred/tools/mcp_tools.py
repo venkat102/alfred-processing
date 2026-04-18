@@ -104,6 +104,8 @@ def _mcp_call(mcp_client: MCPClient, tool_name: str, arguments: dict | None = No
 	On any failure, returns a JSON error payload rather than raising. This lets
 	the agent read the error and adapt instead of failing the whole task.
 	"""
+	from alfred.obs.metrics import mcp_calls_total
+
 	arguments = arguments or {}
 	run_state = getattr(mcp_client, "run_state", None)
 	args_key = _args_key(arguments)
@@ -122,6 +124,7 @@ def _mcp_call(mcp_client: MCPClient, tool_name: str, arguments: dict | None = No
 			)
 			logger.warning("MCP budget exceeded for conv=%s tool=%s",
 				run_state.get("conversation_id", "?"), tool_name)
+			mcp_calls_total.labels(tool=tool_name, outcome="budget_exceeded").inc()
 			return json.dumps({"error": "budget_exceeded", "message": msg})
 
 	# Per-iteration dedup - avoid round-tripping the same call twice.
@@ -131,6 +134,7 @@ def _mcp_call(mcp_client: MCPClient, tool_name: str, arguments: dict | None = No
 		if dedup_key in dedup:
 			run_state["dedup_hits"] = run_state.get("dedup_hits", 0) + 1
 			logger.debug("MCP dedup hit for %s(%s)", tool_name, args_key[:80])
+			mcp_calls_total.labels(tool=tool_name, outcome="cached").inc()
 			return dedup[dedup_key]
 
 	# Misuse warning - agent called a validation tool before any schema lookup.
@@ -162,6 +166,15 @@ def _mcp_call(mcp_client: MCPClient, tool_name: str, arguments: dict | None = No
 				)
 				run_state["failure_count"] = run_state.get("failure_count", 0) + 1
 
+		# Track the outcome for Prometheus. "error" here means the tool
+		# ran but returned a structured error, as opposed to a raised
+		# exception (which lands in the TimeoutError / Exception branches
+		# below and counts as "timeout" / "error").
+		if isinstance(result, dict) and result.get("error"):
+			mcp_calls_total.labels(tool=tool_name, outcome="error").inc()
+		else:
+			mcp_calls_total.labels(tool=tool_name, outcome="success").inc()
+
 		# Inject accumulated failure hint so the agent notices previous errors
 		# instead of reading past them. Only when there's something to say.
 		payload: Any = result
@@ -190,6 +203,7 @@ def _mcp_call(mcp_client: MCPClient, tool_name: str, arguments: dict | None = No
 			run_state.setdefault("failures", []).append((tool_name, "timeout"))
 			run_state["failure_count"] = run_state.get("failure_count", 0) + 1
 			run_state["calls_made"] = run_state.get("calls_made", 0) + 1
+		mcp_calls_total.labels(tool=tool_name, outcome="timeout").inc()
 		return json.dumps({
 			"error": "timeout",
 			"message": f"MCP tool '{tool_name}' timed out. The client app may be unresponsive.",
@@ -200,6 +214,7 @@ def _mcp_call(mcp_client: MCPClient, tool_name: str, arguments: dict | None = No
 			run_state.setdefault("failures", []).append((tool_name, "mcp_failure"))
 			run_state["failure_count"] = run_state.get("failure_count", 0) + 1
 			run_state["calls_made"] = run_state.get("calls_made", 0) + 1
+		mcp_calls_total.labels(tool=tool_name, outcome="error").inc()
 		return json.dumps({"error": "mcp_failure", "message": str(e)})
 
 

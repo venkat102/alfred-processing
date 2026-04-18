@@ -350,25 +350,39 @@ async def classify_mode(
 	  4. Confidence-based fallback if classifier fails or returns low confidence
 
 	Never raises - always returns a valid ModeDecision. On complete failure
-	returns a safe-default chat decision.
+	returns a safe-default chat decision. Every decision increments the
+	Prometheus `alfred_orchestrator_decisions_total` counter so operators
+	can see whether the classifier LLM is actually running in production
+	vs always falling back.
 	"""
+	from alfred.obs.metrics import orchestrator_decisions_total
+
+	def _record(decision: ModeDecision) -> ModeDecision:
+		try:
+			orchestrator_decisions_total.labels(
+				source=decision.source, mode=decision.mode,
+			).inc()
+		except Exception:
+			pass
+		return decision
+
 	override = _normalize_override(manual_override)
 	if override != "auto":
-		return ModeDecision(
+		return _record(ModeDecision(
 			mode=override,
 			reason=f"User forced mode={override} via manual override",
 			confidence="high",
 			source="override",
-		)
+		))
 
 	fast = _fast_path(prompt)
 	if fast is not None:
-		return ModeDecision(
+		return _record(ModeDecision(
 			mode=fast,
 			reason=f"Fast-path match ({fast})",
 			confidence="high",
 			source="fast_path",
-		)
+		))
 
 	memory_context = ""
 	if memory is not None:
@@ -387,12 +401,12 @@ async def classify_mode(
 		mode, reason, confidence = None, "", "low"
 
 	if mode is not None and confidence != "low":
-		return ModeDecision(
+		return _record(ModeDecision(
 			mode=mode,
 			reason=reason or "LLM classifier decision",
 			confidence=confidence,
 			source="classifier",
-		)
+		))
 
 	# Fallback. Pick the safest default.
 	fallback_mode = "dev" if _has_active_plan(memory) else "chat"
@@ -400,9 +414,9 @@ async def classify_mode(
 		f"Classifier {'low-confidence' if mode else 'unavailable'}; "
 		f"defaulted to {fallback_mode}"
 	)
-	return ModeDecision(
+	return _record(ModeDecision(
 		mode=fallback_mode,
 		reason=fallback_reason,
 		confidence="low",
 		source="fallback",
-	)
+	))
