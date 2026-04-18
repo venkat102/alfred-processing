@@ -411,6 +411,72 @@ class TestErrorBoundaries:
 			)
 
 
+class TestPhaseHappyPaths:
+	"""Smoke-level happy-path tests for phases that didn't have a direct
+	test before. Error paths are covered by TestErrorBoundaries; these
+	just verify the phase completes without raising when given sane
+	inputs. Heavy LLM / crew work is mocked - we're testing plumbing,
+	not model output."""
+
+	def test_load_state_populates_ctx_fields(self):
+		ctx = _make_ctx()
+		pipeline = AgentPipeline(ctx)
+
+		# Redis is None (tolerated). conversation_memory.load with store=None
+		# returns a fresh empty ConversationMemory.
+		_run(pipeline._phase_load_state())
+
+		assert ctx.store is None
+		assert ctx.conversation_memory is not None
+		assert ctx.user_context == {
+			"user": "tester@example.com",
+			"roles": ["System Manager"],
+			"site_id": "test-site",
+		}
+
+	def test_plan_check_silently_no_ops_without_admin_portal(self):
+		ctx = _make_ctx()
+		# settings.ADMIN_PORTAL_URL is already "" in _make_ctx; nothing to do.
+		pipeline = AgentPipeline(ctx)
+		_run(pipeline._phase_plan_check())
+		# Must not stop the pipeline, must not set plan_pipeline_mode
+		assert ctx.should_stop is False
+		assert getattr(ctx, "plan_pipeline_mode", None) is None
+
+	def test_enhance_falls_back_to_raw_prompt_on_llm_error(self):
+		ctx = _make_ctx("add a priority field")
+		ctx.mode = "dev"
+		ctx.conversation_memory = MagicMock()
+		ctx.conversation_memory.render_for_prompt.return_value = ""
+		ctx.conversation_memory.active_plan = None
+		ctx.user_context = {"user": "u", "roles": [], "site_id": "s"}
+		pipeline = AgentPipeline(ctx)
+
+		async def boom(*args, **kwargs):
+			from alfred.llm_client import OllamaError
+			raise OllamaError("boom")
+
+		with patch("alfred.llm_client.ollama_chat", side_effect=boom):
+			_run(pipeline._phase_enhance())
+		# Enhancer is defensive - returns raw_prompt on failure; phase
+		# assigns that to ctx.enhanced_prompt.
+		assert ctx.enhanced_prompt == "add a priority field"
+
+	def test_clarify_no_ops_in_non_dev_mode(self):
+		# Only dev mode runs the clarifier. Chat / insights / plan must
+		# bypass it entirely.
+		for mode in ("chat", "insights", "plan"):
+			ctx = _make_ctx()
+			ctx.mode = mode
+			ctx.enhanced_prompt = "anything"
+			pipeline = AgentPipeline(ctx)
+			_run(pipeline._phase_clarify())
+			assert ctx.enhanced_prompt == "anything", (
+				f"clarify phase should not modify prompt in mode={mode}"
+			)
+			assert ctx.should_stop is False
+
+
 class TestTracerIntegration:
 	def test_phases_are_wrapped_in_spans_when_enabled(self):
 		from alfred.obs.tracer import Tracer
