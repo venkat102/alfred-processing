@@ -453,6 +453,24 @@ class PipelineContext:
 		self.stop_signal = StopSignal(error=error, code=code, extra=extra)
 
 
+def _summarise_probe_error(exc: Exception) -> str:
+	"""Render a one-line reason for a warmup probe failure.
+
+	Keeps the message short enough to fit a chat toast without leaking the
+	full stack trace. HTTP status + body excerpt for HTTPError, bare str()
+	for everything else.
+	"""
+	import urllib.error as _urllib_error
+
+	if isinstance(exc, _urllib_error.HTTPError):
+		try:
+			body = (exc.read() or b"").decode(errors="replace")[:200]
+		except Exception:
+			body = ""
+		return f"HTTP {exc.code}: {body}" if body else f"HTTP {exc.code}"
+	return str(exc) or exc.__class__.__name__
+
+
 class AgentPipeline:
 	"""Linear orchestrator over `PipelineContext`.
 
@@ -584,16 +602,18 @@ class AgentPipeline:
 		}
 
 	async def _phase_warmup(self) -> None:
-		"""Pre-warm Ollama models that this pipeline will use.
+		"""Pre-warm + health-probe Ollama models that this pipeline will use.
 
-		Fires a minimal /api/generate call (1 token) for each distinct model
-		the pipeline needs. Ollama loads the model on first request and keeps
-		it warm for 5 minutes by default; we pass keep_alive=10m to extend
-		the window past the full pipeline duration.
+		Fires a minimal /api/generate call (1 token) for each distinct Ollama
+		model the pipeline needs. Ollama loads the model on first request and
+		keeps it warm for 5 minutes; we pass keep_alive=10m to extend that past
+		the full pipeline duration.
 
-		Only runs when multiple distinct models are configured (per-tier
-		overrides). With a single model, the first real call warms it.
-		Never fails the pipeline - exceptions are logged and swallowed.
+		Doubles as a strict health gate: if any probe fails (connection refused,
+		timeout, 500 from a dead model runner), we stop the pipeline here with
+		OLLAMA_UNHEALTHY rather than let the crew burn 2-3 minutes of retries
+		per agent. Cloud providers (no `ollama/` prefix) are skipped - this
+		check only applies to self-hosted Ollama.
 		"""
 		import urllib.request as _urllib_request
 
@@ -605,16 +625,17 @@ class AgentPipeline:
 			_resolve_ollama_config_for_tier,
 		)
 
-		models_to_warm: set[tuple[str, str]] = set()
+		models_to_probe: set[tuple[str, str]] = set()
 		for tier in (TIER_TRIAGE, TIER_REASONING, TIER_AGENT):
 			model, base_url, _ = _resolve_ollama_config_for_tier(site_config, tier)
 			if model.startswith("ollama/"):
-				models_to_warm.add((model.removeprefix("ollama/"), base_url))
+				models_to_probe.add((model.removeprefix("ollama/"), base_url))
 
-		if len(models_to_warm) <= 1:
+		if not models_to_probe:
+			# Cloud-only configuration - nothing to probe.
 			return
 
-		async def _warm_one(ollama_model: str, base_url: str):
+		async def _probe_one(ollama_model: str, base_url: str):
 			payload = json.dumps({
 				"model": ollama_model,
 				"prompt": "hi",
@@ -633,17 +654,51 @@ class AgentPipeline:
 			)
 
 		tasks = [
-			asyncio.create_task(_warm_one(m, u))
-			for m, u in models_to_warm
+			asyncio.create_task(_probe_one(m, u))
+			for m, u in models_to_probe
 		]
 		results = await asyncio.gather(*tasks, return_exceptions=True)
 
-		warmed = []
-		for (model, _), result in zip(models_to_warm, results):
+		warmed: list[str] = []
+		failures: list[tuple[str, str, str]] = []  # (model, base_url, reason)
+		for (model, base_url), result in zip(models_to_probe, results):
 			if isinstance(result, Exception):
-				logger.debug("Model warmup failed for %s: %s", model, result)
+				reason = _summarise_probe_error(result)
+				logger.warning(
+					"Ollama health probe failed for %s at %s: %s",
+					model, base_url, reason,
+				)
+				failures.append((model, base_url, reason))
 			else:
 				warmed.append(model)
+
+		if failures:
+			from alfred.obs.metrics import llm_errors_total
+
+			# Record each distinct failure as an llm_errors_total dimension so
+			# the rate of OLLAMA_UNHEALTHY is visible on the /metrics scrape.
+			for _, _, reason in failures:
+				llm_errors_total.labels(
+					tier="warmup", error_type="OLLAMA_UNHEALTHY",
+				).inc()
+			first_model, first_url, first_reason = failures[0]
+			count = len(failures)
+			plural = "s" if count > 1 else ""
+			ctx.stop(
+				error=(
+					f"Processing service is unavailable: {count} Ollama "
+					f"model{plural} failed health check. First failure: "
+					f"{first_model} at {first_url} ({first_reason}). "
+					"Contact your admin."
+				),
+				code="OLLAMA_UNHEALTHY",
+				failed_models=[
+					{"model": m, "base_url": u, "reason": r}
+					for m, u, r in failures
+				],
+			)
+			return
+
 		if warmed:
 			logger.info("Pre-warmed %d model(s): %s", len(warmed), ", ".join(warmed))
 

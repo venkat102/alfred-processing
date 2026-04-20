@@ -126,6 +126,9 @@ def _build_agent(
 	All agents get:
 	- allow_delegation=False (sequential process, no cross-agent delegation)
 	- max_iter=2 (fail fast with slow local models instead of looping)
+	- max_retry_limit=1 (LLM-level retry; default is 2 which burns 3 attempts
+	  per agent when Ollama is dead - strict warmup catches that case, and
+	  1 retry is enough to shake off a genuine transient error)
 	- verbose=True (log agent reasoning)
 	"""
 	if not backstory:
@@ -139,6 +142,7 @@ def _build_agent(
 		llm=llm,
 		allow_delegation=False,
 		max_iter=2,
+		max_retry_limit=1,
 		verbose=True,
 	)
 

@@ -191,12 +191,26 @@ class TestWarmupPhase:
 		}
 		return ctx
 
-	def test_no_warmup_when_single_model(self):
+	def test_single_model_still_probed_for_health(self):
+		"""Strict warmup now always probes at least the default model so an
+		unhealthy Ollama is caught before the crew burns retry cycles."""
 		ctx = self._ctx_with_models()
 		pipeline = AgentPipeline(ctx)
 		with patch("urllib.request.urlopen") as stub:
 			_run(pipeline._phase_warmup())
+		stub.assert_called_once()
+		assert ctx.should_stop is False
+
+	def test_cloud_only_config_skips_probe(self):
+		"""Non-ollama/ models (anthropic, openai, ...) are not probed; the
+		warmup phase is a no-op for cloud-only deployments."""
+		ctx = _make_ctx()
+		ctx.conn.site_config = {"llm_model": "anthropic/claude-sonnet-4"}
+		pipeline = AgentPipeline(ctx)
+		with patch("urllib.request.urlopen") as stub:
+			_run(pipeline._phase_warmup())
 		stub.assert_not_called()
+		assert ctx.should_stop is False
 
 	def test_warms_each_distinct_tier_model(self):
 		ctx = self._ctx_with_models(
@@ -235,9 +249,12 @@ class TestWarmupPhase:
 		# Two distinct models, not three.
 		assert stub.call_count == 2
 
-	def test_warmup_swallows_network_failure(self):
+	def test_warmup_stops_pipeline_on_probe_failure(self):
+		"""Strict health gate: a dead Ollama runner surfaces as
+		OLLAMA_UNHEALTHY, not a 2-minute retry storm inside the crew."""
 		ctx = self._ctx_with_models(
 			llm_model_triage="ollama/gemma:2b",
+			llm_model_reasoning="ollama/gemma:2b",
 			llm_model_agent="ollama/qwen2.5-coder:32b",
 		)
 		pipeline = AgentPipeline(ctx)
@@ -246,9 +263,38 @@ class TestWarmupPhase:
 			"urllib.request.urlopen",
 			side_effect=urllib.error.URLError("ollama unreachable"),
 		):
-			# Must not raise; pipeline must not be stopped.
 			_run(pipeline._phase_warmup())
-		assert ctx.should_stop is False
+		assert ctx.should_stop is True
+		assert ctx.stop_signal.code == "OLLAMA_UNHEALTHY"
+		# Payload must list each failed (model, base_url, reason) so the
+		# operator can tell at a glance which model died.
+		failed = ctx.stop_signal.extra.get("failed_models") or []
+		# Two distinct models across the three tiers (triage+reasoning share).
+		assert len(failed) == 2
+		models_failed = {e["model"] for e in failed}
+		assert models_failed == {"gemma:2b", "qwen2.5-coder:32b"}
+		for entry in failed:
+			assert entry["base_url"] == "http://fake-ollama:11434"
+			assert "ollama unreachable" in entry["reason"]
+
+	def test_warmup_http_500_is_unhealthy(self):
+		"""The real-world failure mode - Ollama returns 500 because the
+		model runner crashed - must also trip OLLAMA_UNHEALTHY."""
+		ctx = self._ctx_with_models()
+		pipeline = AgentPipeline(ctx)
+		import urllib.error
+		import io
+		def _raise_500(*args, **kwargs):
+			raise urllib.error.HTTPError(
+				"http://fake-ollama:11434/api/generate", 500, "Server Error",
+				{}, io.BytesIO(b'{"error":"model runner has unexpectedly stopped"}'),
+			)
+		with patch("urllib.request.urlopen", side_effect=_raise_500):
+			_run(pipeline._phase_warmup())
+		assert ctx.should_stop is True
+		assert ctx.stop_signal.code == "OLLAMA_UNHEALTHY"
+		failed = ctx.stop_signal.extra.get("failed_models") or []
+		assert any("HTTP 500" in e["reason"] for e in failed)
 
 
 class TestResolveModePhase:

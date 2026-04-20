@@ -491,6 +491,7 @@ def build_insights_crew(
 		llm=llm,
 		allow_delegation=False,
 		max_iter=4,
+		max_retry_limit=1,
 		verbose=True,
 	)
 
@@ -564,6 +565,7 @@ def build_lite_crew(
 		llm=llm,
 		allow_delegation=False,
 		max_iter=4,  # Higher than full-mode agents since this one does everything
+		max_retry_limit=1,
 		verbose=True,
 	)
 
