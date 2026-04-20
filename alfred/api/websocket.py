@@ -28,6 +28,7 @@ from alfred.middleware.auth import verify_jwt_token
 
 if TYPE_CHECKING:
 	from alfred.agents.crew import CrewState
+	from alfred.api.pipeline import PipelineContext
 	from alfred.tools.mcp_client import MCPClient
 
 logger = logging.getLogger("alfred.websocket")
@@ -376,6 +377,9 @@ class ConnectionState:
 		# Active pipeline task for this conversation. Used to reject concurrent
 		# prompts and to cancel in-flight work when the WebSocket closes.
 		self.active_pipeline: asyncio.Task | None = None
+		# Context for the currently-running pipeline. Exposed so a user-initiated
+		# "cancel" message can flip should_stop without tearing down the connection.
+		self.active_pipeline_ctx: "PipelineContext | None" = None
 
 	async def send(self, message: dict):
 		"""Send a message over the WebSocket.
@@ -549,6 +553,24 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 		response_to = data.get("data", {}).get("response_to", msg_id)
 		answer = data.get("data", {}).get("text", "")
 		conn.resolve_question(response_to, answer)
+		return
+
+	if msg_type == "cancel":
+		# Graceful cancel: flip should_stop so the pipeline exits at the next
+		# phase boundary via the existing _send_error path. Leaves the WS open
+		# so the user can keep chatting in the same conversation.
+		ctx = conn.active_pipeline_ctx
+		if ctx is None or conn.active_pipeline is None or conn.active_pipeline.done():
+			logger.info(
+				"Cancel requested for %s@%s but no pipeline is running",
+				conn.user, conn.site_id,
+			)
+			return
+		logger.info(
+			"User-initiated cancel for %s@%s conversation=%s",
+			conn.user, conn.site_id, conversation_id,
+		)
+		ctx.stop("Cancelled by user", code="user_cancel")
 		return
 
 	if msg_type == "prompt":
@@ -1112,7 +1134,11 @@ async def _run_agent_pipeline(
 		prompt=prompt,
 		manual_mode_override=manual_mode,
 	)
-	await AgentPipeline(ctx).run()
+	conn.active_pipeline_ctx = ctx
+	try:
+		await AgentPipeline(ctx).run()
+	finally:
+		conn.active_pipeline_ctx = None
 
 
 async def _heartbeat_loop(websocket: WebSocket, interval: int = 30):

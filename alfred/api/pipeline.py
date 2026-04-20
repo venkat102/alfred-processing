@@ -529,6 +529,19 @@ class AgentPipeline:
 			)
 
 	async def _send_error(self, error: str, code: str, **extra: Any) -> None:
+		# A user-initiated cancel is not an error. Surface it as a distinct
+		# WS event so the UI can render it as "Run cancelled" rather than the
+		# generic error banner, and so the rescue/retry path stays dormant.
+		if code == "user_cancel":
+			try:
+				await self.ctx.conn.send({
+					"msg_id": str(uuid.uuid4()),
+					"type": "run_cancelled",
+					"data": {"reason": error, **extra},
+				})
+			except Exception as e:
+				logger.warning("Failed to send cancellation message: %s", e)
+			return
 		try:
 			await self.ctx.conn.send({
 				"msg_id": str(uuid.uuid4()),
