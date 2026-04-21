@@ -5,7 +5,7 @@ Models serve as documentation, validation, and contract between agents.
 """
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -161,11 +161,32 @@ class ArchitectureBlueprint(BaseModel):
 
 # ── Task 3.4: Developer Agent Output ─────────────────────────────
 
+class FieldMeta(BaseModel):
+	"""Provenance annotation for a single key inside ``ChangesetItem.data``.
+
+	Written by the per-intent Builder specialist and by the defaults
+	backfill post-processor. Consumed by ``alfred_client`` to render
+	default rows with a "default" pill and rationale tooltip. Server-side
+	Frappe deploy ignores this field.
+	"""
+
+	source: Literal["user", "default"]
+	rationale: Optional[str] = None
+
+
 class ChangesetItem(BaseModel):
 	"""A single document operation in the changeset."""
 	operation: ChangeOperation
 	doctype: str = Field(..., description="Frappe document type")
 	data: dict[str, Any] = Field(..., description="Complete document definition")
+	field_defaults_meta: Optional[dict[str, FieldMeta]] = Field(
+		None,
+		description=(
+			"Per-key provenance for values inside ``data``: which came from "
+			"the user, which were filled from the intent registry default. "
+			"Client-only; Frappe deploy ignores."
+		),
+	)
 
 
 class Changeset(BaseModel):
