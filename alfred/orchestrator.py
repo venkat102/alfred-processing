@@ -420,3 +420,110 @@ async def classify_mode(
 		confidence="low",
 		source="fallback",
 	))
+
+
+# ── Intent classification (Dev mode) ─────────────────────────────
+# Runs only for dev-mode prompts to pick a per-intent Builder
+# specialist. Mirrors classify_mode(): heuristic first, LLM fallback,
+# "unknown" on failure. Spec:
+# docs/specs/2026-04-21-doctype-builder-specialist.md
+
+_SUPPORTED_INTENTS: tuple[str, ...] = ("create_doctype",)
+
+_HEURISTIC_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
+	"create_doctype": (
+		"create a doctype",
+		"create doctype",
+		"new doctype",
+		"add a doctype",
+		"add doctype",
+		"build a doctype",
+		"make a doctype",
+	),
+}
+
+
+@dataclass
+class IntentDecision:
+	"""Result of per-intent Builder classification (dev mode only).
+
+	Mirrors ``ModeDecision`` in shape. ``intent`` is one of the keys in
+	``_SUPPORTED_INTENTS`` or the literal ``"unknown"``. ``source`` is
+	one of: ``"heuristic"``, ``"classifier"``, ``"fallback"``.
+	"""
+
+	intent: str
+	reason: str
+	confidence: str  # "high" | "medium" | "low"
+	source: str
+
+	def to_dict(self) -> dict:
+		return {
+			"intent": self.intent,
+			"reason": self.reason,
+			"confidence": self.confidence,
+			"source": self.source,
+		}
+
+
+def _match_intent_heuristic(prompt: str) -> str | None:
+	low = prompt.lower()
+	for intent, patterns in _HEURISTIC_INTENT_PATTERNS.items():
+		if any(p in low for p in patterns):
+			return intent
+	return None
+
+
+async def _classify_intent_llm(prompt: str, site_config: dict) -> str:
+	"""Small LLM call that returns a supported intent key or ``"unknown"``.
+
+	Kept as a module-level function so tests can patch it without
+	standing up the rest of the orchestrator.
+	"""
+	from alfred.llm_client import ollama_chat
+
+	system = (
+		"You classify the user's Frappe customization request into ONE intent. "
+		f"Valid intents: {', '.join(_SUPPORTED_INTENTS)}, unknown. "
+		"Reply with ONLY the intent key, no prose, no punctuation."
+	)
+	reply = await ollama_chat(
+		messages=[
+			{"role": "system", "content": system},
+			{"role": "user", "content": prompt},
+		],
+		site_config=site_config,
+		tier=site_config.get("llm_tier", "triage"),
+		max_tokens=16,
+		temperature=0.0,
+	)
+	tag = (reply or "").strip().lower()
+	return tag if tag in (*_SUPPORTED_INTENTS, "unknown") else "unknown"
+
+
+async def classify_intent(prompt: str, site_config: dict) -> IntentDecision:
+	heur = _match_intent_heuristic(prompt)
+	if heur is not None:
+		return IntentDecision(
+			intent=heur,
+			reason=f"matched heuristic pattern for {heur}",
+			confidence="high",
+			source="heuristic",
+		)
+
+	try:
+		tag = await _classify_intent_llm(prompt, site_config)
+		return IntentDecision(
+			intent=tag,
+			reason=f"LLM classifier returned {tag}",
+			confidence="medium" if tag != "unknown" else "low",
+			source="classifier",
+		)
+	except Exception as e:
+		logger.warning("Intent classifier failed: %s", e)
+		return IntentDecision(
+			intent="unknown",
+			reason=f"classifier error: {e}",
+			confidence="low",
+			source="fallback",
+		)
