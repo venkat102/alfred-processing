@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os as _os_for_flag
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
@@ -405,6 +406,17 @@ class PipelineContext:
 	insights_reply: str | None = None
 	plan_doc: dict | None = None
 
+	# Per-intent Builder classification (dev mode only).
+	# Written by _phase_classify_intent, consumed by _phase_build_crew to
+	# select a specialist Developer agent, and by _phase_post_crew to
+	# backfill registry defaults into ctx.changes. "unknown" or None means
+	# no specialist routing; behaviour matches flag-off. See
+	# docs/specs/2026-04-21-doctype-builder-specialist.md.
+	intent: str | None = None
+	intent_source: str | None = None
+	intent_confidence: str | None = None
+	intent_reason: str | None = None
+
 	# Services
 	store: "StateStore | None" = None
 	conversation_memory: "ConversationMemory | None" = None
@@ -484,6 +496,7 @@ class AgentPipeline:
 		"warmup",
 		"plan_check",
 		"orchestrate",
+		"classify_intent",
 		"enhance",
 		"clarify",
 		"inject_kb",
@@ -1100,6 +1113,42 @@ class AgentPipeline:
 			except Exception as e:
 				logger.warning("plan memory save failed: %s", e)
 
+	async def _phase_classify_intent(self) -> None:
+		"""Classify the dev-mode prompt into a Builder specialist intent.
+
+		No-op for non-dev modes and when ALFRED_PER_INTENT_BUILDERS is unset
+		(``_phase_build_crew`` and the backfill in ``_phase_post_crew`` are
+		also flag-gated, so an off flag means zero behavioural change from
+		pre-feature Alfred). Stores the IntentDecision fields on ctx.intent*
+		for downstream phases to read.
+
+		See docs/specs/2026-04-21-doctype-builder-specialist.md.
+		"""
+		import os as _os
+
+		ctx = self.ctx
+		if ctx.mode != "dev":
+			return
+		if _os.environ.get("ALFRED_PER_INTENT_BUILDERS") != "1":
+			return
+
+		from alfred.orchestrator import classify_intent
+
+		decision = await classify_intent(
+			prompt=ctx.prompt,
+			site_config=ctx.conn.site_config or {},
+		)
+		ctx.intent = decision.intent
+		ctx.intent_source = decision.source
+		ctx.intent_confidence = decision.confidence
+		ctx.intent_reason = decision.reason
+
+		logger.info(
+			"Intent decision for conversation=%s: intent=%s source=%s confidence=%s reason=%r",
+			ctx.conversation_id, decision.intent, decision.source,
+			decision.confidence, decision.reason,
+		)
+
 	async def _phase_enhance(self) -> None:
 		if self.ctx.mode != "dev":
 			# Enhance is a Dev-mode concern. Plan/Insights/Chat have their
@@ -1441,6 +1490,7 @@ class AgentPipeline:
 				site_config=ctx.conn.site_config,
 				previous_state=None,
 				custom_tools=ctx.custom_tools,
+				intent=ctx.intent,
 			)
 
 		# Set up the per-phase event callback now - the crew and all
@@ -1556,6 +1606,28 @@ class AgentPipeline:
 				).inc()
 			except Exception:
 				pass
+
+		# Per-intent defaults backfill. Only runs when
+		# ALFRED_PER_INTENT_BUILDERS=1; otherwise a no-op. Fills any missing
+		# shape-defining registry fields on dev-mode changesets and annotates
+		# ctx.changes[i]["field_defaults_meta"] so the client review UI can
+		# render defaults as editable pills. Runs after the rescue path so
+		# whichever path produced the changeset gets the same treatment.
+		# See docs/specs/2026-04-21-doctype-builder-specialist.md.
+		if ctx.changes and _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") == "1":
+			from alfred.handlers.post_build.backfill_defaults import (
+				backfill_defaults_raw,
+			)
+			try:
+				ctx.changes = backfill_defaults_raw(ctx.changes)
+			except Exception as e:
+				# Safety net: never let backfill crash the pipeline. Log and
+				# carry the original changes forward so the user still sees
+				# something (even if defaults aren't labelled).
+				logger.warning(
+					"Defaults backfill failed for conversation=%s: %s",
+					ctx.conversation_id, e, exc_info=True,
+				)
 
 		if not ctx.changes:
 			logger.warning(
