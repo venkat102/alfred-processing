@@ -21,7 +21,11 @@ logger = logging.getLogger("alfred.handlers.post_build.backfill")
 
 
 def backfill_defaults(changeset: Changeset) -> Changeset:
-	"""Return a new Changeset with registry fields backfilled and annotated."""
+	"""Return a new Changeset with registry fields backfilled and annotated.
+
+	Typed entry point. Pipeline code that works with raw dicts (as produced
+	by ``_extract_changes``) should call :func:`backfill_defaults_raw` instead.
+	"""
 	registry = IntentRegistry.load()
 	new_items: list[ChangesetItem] = []
 	for item in changeset.items:
@@ -31,6 +35,59 @@ def backfill_defaults(changeset: Changeset) -> Changeset:
 			continue
 		new_items.append(_backfill_item(item, schema))
 	return Changeset(items=new_items)
+
+
+def backfill_defaults_raw(changes: list[dict]) -> list[dict]:
+	"""Raw-dict variant used by the pipeline.
+
+	The crew emits changes as ``[{"op": ..., "doctype": ..., "data": {...}}]``
+	via ``_extract_changes``. This function takes that shape, fills missing
+	registry fields in ``data``, and appends a ``field_defaults_meta`` key
+	(also a dict) alongside ``data``. Items whose ``doctype`` has no
+	registry entry pass through unchanged.
+	"""
+	registry = IntentRegistry.load()
+	out: list[dict] = []
+	for change in changes:
+		doctype = change.get("doctype")
+		schema = registry.for_doctype(doctype) if doctype else None
+		if schema is None:
+			out.append(change)
+			continue
+		out.append(_backfill_raw(change, schema))
+	return out
+
+
+def _backfill_raw(change: dict, schema: dict) -> dict:
+	data = copy.deepcopy(change.get("data") or {})
+	meta = copy.deepcopy(change.get("field_defaults_meta") or {})
+
+	for field in schema["fields"]:
+		key = field["key"]
+		present = key in data and data[key] not in (None, "")
+
+		if present:
+			if key not in meta:
+				meta[key] = {"source": "user"}
+			continue
+
+		if "default" not in field:
+			if key not in meta:
+				meta[key] = {"source": "user"}
+			continue
+
+		data[key] = copy.deepcopy(field["default"])
+		if key not in meta:
+			entry = {"source": "default"}
+			rationale = field.get("rationale")
+			if rationale:
+				entry["rationale"] = rationale
+			meta[key] = entry
+
+	new = dict(change)
+	new["data"] = data
+	new["field_defaults_meta"] = meta
+	return new
 
 
 def _backfill_item(item: ChangesetItem, schema: dict) -> ChangesetItem:
