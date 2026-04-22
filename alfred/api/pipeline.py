@@ -924,7 +924,7 @@ class AgentPipeline:
 		ctx.event_callback = _event_cb
 
 		try:
-			reply = await handle_insights(
+			result = await handle_insights(
 				prompt=ctx.prompt,
 				conn=ctx.conn,
 				conversation_id=ctx.conversation_id,
@@ -933,12 +933,13 @@ class AgentPipeline:
 			)
 		except Exception as e:
 			logger.warning("Insights handler raised: %s", e, exc_info=True)
-			reply = (
+			from alfred.models.insights_result import InsightsResult
+			result = InsightsResult(reply=(
 				"I had trouble looking that up on your site just now. "
 				"Try again in a moment, or rephrase your question."
-			)
+			))
 
-		ctx.insights_reply = reply
+		ctx.insights_reply = result.reply
 
 		try:
 			await ctx.conn.send({
@@ -946,8 +947,12 @@ class AgentPipeline:
 				"type": "insights_reply",
 				"data": {
 					"conversation": ctx.conversation_id,
-					"reply": reply,
+					"reply": result.reply,
 					"mode": "insights",
+					"report_candidate": (
+						result.report_candidate.model_dump()
+						if result.report_candidate else None
+					),
 				},
 			})
 		except Exception as e:
