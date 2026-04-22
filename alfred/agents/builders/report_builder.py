@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from crewai import Agent
 
+from alfred.agents.definitions import _resolve_llm_for_tier
 from alfred.registry.loader import IntentRegistry
 
 _REPORT_BACKSTORY = """
@@ -88,6 +89,12 @@ def build_report_builder_agent(site_config: dict, custom_tools: dict | None) -> 
 			if t is not None:
 				tools.append(t)
 
+	# Resolve the agent-tier LLM from site_config the same way build_agents
+	# does for the generic Developer. Without this the CrewAI Agent would
+	# fall back to its default (OpenAI) and fail with an auth error on a
+	# site configured for Ollama.
+	llm = _resolve_llm_for_tier(site_config or {}, tier="agent")
+
 	return Agent(
 		role="Frappe Developer - Report Specialist",
 		goal=(
@@ -96,8 +103,11 @@ def build_report_builder_agent(site_config: dict, custom_tools: dict | None) -> 
 			"`field_defaults_meta` describing which fields were defaulted."
 		),
 		backstory=_REPORT_BACKSTORY,
+		llm=llm,
 		allow_delegation=False,
 		tools=tools,
+		max_iter=2,
+		max_retry_limit=1,
 		verbose=False,
 	)
 
