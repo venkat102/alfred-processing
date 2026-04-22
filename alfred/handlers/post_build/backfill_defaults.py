@@ -16,6 +16,7 @@ import logging
 
 from alfred.models.agent_outputs import Changeset, ChangesetItem, FieldMeta
 from alfred.registry.loader import IntentRegistry
+from alfred.registry.module_loader import ModuleRegistry, UnknownModuleError
 
 logger = logging.getLogger("alfred.handlers.post_build.backfill")
 
@@ -37,14 +38,19 @@ def backfill_defaults(changeset: Changeset) -> Changeset:
 	return Changeset(items=new_items)
 
 
-def backfill_defaults_raw(changes: list[dict]) -> list[dict]:
+def backfill_defaults_raw(
+	changes: list[dict], *, module: str | None = None,
+) -> list[dict]:
 	"""Raw-dict variant used by the pipeline.
 
-	The crew emits changes as ``[{"op": ..., "doctype": ..., "data": {...}}]``
-	via ``_extract_changes``. This function takes that shape, fills missing
-	registry fields in ``data``, and appends a ``field_defaults_meta`` key
-	(also a dict) alongside ``data``. Items whose ``doctype`` has no
-	registry entry pass through unchanged.
+	V1 behaviour (module is None): fills missing intent-registry fields in
+	``data`` and appends a ``field_defaults_meta`` annotation.
+
+	V2 behaviour (module set): after V1 pass, layers the module KB's
+	conventions on top - adds any missing ``permissions_add_roles`` entries
+	and, if the V1 pass defaulted ``autoname``, swaps in the first entry
+	from the module's ``naming_patterns`` with a module-aware rationale.
+	Unknown module keys fall back to V1 behaviour.
 	"""
 	registry = IntentRegistry.load()
 	out: list[dict] = []
@@ -54,8 +60,60 @@ def backfill_defaults_raw(changes: list[dict]) -> list[dict]:
 		if schema is None:
 			out.append(change)
 			continue
-		out.append(_backfill_raw(change, schema))
+		backfilled = _backfill_raw(change, schema)
+		if module:
+			backfilled = _apply_module_defaults(backfilled, module)
+		out.append(backfilled)
 	return out
+
+
+def _apply_module_defaults(change: dict, module: str) -> dict:
+	"""Layer a module KB's conventions on top of an intent-backfilled change."""
+	try:
+		kb = ModuleRegistry.load().get(module)
+	except UnknownModuleError:
+		return change
+
+	display_name = kb.get("display_name", module)
+	conv = kb.get("conventions", {})
+	new = {**change}
+	data = copy.deepcopy(new.get("data") or {})
+	meta = copy.deepcopy(new.get("field_defaults_meta") or {})
+
+	# 1. Permissions: add any module roles that aren't already present.
+	existing_perms = data.get("permissions") or []
+	existing_roles = {p.get("role") for p in existing_perms if isinstance(p, dict)}
+	appended: list[str] = []
+	for row in conv.get("permissions_add_roles", []):
+		if row.get("role") and row["role"] not in existing_roles:
+			existing_perms.append(copy.deepcopy(row))
+			existing_roles.add(row["role"])
+			appended.append(row["role"])
+	if appended:
+		data["permissions"] = existing_perms
+		prev = meta.get("permissions", {})
+		prev_rationale = prev.get("rationale", "")
+		module_reason = f"Added {', '.join(appended)} because target module is {display_name}."
+		meta["permissions"] = {
+			"source": "default",
+			"rationale": (prev_rationale + " " + module_reason).strip() if prev_rationale else module_reason,
+		}
+
+	# 2. Autoname swap: only if intent backfill defaulted it.
+	auto_meta = meta.get("autoname") or {}
+	naming_patterns = conv.get("naming_patterns") or []
+	if auto_meta.get("source") == "default" and naming_patterns:
+		data["autoname"] = naming_patterns[0]
+		meta["autoname"] = {
+			"source": "default",
+			"rationale": (
+				f"Module {display_name} conventionally uses {naming_patterns[0]}."
+			),
+		}
+
+	new["data"] = data
+	new["field_defaults_meta"] = meta
+	return new
 
 
 def _backfill_raw(change: dict, schema: dict) -> dict:
