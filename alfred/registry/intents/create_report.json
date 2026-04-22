@@ -1,0 +1,36 @@
+{
+	"intent": "create_report",
+	"display_name": "Create Report",
+	"doctype": "Report",
+	"fields": [
+		{
+			"key": "ref_doctype",
+			"label": "Source DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "report_type",
+			"label": "Report type",
+			"type": "select",
+			"options": ["Report Builder", "Query Report", "Script Report"],
+			"default": "Report Builder",
+			"rationale": "Report Builder is the safest default: field-list + filters, no SQL or Python. Promote to Query Report only when aggregations require raw SQL; Script Report is V2+ only."
+		},
+		{
+			"key": "is_standard",
+			"label": "Standard?",
+			"type": "check",
+			"default": 0,
+			"rationale": "Standard reports live in an app's filesystem and require a module + file write. Default to non-standard (site-local) unless the user is shipping the report in an app."
+		},
+		{
+			"key": "module",
+			"label": "Module",
+			"type": "link",
+			"link_doctype": "Module Def",
+			"required": true
+		}
+	]
+}
