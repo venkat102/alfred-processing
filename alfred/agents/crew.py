@@ -912,9 +912,14 @@ def _get_specialist_developer_agent(
 
 	if intent == "create_doctype":
 		from alfred.agents.builders.doctype_builder import build_doctype_builder_agent
-		return build_doctype_builder_agent(
+		agent = build_doctype_builder_agent(
 			site_config=site_config, custom_tools=custom_tools
 		)
+		logger.info(
+			"Builder specialist selected: intent=%s agent_role=%r",
+			intent, agent.role,
+		)
+		return agent
 
 	return None
 

@@ -5,6 +5,7 @@ Receives tasks from client apps via WebSocket and REST API.
 """
 
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 
@@ -55,6 +56,20 @@ async def lifespan(app: FastAPI):
 		app.state.redis = None
 
 	app.state.settings = settings
+
+	# Echo module-specialist feature flags so it's obvious at a glance
+	# which pipeline paths are active. Off/"0"/absent all render as OFF.
+	def _flag(name: str) -> str:
+		return "ON" if os.environ.get(name) == "1" else "OFF"
+
+	logger.info(
+		"Module-specialist flags: ALFRED_PER_INTENT_BUILDERS=%s "
+		"ALFRED_MODULE_SPECIALISTS=%s ALFRED_MULTI_MODULE=%s",
+		_flag("ALFRED_PER_INTENT_BUILDERS"),
+		_flag("ALFRED_MODULE_SPECIALISTS"),
+		_flag("ALFRED_MULTI_MODULE"),
+	)
+
 	logger.info("Alfred Processing App ready on %s:%d", settings.HOST, settings.PORT)
 
 	yield
