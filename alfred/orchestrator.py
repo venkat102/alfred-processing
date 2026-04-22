@@ -527,3 +527,108 @@ async def classify_intent(prompt: str, site_config: dict) -> IntentDecision:
 			confidence="low",
 			source="fallback",
 		)
+
+
+# ── Module detection (Dev mode) ─────────────────────────────────
+# Runs after classify_intent for dev-mode prompts to pick a module
+# specialist. Heuristic first (ModuleRegistry.detect), LLM fallback
+# only when heuristic returns None. Spec:
+# docs/specs/2026-04-22-module-specialists.md
+
+from alfred.registry.module_loader import ModuleRegistry as _ModuleRegistry
+
+
+@dataclass
+class ModuleDecision:
+	"""Result of per-module Builder classification (dev mode only).
+
+	Mirrors IntentDecision. ``module`` is a registered module key or None
+	(None means "no module specialist should be invoked" - identical to
+	the flag-off path). ``source`` is one of: "heuristic", "classifier",
+	"fallback".
+	"""
+
+	module: str | None
+	reason: str
+	confidence: str  # "high" | "medium" | "low"
+	source: str
+
+	def to_dict(self) -> dict:
+		return {
+			"module": self.module,
+			"reason": self.reason,
+			"confidence": self.confidence,
+			"source": self.source,
+		}
+
+
+async def _classify_module_llm(prompt: str, site_config: dict) -> str:
+	"""Small LLM call that returns a registered module key or "unknown".
+
+	Kept module-level so tests can patch it without standing up the rest
+	of the orchestrator.
+	"""
+	from alfred.llm_client import ollama_chat
+
+	modules = _ModuleRegistry.load().modules()
+	if not modules:
+		return "unknown"
+
+	system = (
+		"You classify the user's Frappe customization request into ONE ERPNext module. "
+		f"Valid modules: {', '.join(modules)}, unknown. "
+		"Reply with ONLY the module key, no prose, no punctuation."
+	)
+	reply = await ollama_chat(
+		messages=[
+			{"role": "system", "content": system},
+			{"role": "user", "content": prompt},
+		],
+		site_config=site_config,
+		tier=site_config.get("llm_tier", "triage"),
+		max_tokens=16,
+		temperature=0.0,
+	)
+	tag = (reply or "").strip().lower()
+	return tag if tag in (*modules, "unknown") else "unknown"
+
+
+async def detect_module(
+	*,
+	prompt: str,
+	target_doctype: str | None,
+	site_config: dict,
+) -> ModuleDecision:
+	registry = _ModuleRegistry.load()
+	module_key, confidence = registry.detect(prompt=prompt, target_doctype=target_doctype)
+	if module_key is not None:
+		return ModuleDecision(
+			module=module_key,
+			reason=f"matched heuristic ({confidence}) for {module_key}",
+			confidence=confidence,
+			source="heuristic",
+		)
+
+	try:
+		tag = await _classify_module_llm(prompt, site_config)
+		if tag == "unknown":
+			return ModuleDecision(
+				module=None,
+				reason="LLM classifier returned unknown",
+				confidence="low",
+				source="classifier",
+			)
+		return ModuleDecision(
+			module=tag,
+			reason=f"LLM classifier returned {tag}",
+			confidence="medium",
+			source="classifier",
+		)
+	except Exception as e:
+		logger.warning("Module classifier failed: %s", e)
+		return ModuleDecision(
+			module=None,
+			reason=f"classifier error: {e}",
+			confidence="low",
+			source="fallback",
+		)
