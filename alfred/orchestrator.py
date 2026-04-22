@@ -632,3 +632,81 @@ async def detect_module(
 			confidence="low",
 			source="fallback",
 		)
+
+
+# ── V3 multi-module classification ──────────────────────────────
+# Adds primary + secondary modules for prompts that span domains.
+# Heuristic path uses ModuleRegistry.detect_all. LLM fallback is
+# primary-only - secondaries only come from the heuristic to avoid
+# token budget blowup on a second LLM round-trip.
+# Spec: docs/specs/2026-04-22-multi-module-classification.md.
+
+
+@dataclass
+class ModulesDecision:
+	"""V3 multi-module classification result.
+
+	Mirrors ModuleDecision but carries ``secondary_modules``. When
+	``secondary_modules`` is empty, behaviour is V2-equivalent.
+	"""
+
+	module: str | None
+	secondary_modules: list[str]
+	reason: str
+	confidence: str
+	source: str
+
+	def to_dict(self) -> dict:
+		return {
+			"module": self.module,
+			"secondary_modules": list(self.secondary_modules),
+			"reason": self.reason,
+			"confidence": self.confidence,
+			"source": self.source,
+		}
+
+
+async def detect_modules(
+	*,
+	prompt: str,
+	target_doctype: str | None,
+	site_config: dict,
+) -> ModulesDecision:
+	"""Heuristic + LLM fallback for primary + secondaries.
+
+	Heuristic uses ModuleRegistry.detect_all. LLM fallback returns a
+	primary-only decision (secondaries stay empty) to keep cost bounded.
+	"""
+	registry = _ModuleRegistry.load()
+	primary, confidence, secondaries = registry.detect_all(
+		prompt=prompt, target_doctype=target_doctype,
+	)
+	if primary is not None:
+		return ModulesDecision(
+			module=primary,
+			secondary_modules=secondaries,
+			reason=f"matched heuristic ({confidence}) for {primary}; secondaries={secondaries}",
+			confidence=confidence,
+			source="heuristic",
+		)
+
+	try:
+		tag = await _classify_module_llm(prompt, site_config)
+		if tag == "unknown":
+			return ModulesDecision(
+				module=None, secondary_modules=[],
+				reason="LLM classifier returned unknown",
+				confidence="low", source="classifier",
+			)
+		return ModulesDecision(
+			module=tag, secondary_modules=[],
+			reason=f"LLM classifier returned {tag}",
+			confidence="medium", source="classifier",
+		)
+	except Exception as e:
+		logger.warning("Multi-module classifier failed: %s", e)
+		return ModulesDecision(
+			module=None, secondary_modules=[],
+			reason=f"classifier error: {e}",
+			confidence="low", source="fallback",
+		)
