@@ -921,6 +921,17 @@ def _get_specialist_developer_agent(
 		)
 		return agent
 
+	if intent == "create_report":
+		from alfred.agents.builders.report_builder import build_report_builder_agent
+		agent = build_report_builder_agent(
+			site_config=site_config, custom_tools=custom_tools
+		)
+		logger.info(
+			"Builder specialist selected: intent=%s agent_role=%r",
+			intent, agent.role,
+		)
+		return agent
+
 	return None
 
 
@@ -946,6 +957,12 @@ def _enhance_task_description(
 
 	if intent == "create_doctype":
 		from alfred.agents.builders.doctype_builder import enhance_generate_changeset_description
+		return enhance_generate_changeset_description(
+			base_description, module_context=module_context,
+		)
+
+	if intent == "create_report":
+		from alfred.agents.builders.report_builder import enhance_generate_changeset_description
 		return enhance_generate_changeset_description(
 			base_description, module_context=module_context,
 		)

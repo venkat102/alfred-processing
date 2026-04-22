@@ -107,3 +107,33 @@ def test_enhance_task_description_empty_module_context_equals_v1_path():
 		)
 		assert "field_defaults_meta" in out
 		assert "MODULE CONTEXT" not in out
+
+
+def test_specialist_agent_returned_for_create_report():
+	with patch.dict(os.environ, {"ALFRED_PER_INTENT_BUILDERS": "1"}):
+		agent = _get_specialist_developer_agent(
+			intent="create_report", site_config={}, custom_tools=None
+		)
+		assert agent is not None
+		assert "Report" in agent.role
+
+
+def test_enhance_task_description_applies_for_generate_changeset_create_report():
+	with patch.dict(os.environ, {"ALFRED_PER_INTENT_BUILDERS": "1"}):
+		out = _enhance_task_description(
+			"generate_changeset", "create_report", "base text"
+		)
+		assert "base text" in out
+		assert "ref_doctype" in out
+		assert "report_type" in out
+
+
+def test_enhance_task_description_injects_module_context_for_create_report():
+	with patch.dict(os.environ, {"ALFRED_PER_INTENT_BUILDERS": "1"}):
+		out = _enhance_task_description(
+			"generate_changeset", "create_report", "base text",
+			module_context="selling snippet",
+		)
+		assert "base text" in out
+		assert "ref_doctype" in out
+		assert "selling snippet" in out
