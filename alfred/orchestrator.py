@@ -428,7 +428,7 @@ async def classify_mode(
 # "unknown" on failure. Spec:
 # docs/specs/2026-04-21-doctype-builder-specialist.md
 
-_SUPPORTED_INTENTS: tuple[str, ...] = ("create_doctype",)
+_SUPPORTED_INTENTS: tuple[str, ...] = ("create_doctype", "create_report")
 
 _HEURISTIC_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
 	"create_doctype": (
@@ -439,6 +439,14 @@ _HEURISTIC_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
 		"add doctype",
 		"build a doctype",
 		"make a doctype",
+	),
+	"create_report": (
+		"save as report",
+		"save this as a report",
+		"create a report",
+		"make a report",
+		"build a report",
+		"new report",
 	),
 }
 
