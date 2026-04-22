@@ -1,0 +1,61 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"title": "Alfred Module KB Schema",
+	"type": "object",
+	"required": ["module", "display_name", "frappe_module_key", "backstory", "conventions", "validation_rules", "detection_hints"],
+	"additionalProperties": false,
+	"properties": {
+		"module": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+		"display_name": {"type": "string", "minLength": 1},
+		"frappe_module_key": {"type": "string", "minLength": 1},
+		"backstory": {"type": "string", "minLength": 50},
+		"conventions": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"permissions_add_roles": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"required": ["role"],
+						"properties": {
+							"role": {"type": "string", "minLength": 1},
+							"read": {"type": "integer", "enum": [0, 1]},
+							"write": {"type": "integer", "enum": [0, 1]},
+							"create": {"type": "integer", "enum": [0, 1]},
+							"delete": {"type": "integer", "enum": [0, 1]}
+						}
+					}
+				},
+				"naming_patterns": {"type": "array", "items": {"type": "string"}},
+				"typical_linked_doctypes": {"type": "array", "items": {"type": "string"}},
+				"required_hooks_for_submittable": {"type": "array", "items": {"type": "string"}},
+				"gotchas": {"type": "array", "items": {"type": "string"}}
+			}
+		},
+		"validation_rules": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"required": ["id", "severity", "when", "message"],
+				"additionalProperties": false,
+				"properties": {
+					"id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+					"severity": {"enum": ["advisory", "warning", "blocker"]},
+					"when": {"type": "object"},
+					"message": {"type": "string", "minLength": 1},
+					"fix": {"type": "string"}
+				}
+			}
+		},
+		"detection_hints": {
+			"type": "object",
+			"required": ["target_doctype_matches", "keyword_hints"],
+			"additionalProperties": false,
+			"properties": {
+				"target_doctype_matches": {"type": "array", "items": {"type": "string"}},
+				"keyword_hints": {"type": "array", "items": {"type": "string"}}
+			}
+		}
+	}
+}
