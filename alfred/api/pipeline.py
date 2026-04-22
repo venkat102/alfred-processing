@@ -417,6 +417,18 @@ class PipelineContext:
 	intent_confidence: str | None = None
 	intent_reason: str | None = None
 
+	# Per-module Builder classification (dev mode only, V2).
+	# Written by _phase_classify_module when both V1 (ALFRED_PER_INTENT_BUILDERS)
+	# and V2 (ALFRED_MODULE_SPECIALISTS) flags are on. Flows into
+	# _phase_provide_module_context, _phase_build_crew, and _phase_post_crew.
+	# Spec: docs/specs/2026-04-22-module-specialists.md.
+	module: str | None = None
+	module_confidence: str | None = None
+	module_source: str | None = None
+	module_reason: str | None = None
+	module_context: str = ""
+	module_validation_notes: list[dict] = field(default_factory=list)
+
 	# Services
 	store: "StateStore | None" = None
 	conversation_memory: "ConversationMemory | None" = None
@@ -497,10 +509,12 @@ class AgentPipeline:
 		"plan_check",
 		"orchestrate",
 		"classify_intent",
+		"classify_module",
 		"enhance",
 		"clarify",
 		"inject_kb",
 		"resolve_mode",
+		"provide_module_context",
 		"build_crew",
 		"run_crew",
 		"post_crew",
@@ -1149,6 +1163,74 @@ class AgentPipeline:
 			decision.confidence, decision.reason,
 		)
 
+	async def _phase_classify_module(self) -> None:
+		"""Classify the dev-mode prompt's target module for specialist selection.
+
+		No-op for non-dev modes, when ALFRED_PER_INTENT_BUILDERS is off, or
+		when ALFRED_MODULE_SPECIALISTS is off. Stores the ModuleDecision
+		fields on ctx.module* for downstream phases to read.
+
+		See docs/specs/2026-04-22-module-specialists.md.
+		"""
+		ctx = self.ctx
+		if ctx.mode != "dev":
+			return
+		if _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") != "1":
+			return
+		if _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") != "1":
+			return
+
+		from alfred.orchestrator import detect_module
+
+		decision = await detect_module(
+			prompt=ctx.prompt,
+			target_doctype=None,
+			site_config=ctx.conn.site_config or {},
+		)
+		ctx.module = decision.module
+		ctx.module_source = decision.source
+		ctx.module_confidence = decision.confidence
+		ctx.module_reason = decision.reason
+
+		logger.info(
+			"Module decision for conversation=%s: module=%s source=%s confidence=%s reason=%r",
+			ctx.conversation_id, decision.module, decision.source,
+			decision.confidence, decision.reason,
+		)
+
+	async def _phase_provide_module_context(self) -> None:
+		"""Invoke module specialist's context pass; stash snippet on ctx.
+
+		No-op when flags off or when no module was detected.
+		"""
+		ctx = self.ctx
+		if ctx.mode != "dev":
+			return
+		if _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") != "1":
+			return
+		if _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") != "1":
+			return
+		if not ctx.module:
+			return
+
+		from alfred.agents.specialists.module_specialist import provide_context
+
+		try:
+			snippet = await provide_context(
+				module=ctx.module,
+				intent=ctx.intent or "unknown",
+				target_doctype=None,
+				site_config=ctx.conn.site_config or {},
+			)
+		except Exception as e:
+			logger.warning(
+				"provide_module_context failed for conversation=%s module=%s: %s",
+				ctx.conversation_id, ctx.module, e,
+			)
+			snippet = ""
+
+		ctx.module_context = snippet
+
 	async def _phase_enhance(self) -> None:
 		if self.ctx.mode != "dev":
 			# Enhance is a Dev-mode concern. Plan/Insights/Chat have their
@@ -1491,6 +1573,7 @@ class AgentPipeline:
 				previous_state=None,
 				custom_tools=ctx.custom_tools,
 				intent=ctx.intent,
+				module_context=ctx.module_context,
 			)
 
 		# Set up the per-phase event callback now - the crew and all
@@ -1619,7 +1702,10 @@ class AgentPipeline:
 				backfill_defaults_raw,
 			)
 			try:
-				ctx.changes = backfill_defaults_raw(ctx.changes)
+				ctx.changes = backfill_defaults_raw(
+					ctx.changes,
+					module=ctx.module if _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") == "1" else None,
+				)
 			except Exception as e:
 				# Safety net: never let backfill crash the pipeline. Log and
 				# carry the original changes forward so the user still sees
@@ -1628,6 +1714,30 @@ class AgentPipeline:
 					"Defaults backfill failed for conversation=%s: %s",
 					ctx.conversation_id, e, exc_info=True,
 				)
+
+		# V2: module specialist validation pass. Runs only when both flags
+		# on, a module was detected, and we have changes to validate.
+		if (
+			ctx.changes
+			and ctx.module
+			and _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") == "1"
+			and _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") == "1"
+		):
+			from alfred.agents.specialists.module_specialist import validate_output
+			try:
+				notes = await validate_output(
+					module=ctx.module,
+					intent=ctx.intent or "unknown",
+					changes=ctx.changes,
+					site_config=ctx.conn.site_config or {},
+				)
+				ctx.module_validation_notes = [n.model_dump() for n in notes]
+			except Exception as e:
+				logger.warning(
+					"validate_output failed for conversation=%s module=%s: %s",
+					ctx.conversation_id, ctx.module, e,
+				)
+				ctx.module_validation_notes = []
 
 		if not ctx.changes:
 			logger.warning(
@@ -1718,6 +1828,8 @@ class AgentPipeline:
 				"changes": ctx.changes,
 				"result_text": ctx.result_text[:4000],
 				"dry_run": ctx.dry_run_result,
+				"module_validation_notes": ctx.module_validation_notes,
+				"detected_module": ctx.module,
 			},
 		})
 
