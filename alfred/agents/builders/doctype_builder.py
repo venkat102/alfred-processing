@@ -37,6 +37,15 @@ registry default and record which fields were defaulted in `field_defaults_meta`
 """.strip()
 
 _CHECKLIST_MARKER = "SHAPE-DEFINING FIELDS for create_doctype"
+_MODULE_CONTEXT_MARKER = "MODULE CONTEXT"
+
+
+def _wrap_module_context(snippet: str) -> str:
+	return (
+		f"{_MODULE_CONTEXT_MARKER} (target-module conventions - respect these "
+		"alongside the shape-defining fields above):\n"
+		f"{snippet}"
+	)
 
 
 def render_registry_checklist(schema: dict) -> str:
@@ -103,15 +112,17 @@ def build_doctype_builder_agent(site_config: dict, custom_tools: dict | None) ->
 	)
 
 
-def enhance_generate_changeset_description(base: str) -> str:
-	"""Return the base generate_changeset description with the DocType checklist appended.
+def enhance_generate_changeset_description(base: str, module_context: str = "") -> str:
+	"""Return the base generate_changeset description with intent checklist and optional module context appended.
 
-	Idempotent: calling it twice on the same string returns the same result,
-	so dispatch code doesn't have to track whether the enhancement was
-	already applied.
+	Idempotent per section: the intent checklist is appended once (guarded
+	by _CHECKLIST_MARKER), and the module context is appended once
+	(guarded by _MODULE_CONTEXT_MARKER). Double-enhance is a no-op.
 	"""
-	if _CHECKLIST_MARKER in base:
-		return base
-	schema = IntentRegistry.load().get("create_doctype")
-	checklist = render_registry_checklist(schema)
-	return base + "\n\n" + checklist
+	out = base
+	if _CHECKLIST_MARKER not in out:
+		schema = IntentRegistry.load().get("create_doctype")
+		out = out + "\n\n" + render_registry_checklist(schema)
+	if module_context and _MODULE_CONTEXT_MARKER not in out:
+		out = out + "\n\n" + _wrap_module_context(module_context)
+	return out
