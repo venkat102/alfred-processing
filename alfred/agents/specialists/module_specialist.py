@@ -333,3 +333,28 @@ def _normalise_issue(text: str) -> str:
 	if not text:
 		return ""
 	return " ".join(text.lower().split())
+
+
+def cap_secondary_severity(notes: list[ValidationNote]) -> list[ValidationNote]:
+	"""Return copies of notes with blocker severity capped to warning.
+
+	Secondary modules in the V3 multi-module pipeline cannot gate deploy:
+	a blocker from a secondary-context specialist becomes a warning in
+	the merged notes list. Primary-module notes keep full severity.
+
+	Spec: docs/specs/2026-04-22-multi-module-classification.md.
+	"""
+	out: list[ValidationNote] = []
+	for n in notes:
+		if n.severity == "blocker":
+			out.append(ValidationNote(
+				severity="warning",
+				source=n.source,
+				issue=n.issue,
+				field=n.field,
+				fix=n.fix,
+				changeset_index=n.changeset_index,
+			))
+		else:
+			out.append(n)
+	return out
