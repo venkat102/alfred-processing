@@ -194,6 +194,25 @@ class Changeset(BaseModel):
 	items: list[ChangesetItem] = Field(default_factory=list)
 
 
+class ValidationNote(BaseModel):
+	"""Structured note emitted by module specialist's validation pass.
+
+	Shape mirrors the existing dry_run_issues list so the client preview
+	panel can render module notes alongside validator notes uniformly.
+	Distinguished by ``source`` (e.g. ``"module_specialist:accounts"`` vs.
+	``"module_rule:accounts_submittable_needs_gl"``).
+
+	Spec: docs/specs/2026-04-22-module-specialists.md.
+	"""
+
+	severity: Literal["advisory", "warning", "blocker"]
+	source: str
+	issue: str
+	field: Optional[str] = None
+	fix: Optional[str] = None
+	changeset_index: Optional[int] = None
+
+
 # ── Task 3.5: Tester Agent Output ────────────────────────────────
 
 class ValidationIssue(BaseModel):
