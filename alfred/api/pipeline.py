@@ -1223,12 +1223,20 @@ class AgentPipeline:
 
 		from alfred.agents.specialists.module_specialist import provide_context
 
+		# Surface the Redis client (if configured) to the specialist so
+		# the 5-min context cache is shared across workers. When Redis is
+		# unreachable or not configured, the specialist falls back to a
+		# process-local cache automatically.
+		redis = getattr(getattr(ctx.conn, "websocket", None), "app", None)
+		redis = getattr(getattr(redis, "state", None), "redis", None)
+
 		try:
 			snippet = await provide_context(
 				module=ctx.module,
 				intent=ctx.intent or "unknown",
 				target_doctype=ctx.module_target_doctype,
 				site_config=ctx.conn.site_config or {},
+				redis=redis,
 			)
 		except Exception as e:
 			logger.warning(

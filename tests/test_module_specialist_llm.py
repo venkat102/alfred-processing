@@ -226,3 +226,102 @@ async def test_provide_context_empty_reply_not_cached():
 		assert first == ""
 		assert second == "real snippet"
 		assert llm.await_count == 2
+
+
+def _mock_redis():
+	"""In-memory stand-in for aioredis.Redis.
+
+	Exposes the two methods provide_context uses (``get``, ``setex``) as
+	AsyncMocks that talk to a dict. Good enough for cache-behaviour tests
+	without spinning up a real Redis.
+	"""
+	store: dict[str, str] = {}
+
+	async def _get(key):
+		return store.get(key)
+
+	async def _setex(key, ttl, value):
+		store[key] = value
+
+	redis = AsyncMock()
+	redis.get = AsyncMock(side_effect=_get)
+	redis.setex = AsyncMock(side_effect=_setex)
+	redis._store = store  # test-visible handle
+	return redis
+
+
+@pytest.mark.asyncio
+async def test_provide_context_uses_redis_when_provided():
+	redis = _mock_redis()
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(return_value="from redis write"),
+	) as llm:
+		first = await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Sales Invoice", site_config={}, redis=redis,
+		)
+		# First call: LLM hit, Redis SETEX
+		assert first == "from redis write"
+		assert llm.await_count == 1
+		assert redis.setex.await_count == 1
+		key = "alfred:module_ctx:accounts:create_doctype:Sales Invoice"
+		assert redis._store[key] == "from redis write"
+
+
+@pytest.mark.asyncio
+async def test_provide_context_redis_hit_skips_llm():
+	redis = _mock_redis()
+	# Seed Redis directly as though another worker wrote earlier.
+	await redis.setex(
+		"alfred:module_ctx:accounts:create_doctype:Sales Invoice",
+		300, "cross-worker cached",
+	)
+	_context_cache_clear()  # ensure in-memory doesn't shadow the test
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(return_value="should not be called"),
+	) as llm:
+		result = await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Sales Invoice", site_config={}, redis=redis,
+		)
+		assert result == "cross-worker cached"
+		assert llm.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_provide_context_redis_failure_falls_back_to_llm_and_inmem():
+	# Redis .get raises -> should transparently fall through to the LLM call
+	# and then populate the in-memory cache.
+	redis = AsyncMock()
+	redis.get = AsyncMock(side_effect=RuntimeError("redis down"))
+	redis.setex = AsyncMock(side_effect=RuntimeError("redis still down"))
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(return_value="fallback ok"),
+	) as llm:
+		out = await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Sales Invoice", site_config={}, redis=redis,
+		)
+		assert out == "fallback ok"
+		assert llm.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_provide_context_without_redis_uses_inmem_cache():
+	# No redis kwarg -> pure in-memory path; a second call hits cache.
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(return_value="inmem only"),
+	) as llm:
+		await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Sales Invoice", site_config={},
+		)
+		await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Sales Invoice", site_config={},
+		)
+		assert llm.await_count == 1
