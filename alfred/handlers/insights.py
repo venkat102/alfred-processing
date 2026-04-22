@@ -28,7 +28,10 @@ What this handler does NOT do:
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING
+
+from alfred.models.insights_result import InsightsResult
 
 if TYPE_CHECKING:
 	from alfred.api.websocket import ConnectionState
@@ -47,8 +50,13 @@ async def handle_insights(
 	conversation_id: str,
 	user_context: dict,
 	event_callback=None,
-) -> str:
-	"""Run the Insights crew and return a markdown answer.
+) -> InsightsResult:
+	"""Run the Insights crew and return a structured result.
+
+	When ``ALFRED_REPORT_HANDOFF=1`` is set and the prompt is report-shaped
+	(tabular, filterable, aggregation-ready), the returned ``InsightsResult``
+	carries a ``report_candidate`` the client can use to offer a "Save as
+	Report" handoff. Otherwise ``report_candidate`` is None.
 
 	Args:
 		prompt: The user's raw question.
@@ -60,8 +68,9 @@ async def handle_insights(
 			crew_completed events the same way dev mode does.
 
 	Returns:
-		A markdown reply string. Never raises - on any failure returns a
-		best-effort fallback message that tells the user what went wrong.
+		An ``InsightsResult`` with ``reply`` (markdown) and optional
+		``report_candidate``. Never raises - on any failure the reply is
+		a best-effort fallback message and ``report_candidate`` is None.
 	"""
 	from alfred.agents.crew import build_insights_crew, run_crew
 	from alfred.tools.mcp_tools import build_mcp_tools, init_run_state
@@ -98,10 +107,10 @@ async def handle_insights(
 		)
 	except Exception as e:
 		logger.warning("Failed to build insights crew: %s", e, exc_info=True)
-		return (
+		return InsightsResult(reply=(
 			"I wasn't able to spin up the Insights agent just now. "
 			"Try again in a moment, or rephrase your question."
-		)
+		))
 
 	try:
 		result = await run_crew(
@@ -114,26 +123,26 @@ async def handle_insights(
 		)
 	except Exception as e:
 		logger.warning("Insights crew run raised: %s", e, exc_info=True)
-		return (
+		return InsightsResult(reply=(
 			"I hit an error while looking that up on your site. "
 			"Try again in a moment."
-		)
+		))
 
 	if not isinstance(result, dict) or result.get("status") != "completed":
 		err = (result or {}).get("error") if isinstance(result, dict) else None
 		logger.warning("Insights crew did not complete cleanly: %s", err)
-		return (
+		return InsightsResult(reply=(
 			"I couldn't gather the site information to answer that. "
 			+ (f"Details: {err}" if err else "Try again in a moment.")
-		)
+		))
 
 	raw = (result.get("result") or "").strip()
 	if not raw:
-		return (
+		return InsightsResult(reply=(
 			"I didn't get a useful answer back from the Insights agent. "
 			"Try rephrasing your question - e.g. 'what DocTypes do I have "
 			"in the Selling module?'."
-		)
+		))
 
 	# Strip a leading code fence if the model wrapped the whole answer in
 	# ```markdown blocks. Markdown renders fine inside code fences but the
@@ -147,4 +156,19 @@ async def handle_insights(
 			lines = lines[:-1]
 		cleaned = "\n".join(lines).strip()
 
-	return cleaned or raw
+	reply = cleaned or raw
+
+	# Attempt report_candidate extraction - gated by ALFRED_REPORT_HANDOFF
+	# so pre-feature sites are unaffected. Extractor returns None when the
+	# prompt isn't report-shaped (scalar / metadata / no target DocType).
+	report_candidate = None
+	if os.environ.get("ALFRED_REPORT_HANDOFF") == "1":
+		from alfred.handlers.insights_candidate import extract_report_candidate
+		try:
+			report_candidate = extract_report_candidate(prompt=prompt, reply=reply)
+		except Exception as e:
+			logger.warning(
+				"report_candidate extraction failed: %s", e, exc_info=True,
+			)
+
+	return InsightsResult(reply=reply, report_candidate=report_candidate)

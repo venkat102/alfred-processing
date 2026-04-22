@@ -1,0 +1,53 @@
+{
+	"module": "stock",
+	"display_name": "Stock",
+	"frappe_module_key": "Stock",
+	"backstory": "You are the Alfred ERPNext Stock domain authority. You know Item / Warehouse / Stock Entry / Stock Reconciliation / Delivery Note / Purchase Receipt / Material Request conventions. You know submittable Stock DocTypes post to the Stock Ledger Entry via on_submit - this is to Stock what GL posting is to Accounts; bypassing it corrupts valuation. You know batch / serial tracking is per-Item: enabling it on an Item forces all stock movements for that Item to carry batch_no / serial_no, and retrofitting onto an Item with existing stock is a one-way door. You know warehouses have permission subtrees: a user with Warehouse perm doesn't automatically have perm on parent or child warehouses. You catch anti-patterns: direct stock posting without a Stock Entry document, skipping valuation recalculation, mixing serialized and non-serialized stock for the same Item, forgetting to set warehouse on a stock-affecting DocType.",
+	"conventions": {
+		"permissions_add_roles": [
+			{"role": "Stock Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "Stock User", "read": 1, "write": 1, "create": 1, "delete": 0}
+		],
+		"naming_patterns": ["format:STO-.YYYY.-.#####"],
+		"typical_linked_doctypes": ["Item", "Warehouse", "Batch", "Serial No", "UOM", "Item Group"],
+		"required_hooks_for_submittable": ["on_submit_stock_ledger_posting"],
+		"gotchas": [
+			"Submittable Stock DocTypes must post to Stock Ledger Entry on submit. Bypassing this corrupts item valuation.",
+			"Batch / serial tracking is per-Item. Enabling has_batch_no or has_serial_no forces every future movement of that Item to carry batch_no / serial_no.",
+			"Warehouse permissions don't cascade - set perm per warehouse or use Warehouse Type where possible.",
+			"Always record the source warehouse and target warehouse for stock-moving DocTypes; a missing warehouse is a silent data-corruption bug."
+		]
+	},
+	"validation_rules": [
+		{
+			"id": "stock_submittable_needs_ledger_posting",
+			"severity": "warning",
+			"when": {"doctype": "DocType", "data.is_submittable": 1},
+			"message": "Submittable Stock DocTypes conventionally post to Stock Ledger Entry on submit. No on_submit hook detected.",
+			"fix": "Add a Server Script with doctype_event='on_submit' and reference_doctype=<this DocType> that inserts a Stock Ledger Entry."
+		},
+		{
+			"id": "stock_needs_stock_manager_perm",
+			"severity": "advisory",
+			"when": {"doctype": "DocType"},
+			"message": "Stock DocTypes typically include Stock Manager and Stock User permission rows.",
+			"fix": "Add Stock Manager (full) and Stock User (no delete) rows to permissions."
+		}
+	],
+	"detection_hints": {
+		"target_doctype_matches": [
+			"Item", "Item Group", "Item Attribute", "Item Variant Settings",
+			"Warehouse", "Warehouse Type",
+			"Stock Entry", "Stock Entry Type", "Stock Reconciliation",
+			"Stock Ledger Entry", "Batch", "Serial No",
+			"Delivery Note", "Purchase Receipt", "Material Request",
+			"UOM", "UOM Conversion Factor"
+		],
+		"keyword_hints": [
+			"stock entry", "stock ledger", "stock reconciliation",
+			"warehouse", "item group", "material request",
+			"delivery note", "purchase receipt", "serial no", "batch no",
+			"stock manager", "stock user", "inventory", "uom"
+		]
+	}
+}

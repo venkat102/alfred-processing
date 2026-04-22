@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os as _os_for_flag
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
@@ -128,6 +129,36 @@ _NON_DOCTYPE_CAPITALIZED = frozenset({
 	"North", "South", "East", "West",
 	"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
 })
+
+
+_REPORT_CANDIDATE_MARKER_RE = _re.compile(
+	r"__report_candidate__\s*:\s*(\{[\s\S]*\})",
+	_re.IGNORECASE,
+)
+
+
+def _parse_report_candidate_marker(prompt: str) -> dict | None:
+	"""Return the JSON block attached to a prompt as a __report_candidate__ trailer.
+
+	The alfred_client "Save as Report" button appends this marker so the
+	pipeline can short-circuit intent classification to create_report with
+	the already-resolved query shape. Returns None when no marker is found
+	or the block fails to parse - caller falls back to normal classify.
+
+	Spec: docs/specs/2026-04-22-insights-to-report-handoff.md.
+	"""
+	if not prompt:
+		return None
+	m = _REPORT_CANDIDATE_MARKER_RE.search(prompt)
+	if not m:
+		return None
+	try:
+		parsed = json.loads(m.group(1))
+		if isinstance(parsed, dict):
+			return parsed
+	except Exception:
+		pass
+	return None
 
 
 def _extract_target_doctypes(prompt: str, limit: int = _INJECT_MAX_TARGETS) -> list[str]:
@@ -405,6 +436,43 @@ class PipelineContext:
 	insights_reply: str | None = None
 	plan_doc: dict | None = None
 
+	# Per-intent Builder classification (dev mode only).
+	# Written by _phase_classify_intent, consumed by _phase_build_crew to
+	# select a specialist Developer agent, and by _phase_post_crew to
+	# backfill registry defaults into ctx.changes. "unknown" or None means
+	# no specialist routing; behaviour matches flag-off. See
+	# docs/specs/2026-04-21-doctype-builder-specialist.md.
+	intent: str | None = None
+	intent_source: str | None = None
+	intent_confidence: str | None = None
+	intent_reason: str | None = None
+
+	# Per-module Builder classification (dev mode only, V2).
+	# Written by _phase_classify_module when both V1 (ALFRED_PER_INTENT_BUILDERS)
+	# and V2 (ALFRED_MODULE_SPECIALISTS) flags are on. Flows into
+	# _phase_provide_module_context, _phase_build_crew, and _phase_post_crew.
+	# Spec: docs/specs/2026-04-22-module-specialists.md.
+	module: str | None = None
+	module_confidence: str | None = None
+	module_source: str | None = None
+	module_reason: str | None = None
+	module_target_doctype: str | None = None
+	module_context: str = ""
+	module_validation_notes: list[dict] = field(default_factory=list)
+
+	# V3 multi-module additions. Populated only when ALFRED_MULTI_MODULE=1.
+	# module_secondary_contexts maps module key -> that module's
+	# provide_context snippet so the UI can attribute text to its source.
+	secondary_modules: list[str] = field(default_factory=list)
+	module_secondary_contexts: dict[str, str] = field(default_factory=dict)
+
+	# V4: structured Insights -> Report handoff payload. When the client
+	# injects a __report_candidate__ JSON block into the prompt (user
+	# clicked "Save as Report" on an Insights reply), the pipeline parses
+	# it here and force-classifies intent=create_report.
+	# Spec: docs/specs/2026-04-22-insights-to-report-handoff.md.
+	report_candidate: dict | None = None
+
 	# Services
 	store: "StateStore | None" = None
 	conversation_memory: "ConversationMemory | None" = None
@@ -484,10 +552,13 @@ class AgentPipeline:
 		"warmup",
 		"plan_check",
 		"orchestrate",
+		"classify_intent",
+		"classify_module",
 		"enhance",
 		"clarify",
 		"inject_kb",
 		"resolve_mode",
+		"provide_module_context",
 		"build_crew",
 		"run_crew",
 		"post_crew",
@@ -890,7 +961,7 @@ class AgentPipeline:
 		ctx.event_callback = _event_cb
 
 		try:
-			reply = await handle_insights(
+			result = await handle_insights(
 				prompt=ctx.prompt,
 				conn=ctx.conn,
 				conversation_id=ctx.conversation_id,
@@ -899,12 +970,13 @@ class AgentPipeline:
 			)
 		except Exception as e:
 			logger.warning("Insights handler raised: %s", e, exc_info=True)
-			reply = (
+			from alfred.models.insights_result import InsightsResult
+			result = InsightsResult(reply=(
 				"I had trouble looking that up on your site just now. "
 				"Try again in a moment, or rephrase your question."
-			)
+			))
 
-		ctx.insights_reply = reply
+		ctx.insights_reply = result.reply
 
 		try:
 			await ctx.conn.send({
@@ -912,8 +984,12 @@ class AgentPipeline:
 				"type": "insights_reply",
 				"data": {
 					"conversation": ctx.conversation_id,
-					"reply": reply,
+					"reply": result.reply,
 					"mode": "insights",
+					"report_candidate": (
+						result.report_candidate.model_dump()
+						if result.report_candidate else None
+					),
 				},
 			})
 		except Exception as e:
@@ -1099,6 +1175,211 @@ class AgentPipeline:
 				)
 			except Exception as e:
 				logger.warning("plan memory save failed: %s", e)
+
+	async def _phase_classify_intent(self) -> None:
+		"""Classify the dev-mode prompt into a Builder specialist intent.
+
+		No-op for non-dev modes and when ALFRED_PER_INTENT_BUILDERS is unset
+		(``_phase_build_crew`` and the backfill in ``_phase_post_crew`` are
+		also flag-gated, so an off flag means zero behavioural change from
+		pre-feature Alfred). Stores the IntentDecision fields on ctx.intent*
+		for downstream phases to read.
+
+		See docs/specs/2026-04-21-doctype-builder-specialist.md.
+		"""
+		import os as _os
+
+		ctx = self.ctx
+		if ctx.mode != "dev":
+			return
+		if _os.environ.get("ALFRED_PER_INTENT_BUILDERS") != "1":
+			return
+
+		# V4 handoff short-circuit: when the client's prompt carries a
+		# __report_candidate__ JSON block (user clicked "Save as Report"
+		# on an Insights reply), parse it, stash on ctx, and force-classify
+		# intent=create_report. Avoids a second heuristic/LLM pass - the
+		# Insights handler already did the interpretation work.
+		if _os.environ.get("ALFRED_REPORT_HANDOFF") == "1":
+			parsed = _parse_report_candidate_marker(ctx.prompt)
+			if parsed is not None:
+				ctx.report_candidate = parsed
+				ctx.intent = "create_report"
+				ctx.intent_source = "handoff"
+				ctx.intent_confidence = "high"
+				ctx.intent_reason = "__report_candidate__ marker present"
+				logger.info(
+					"Intent handoff for conversation=%s: intent=create_report "
+					"source=handoff candidate_keys=%s",
+					ctx.conversation_id, list(parsed.keys()),
+				)
+				return
+
+		from alfred.orchestrator import classify_intent
+
+		decision = await classify_intent(
+			prompt=ctx.prompt,
+			site_config=ctx.conn.site_config or {},
+		)
+		ctx.intent = decision.intent
+		ctx.intent_source = decision.source
+		ctx.intent_confidence = decision.confidence
+		ctx.intent_reason = decision.reason
+
+		logger.info(
+			"Intent decision for conversation=%s: intent=%s source=%s confidence=%s reason=%r",
+			ctx.conversation_id, decision.intent, decision.source,
+			decision.confidence, decision.reason,
+		)
+
+	async def _phase_classify_module(self) -> None:
+		"""Classify the dev-mode prompt's target module for specialist selection.
+
+		No-op for non-dev modes, when ALFRED_PER_INTENT_BUILDERS is off, or
+		when ALFRED_MODULE_SPECIALISTS is off. Stores the ModuleDecision
+		fields on ctx.module* for downstream phases to read.
+
+		See docs/specs/2026-04-22-module-specialists.md.
+		"""
+		ctx = self.ctx
+		if ctx.mode != "dev":
+			return
+		if _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") != "1":
+			return
+		if _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") != "1":
+			return
+
+		# Heuristic: use the first extracted target DocType so module
+		# detection can take the high-confidence path (target_doctype
+		# match) rather than falling back to keyword hints.
+		targets = _extract_target_doctypes(ctx.prompt)
+		first_target = targets[0] if targets else None
+		ctx.module_target_doctype = first_target
+
+		if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
+			# V3: primary + secondaries
+			from alfred.orchestrator import detect_modules
+			multi = await detect_modules(
+				prompt=ctx.prompt,
+				target_doctype=first_target,
+				site_config=ctx.conn.site_config or {},
+			)
+			ctx.module = multi.module
+			ctx.secondary_modules = multi.secondary_modules
+			ctx.module_source = multi.source
+			ctx.module_confidence = multi.confidence
+			ctx.module_reason = multi.reason
+			logger.info(
+				"Multi-module decision for conversation=%s: primary=%s "
+				"secondaries=%s source=%s confidence=%s reason=%r",
+				ctx.conversation_id, multi.module, multi.secondary_modules,
+				multi.source, multi.confidence, multi.reason,
+			)
+			return
+
+		# V2: single-module path (unchanged)
+		from alfred.orchestrator import detect_module
+		decision = await detect_module(
+			prompt=ctx.prompt,
+			target_doctype=first_target,
+			site_config=ctx.conn.site_config or {},
+		)
+		ctx.module = decision.module
+		ctx.module_source = decision.source
+		ctx.module_confidence = decision.confidence
+		ctx.module_reason = decision.reason
+
+		logger.info(
+			"Module decision for conversation=%s: module=%s source=%s confidence=%s reason=%r",
+			ctx.conversation_id, decision.module, decision.source,
+			decision.confidence, decision.reason,
+		)
+
+	async def _phase_provide_module_context(self) -> None:
+		"""Invoke module specialist's context pass; stash snippet on ctx.
+
+		No-op when flags off or when no module was detected.
+		"""
+		ctx = self.ctx
+		if ctx.mode != "dev":
+			return
+		if _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") != "1":
+			return
+		if _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") != "1":
+			return
+		if not ctx.module:
+			return
+
+		from alfred.agents.specialists.module_specialist import provide_context
+		from alfred.registry.module_loader import ModuleRegistry
+
+		# Surface the Redis client (if configured) to the specialist so
+		# the 5-min context cache is shared across workers. When Redis is
+		# unreachable or not configured, the specialist falls back to a
+		# process-local cache automatically.
+		redis = getattr(getattr(ctx.conn, "websocket", None), "app", None)
+		redis = getattr(getattr(redis, "state", None), "redis", None)
+
+		registry = ModuleRegistry.load()
+
+		def _display(m: str) -> str:
+			try:
+				return registry.get(m).get("display_name", m)
+			except Exception:
+				return m
+
+		# Primary context call (same as V2 path)
+		try:
+			primary_ctx = await provide_context(
+				module=ctx.module,
+				intent=ctx.intent or "unknown",
+				target_doctype=ctx.module_target_doctype,
+				site_config=ctx.conn.site_config or {},
+				redis=redis,
+			)
+		except Exception as e:
+			logger.warning(
+				"provide_module_context failed for conversation=%s module=%s: %s",
+				ctx.conversation_id, ctx.module, e,
+			)
+			primary_ctx = ""
+
+		# V3: secondary context calls (silent failure each)
+		secondary_ctxs: dict[str, str] = {}
+		if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
+			for m in ctx.secondary_modules:
+				try:
+					snippet = await provide_context(
+						module=m,
+						intent=ctx.intent or "unknown",
+						target_doctype=ctx.module_target_doctype,
+						site_config=ctx.conn.site_config or {},
+						redis=redis,
+					)
+					if snippet:
+						secondary_ctxs[m] = snippet
+				except Exception as e:
+					logger.warning(
+						"secondary provide_context failed for %s: %s", m, e,
+					)
+
+		# V2 path: bare primary snippet, no header wrapper. V3 path:
+		# labeled PRIMARY / SECONDARY sections so the LLM can distinguish
+		# the target domain from advisory context. Header wrapping only
+		# applies when V3 flag is on - V2-only runs keep their existing
+		# prompt shape.
+		if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
+			parts: list[str] = []
+			if primary_ctx:
+				parts.append(f"PRIMARY MODULE ({_display(ctx.module)}):\n{primary_ctx}")
+			elif ctx.secondary_modules:
+				parts.append(f"PRIMARY MODULE ({_display(ctx.module)}): (no context)")
+			for m, s in secondary_ctxs.items():
+				parts.append(f"SECONDARY MODULE CONTEXT ({_display(m)}):\n{s}")
+			ctx.module_context = "\n\n".join(parts) if parts else primary_ctx
+		else:
+			ctx.module_context = primary_ctx
+		ctx.module_secondary_contexts = secondary_ctxs
 
 	async def _phase_enhance(self) -> None:
 		if self.ctx.mode != "dev":
@@ -1441,6 +1722,8 @@ class AgentPipeline:
 				site_config=ctx.conn.site_config,
 				previous_state=None,
 				custom_tools=ctx.custom_tools,
+				intent=ctx.intent,
+				module_context=ctx.module_context,
 			)
 
 		# Set up the per-phase event callback now - the crew and all
@@ -1557,6 +1840,86 @@ class AgentPipeline:
 			except Exception:
 				pass
 
+		# Per-intent defaults backfill. Only runs when
+		# ALFRED_PER_INTENT_BUILDERS=1; otherwise a no-op. Fills any missing
+		# shape-defining registry fields on dev-mode changesets and annotates
+		# ctx.changes[i]["field_defaults_meta"] so the client review UI can
+		# render defaults as editable pills. Runs after the rescue path so
+		# whichever path produced the changeset gets the same treatment.
+		# See docs/specs/2026-04-21-doctype-builder-specialist.md.
+		if ctx.changes and _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") == "1":
+			from alfred.handlers.post_build.backfill_defaults import (
+				backfill_defaults_raw,
+			)
+			try:
+				module_arg = (
+					ctx.module
+					if _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") == "1"
+					else None
+				)
+				secondary_arg = (
+					ctx.secondary_modules
+					if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1"
+					else []
+				)
+				ctx.changes = backfill_defaults_raw(
+					ctx.changes,
+					module=module_arg,
+					secondary_modules=secondary_arg,
+				)
+			except Exception as e:
+				# Safety net: never let backfill crash the pipeline. Log and
+				# carry the original changes forward so the user still sees
+				# something (even if defaults aren't labelled).
+				logger.warning(
+					"Defaults backfill failed for conversation=%s: %s",
+					ctx.conversation_id, e, exc_info=True,
+				)
+
+		# V2 + V3: module specialist validation pass. Primary keeps full
+		# severity; secondary modules (V3) get their blockers capped to
+		# warning so only primary-module notes can gate deploy.
+		if (
+			ctx.changes
+			and ctx.module
+			and _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") == "1"
+			and _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") == "1"
+		):
+			from alfred.agents.specialists.module_specialist import (
+				cap_secondary_severity,
+				validate_output,
+			)
+			try:
+				primary_notes = await validate_output(
+					module=ctx.module,
+					intent=ctx.intent or "unknown",
+					changes=ctx.changes,
+					site_config=ctx.conn.site_config or {},
+				)
+				secondary_notes: list = []
+				if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
+					for m in ctx.secondary_modules:
+						try:
+							notes = await validate_output(
+								module=m,
+								intent=ctx.intent or "unknown",
+								changes=ctx.changes,
+								site_config=ctx.conn.site_config or {},
+							)
+							secondary_notes.extend(cap_secondary_severity(notes))
+						except Exception as e:
+							logger.warning(
+								"secondary validate for %s failed: %s", m, e,
+							)
+				all_notes = primary_notes + secondary_notes
+				ctx.module_validation_notes = [n.model_dump() for n in all_notes]
+			except Exception as e:
+				logger.warning(
+					"validate_output failed for conversation=%s module=%s: %s",
+					ctx.conversation_id, ctx.module, e,
+				)
+				ctx.module_validation_notes = []
+
 		if not ctx.changes:
 			logger.warning(
 				"Pipeline completed but extraction + rescue both returned "
@@ -1646,6 +2009,10 @@ class AgentPipeline:
 				"changes": ctx.changes,
 				"result_text": ctx.result_text[:4000],
 				"dry_run": ctx.dry_run_result,
+				"module_validation_notes": ctx.module_validation_notes,
+				"detected_module": ctx.module,
+				"detected_module_secondaries": ctx.secondary_modules,
+				"module_confidence": ctx.module_confidence,
 			},
 		})
 

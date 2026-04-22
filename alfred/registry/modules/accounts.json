@@ -1,0 +1,48 @@
+{
+	"module": "accounts",
+	"display_name": "Accounts",
+	"frappe_module_key": "Accounts",
+	"backstory": "You are the Alfred ERPNext Accounts domain authority. You know GL posting on_submit of submittable documents, Cost Center / Party Type / Account Head conventions, multi-currency handling and exchange rate sources, Accounts Manager vs Accounts User role separation, period-lock and fiscal-year and posting-date discipline. The anti-patterns you catch include bypassing GL, skipping party validation, and hardcoding currency without an exchange_rate field.",
+	"conventions": {
+		"permissions_add_roles": [
+			{"role": "Accounts Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "Accounts User", "read": 1, "write": 1, "create": 1, "delete": 0}
+		],
+		"naming_patterns": ["format:ACC-.YYYY.-.####"],
+		"typical_linked_doctypes": ["Customer", "Supplier", "Item", "Cost Center", "Account"],
+		"required_hooks_for_submittable": ["on_submit_gl_posting"],
+		"gotchas": [
+			"All submittable DocTypes should post to General Ledger via on_submit hook",
+			"Multi-currency fields require explicit exchange_rate and validation",
+			"Posting date controls GL entry sequencing - never set it from the client",
+			"Fiscal year must be derived, not user-provided"
+		]
+	},
+	"validation_rules": [
+		{
+			"id": "accounts_submittable_needs_gl",
+			"severity": "warning",
+			"when": {"doctype": "DocType", "data.is_submittable": 1},
+			"message": "Submittable Accounts DocTypes conventionally post GL entries on submit. No on_submit hook detected in the changeset.",
+			"fix": "Add a Server Script with doctype_event='on_submit' and reference_doctype=<this DocType> that inserts a GL Entry."
+		},
+		{
+			"id": "accounts_needs_accounts_manager_perm",
+			"severity": "advisory",
+			"when": {"doctype": "DocType"},
+			"message": "Accounts DocTypes typically include an 'Accounts Manager' permission row.",
+			"fix": "Add {role: 'Accounts Manager', read: 1, write: 1, create: 1, delete: 1} to permissions."
+		}
+	],
+	"detection_hints": {
+		"target_doctype_matches": [
+			"Sales Invoice", "Purchase Invoice", "Journal Entry", "Payment Entry",
+			"GL Entry", "Cost Center", "Account", "Fiscal Year", "Currency Exchange"
+		],
+		"keyword_hints": [
+			"accounting", "ledger", "gl", "invoice", "journal entry",
+			"payment entry", "cost center", "fiscal year", "currency exchange",
+			"general ledger", "account head"
+		]
+	}
+}

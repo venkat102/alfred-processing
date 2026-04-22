@@ -1,0 +1,53 @@
+{
+	"module": "crm",
+	"display_name": "CRM",
+	"frappe_module_key": "CRM",
+	"backstory": "You are the Alfred ERPNext CRM domain authority. You know Lead / Opportunity / Contract / Appointment / Communication conventions. You know CRM sits pre-sale: the lifecycle runs Lead -> Opportunity -> Quotation (Selling) -> Sales Order (Selling), and each stage carries a status field rather than a docstatus submit/cancel. Leads are not submittable - their lifecycle runs through status transitions (Open -> Interested -> Converted -> Do Not Contact). Opportunities link back to their source Lead and forward to the Quotation they generated. You know Communication is the canonical log of touchpoints (email, call, meeting) linked back to Lead / Opportunity / Customer via reference_doctype + reference_name. You catch anti-patterns: Leads without a source or campaign tag, Opportunities missing expected_closing and probability, ad-hoc notes on the Lead description instead of Communication records, Contracts without a valid Customer or Supplier party, hardcoding stage probabilities rather than deriving from the Opportunity Stage DocType.",
+	"conventions": {
+		"permissions_add_roles": [
+			{"role": "Sales Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "Sales User", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Sales Master Manager", "read": 1, "write": 1, "create": 1, "delete": 0}
+		],
+		"naming_patterns": ["format:CRM-.YYYY.-.#####"],
+		"typical_linked_doctypes": ["Lead", "Opportunity", "Customer", "Contact", "Campaign", "Communication"],
+		"required_hooks_for_submittable": [],
+		"gotchas": [
+			"CRM runs on status fields, not docstatus submit/cancel. Submittable CRM DocTypes are rare and almost always an anti-pattern.",
+			"Every Lead should have a source (Campaign, Existing Customer, Walk In, Reference) - attribution drives funnel analytics.",
+			"Communication is the canonical touchpoint log - store emails / calls / meetings there linked via reference_doctype + reference_name, not as freetext notes on the Lead.",
+			"Contracts bind to either a Customer or a Supplier via party_type + party - both party fields are required for signed agreements."
+		]
+	},
+	"validation_rules": [
+		{
+			"id": "crm_submittable_is_unusual",
+			"severity": "warning",
+			"when": {"doctype": "DocType", "data.is_submittable": 1},
+			"message": "Submittable DocTypes in CRM are unusual - CRM runs on status fields (Open / Converted / Closed) rather than docstatus submit/cancel. Double-check the lifecycle need.",
+			"fix": "Consider modeling the lifecycle with a status field + Workflow on a non-submittable DocType unless there's a clear reason to use docstatus."
+		},
+		{
+			"id": "crm_needs_sales_manager_perm",
+			"severity": "advisory",
+			"when": {"doctype": "DocType"},
+			"message": "CRM DocTypes share the Selling permission model (Sales Manager, Sales User, Sales Master Manager).",
+			"fix": "Add Sales Manager (full), Sales User (no delete), and Sales Master Manager (no delete) rows to permissions."
+		}
+	],
+	"detection_hints": {
+		"target_doctype_matches": [
+			"Lead", "Lead Source",
+			"Opportunity", "Opportunity Item", "Opportunity Lost Reason",
+			"Contract", "Contract Template", "Contract Fulfilment Checklist Item",
+			"Appointment", "Appointment Booking Settings",
+			"Communication", "Campaign", "Campaign Email Schedule"
+		],
+		"keyword_hints": [
+			"lead source", "sales funnel", "opportunity stage",
+			"expected closing", "deal owner", "campaign email",
+			"contract template", "appointment booking",
+			"communication log", "touchpoint"
+		]
+	}
+}

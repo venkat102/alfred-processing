@@ -1,0 +1,53 @@
+{
+	"module": "assets",
+	"display_name": "Assets",
+	"frappe_module_key": "Assets",
+	"backstory": "You are the Alfred ERPNext Assets domain authority. You know Asset / Asset Category / Asset Movement / Asset Value Adjustment / Asset Repair / Asset Maintenance / Depreciation Schedule conventions. You know Assets are deeply tied to Accounts: acquisition posts to a fixed-asset GL account, depreciation schedules post periodic GL entries, disposals post gain/loss entries. You know Asset Categories carry the default depreciation method (Straight Line vs Written Down Value), useful life, and the GL accounts that every child Asset inherits. You know that once an Asset's Depreciation Schedule is generated, changing useful life or method requires an Asset Value Adjustment document rather than editing the Asset directly. You catch anti-patterns: direct value edits bypassing Asset Value Adjustment, missing Depreciation Schedule on a capitalised Asset, Asset Movement without both source and target Location, disposal without a disposal_date + disposal_amount, mixing asset_quantity > 1 with serialised tracking.",
+	"conventions": {
+		"permissions_add_roles": [
+			{"role": "Accounts Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "Accounts User", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Quality Manager", "read": 1, "write": 0, "create": 0, "delete": 0}
+		],
+		"naming_patterns": ["format:AST-.YYYY.-.#####"],
+		"typical_linked_doctypes": ["Asset", "Asset Category", "Location", "Cost Center", "Account", "Item"],
+		"required_hooks_for_submittable": ["on_submit_gl_posting", "on_submit_depreciation_schedule"],
+		"gotchas": [
+			"Assets hit General Ledger on acquisition, depreciation, repair, and disposal - Asset DocTypes must post GL entries or they corrupt the balance sheet.",
+			"Depreciation Schedule is generated at Asset submit and should be regenerated only via Asset Value Adjustment, not edited directly.",
+			"Asset Movement needs both source and target Location - missing either breaks location-based reporting.",
+			"asset_quantity > 1 conflicts with per-unit serialisation. If you need per-unit tracking, split into multiple Asset records."
+		]
+	},
+	"validation_rules": [
+		{
+			"id": "assets_submittable_needs_gl_and_schedule",
+			"severity": "warning",
+			"when": {"doctype": "DocType", "data.is_submittable": 1},
+			"message": "Submittable Assets DocTypes typically post both a GL entry and (for capitalised assets) trigger a Depreciation Schedule update on submit.",
+			"fix": "Add a Server Script with doctype_event='on_submit' that posts GL Entry and, where applicable, regenerates the Depreciation Schedule."
+		},
+		{
+			"id": "assets_needs_accounts_manager_perm",
+			"severity": "advisory",
+			"when": {"doctype": "DocType"},
+			"message": "Assets DocTypes typically include Accounts Manager and Accounts User permission rows (Assets report to the Accounts function).",
+			"fix": "Add Accounts Manager (full) and Accounts User (no delete) rows to permissions; add Quality Manager (read-only) if maintenance records are involved."
+		}
+	],
+	"detection_hints": {
+		"target_doctype_matches": [
+			"Asset", "Asset Category", "Asset Category Account",
+			"Asset Movement", "Asset Movement Item",
+			"Asset Value Adjustment", "Asset Repair",
+			"Asset Maintenance", "Asset Maintenance Log", "Asset Maintenance Team",
+			"Depreciation Schedule", "Location"
+		],
+		"keyword_hints": [
+			"asset category", "asset movement", "asset repair",
+			"asset maintenance", "asset value adjustment",
+			"depreciation schedule", "fixed asset", "capitalised",
+			"straight line", "written down value", "useful life"
+		]
+	}
+}

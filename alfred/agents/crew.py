@@ -13,6 +13,7 @@ Usage:
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any
 
@@ -603,6 +604,8 @@ def build_alfred_crew(
 	site_config: dict | None = None,
 	previous_state: CrewState | None = None,
 	custom_tools: dict | None = None,
+	intent: str | None = None,
+	module_context: str = "",
 ) -> tuple[Crew, CrewState]:
 	"""Build the Alfred SDLC crew with all tasks and agents.
 
@@ -624,6 +627,17 @@ def build_alfred_crew(
 
 	# Build agents with the configured LLM
 	agents = build_agents(site_config=site_config, custom_tools=custom_tools)
+
+	# Per-intent Builder specialist swap (flag-gated; no-op when flag off).
+	# See alfred/agents/builders/ and
+	# docs/specs/2026-04-21-doctype-builder-specialist.md
+	specialist = _get_specialist_developer_agent(
+		intent=intent,
+		site_config=site_config,
+		custom_tools=custom_tools,
+	)
+	if specialist is not None:
+		agents["developer"] = specialist
 
 	# Build task context from previous outputs (for resumption)
 	ctx = state.completed_tasks
@@ -676,7 +690,11 @@ def build_alfred_crew(
 			continue
 
 		desc_template = TASK_DESCRIPTIONS[task_name]
-		description = desc_template["description"].format(**format_vars)
+		base_description = _enhance_task_description(
+			task_name, intent, desc_template["description"],
+			module_context=module_context,
+		)
+		description = base_description.format(**format_vars)
 		expected_output = desc_template["expected_output"]
 
 		# Build context from earlier completed tasks
@@ -862,3 +880,91 @@ async def run_crew(
 		if original_builtin_input is not None:
 			import builtins
 			builtins.input = original_builtin_input
+
+
+# ── Per-intent Builder specialist dispatch ───────────────────────
+# Feature-flagged via ALFRED_PER_INTENT_BUILDERS=1. When off, or when
+# intent is None / "unknown", these helpers are no-ops and the generic
+# Developer runs unchanged. See
+# docs/specs/2026-04-21-doctype-builder-specialist.md.
+
+
+def _per_intent_builders_enabled() -> bool:
+	return os.environ.get("ALFRED_PER_INTENT_BUILDERS") == "1"
+
+
+def _get_specialist_developer_agent(
+	*,
+	intent: str | None,
+	site_config: dict,
+	custom_tools: dict | None,
+):
+	"""Return a specialist Agent for the classified intent, or None.
+
+	None means "use the generic Developer agent built by build_agents()".
+	Returned Agent slots into agents['developer'] unchanged; the rest of
+	the crew (Tester, Deployer) treats it identically.
+	"""
+	if not _per_intent_builders_enabled():
+		return None
+	if not intent or intent == "unknown":
+		return None
+
+	if intent == "create_doctype":
+		from alfred.agents.builders.doctype_builder import build_doctype_builder_agent
+		agent = build_doctype_builder_agent(
+			site_config=site_config, custom_tools=custom_tools
+		)
+		logger.info(
+			"Builder specialist selected: intent=%s agent_role=%r",
+			intent, agent.role,
+		)
+		return agent
+
+	if intent == "create_report":
+		from alfred.agents.builders.report_builder import build_report_builder_agent
+		agent = build_report_builder_agent(
+			site_config=site_config, custom_tools=custom_tools
+		)
+		logger.info(
+			"Builder specialist selected: intent=%s agent_role=%r",
+			intent, agent.role,
+		)
+		return agent
+
+	return None
+
+
+def _enhance_task_description(
+	task_name: str,
+	intent: str | None,
+	base_description: str,
+	module_context: str = "",
+) -> str:
+	"""Return a possibly-enhanced description for a given task + intent + module.
+
+	Only ``generate_changeset`` is enhanced. All other task descriptions
+	pass through unchanged. When the flag is off or the intent has no
+	specialist, the base description is returned unchanged regardless of
+	module_context.
+	"""
+	if not _per_intent_builders_enabled():
+		return base_description
+	if task_name != "generate_changeset":
+		return base_description
+	if not intent or intent == "unknown":
+		return base_description
+
+	if intent == "create_doctype":
+		from alfred.agents.builders.doctype_builder import enhance_generate_changeset_description
+		return enhance_generate_changeset_description(
+			base_description, module_context=module_context,
+		)
+
+	if intent == "create_report":
+		from alfred.agents.builders.report_builder import enhance_generate_changeset_description
+		return enhance_generate_changeset_description(
+			base_description, module_context=module_context,
+		)
+
+	return base_description

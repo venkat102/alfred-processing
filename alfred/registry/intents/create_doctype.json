@@ -1,0 +1,52 @@
+{
+	"intent": "create_doctype",
+	"display_name": "Create DocType",
+	"doctype": "DocType",
+	"fields": [
+		{
+			"key": "module",
+			"label": "Module",
+			"type": "link",
+			"link_doctype": "Module Def",
+			"required": true
+		},
+		{
+			"key": "is_submittable",
+			"label": "Submittable?",
+			"type": "check",
+			"default": 0,
+			"rationale": "Most DocTypes are not submittable. Enable only for documents with a draft / submitted / cancelled lifecycle."
+		},
+		{
+			"key": "autoname",
+			"label": "Naming rule",
+			"type": "select",
+			"options": ["autoincrement", "field:title", "format:PREFIX-.####", "prompt", "hash"],
+			"default": "autoincrement",
+			"rationale": "Autoincrement is safe when naming intent is unclear. Change if users should see meaningful IDs."
+		},
+		{
+			"key": "istable",
+			"label": "Child table?",
+			"type": "check",
+			"default": 0,
+			"rationale": "Child tables only exist inside a parent DocType. Enable only for repeating rows."
+		},
+		{
+			"key": "issingle",
+			"label": "Singleton?",
+			"type": "check",
+			"default": 0,
+			"rationale": "Single DocTypes store exactly one record (e.g. settings). Enable for config-style documents."
+		},
+		{
+			"key": "permissions",
+			"label": "Permissions",
+			"type": "table",
+			"default": [
+				{"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1}
+			],
+			"rationale": "System Manager full access is the minimum usable default. Add role rows for end users."
+		}
+	]
+}
