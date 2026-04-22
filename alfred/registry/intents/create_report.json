@@ -4,6 +4,12 @@
 	"doctype": "Report",
 	"fields": [
 		{
+			"key": "report_name",
+			"label": "Report name",
+			"type": "data",
+			"required": true
+		},
+		{
 			"key": "ref_doctype",
 			"label": "Source DocType",
 			"type": "link",

@@ -28,11 +28,20 @@ but sandboxing-heavy, V2+ only). You know Reports anchor to a single \
 (module + file write) or stays site-local (DB-only); default non-standard \
 unless the user is shipping an app. You know that Reports bind to a Module \
 for navigation and access control, and that the Report's permission scope \
-is governed by the ref_doctype's perms unless explicitly overridden. Every \
-Report you emit MUST include ``ref_doctype``, ``report_type``, \
-``is_standard``, and ``module`` in its ``data``. If the user did not \
-specify a value, use the registry default and record which fields were \
-defaulted in ``field_defaults_meta``.
+is governed by the ref_doctype's perms unless explicitly overridden.
+
+CRITICAL: The Report DocType's display name field is ``report_name`` \
+(NOT ``name``). ``report_name`` is required by Frappe; Reports use \
+``field:report_name`` as their autoname so the document's primary key is \
+derived from it. When the user provides a handoff with a "Suggested name:" \
+line or the prompt mentions a report title, put it in ``report_name``. Do \
+NOT emit ``"name"`` as a standalone field for Reports - Frappe will set it \
+from report_name automatically.
+
+Every Report you emit MUST include ``report_name``, ``ref_doctype``, \
+``report_type``, ``is_standard``, and ``module`` in its ``data``. If the \
+user did not specify a value, use the registry default and record which \
+fields were defaulted in ``field_defaults_meta``.
 """.strip()
 
 _CHECKLIST_MARKER = "SHAPE-DEFINING FIELDS for create_report"

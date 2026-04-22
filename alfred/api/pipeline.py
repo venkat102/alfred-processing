@@ -1906,6 +1906,37 @@ class AgentPipeline:
 					ctx.conversation_id, e, exc_info=True,
 				)
 
+		# V4 deterministic safety net: Insights-to-Report handoff carries a
+		# suggested_name in the structured candidate. If the Report Builder
+		# specialist skipped populating report_name (Frappe requires it;
+		# Report autoname is field:report_name), derive it from the handoff
+		# candidate here so the dry-run doesn't fail on a missing required
+		# field. Only fires when intent=create_report and we have a
+		# candidate - safe no-op otherwise.
+		if (
+			ctx.changes
+			and ctx.intent == "create_report"
+			and isinstance(ctx.report_candidate, dict)
+		):
+			suggested_name = ctx.report_candidate.get("suggested_name")
+			if suggested_name:
+				for item in ctx.changes:
+					if item.get("doctype") != "Report":
+						continue
+					data = item.setdefault("data", {})
+					if not data.get("report_name"):
+						data["report_name"] = suggested_name
+						meta = item.setdefault("field_defaults_meta", {})
+						meta["report_name"] = {
+							"source": "default",
+							"rationale": (
+								"Filled from the Insights-to-Report handoff's "
+								"suggested_name because the specialist's output "
+								"omitted it. Edit before deploy if you want a "
+								"different report title."
+							),
+						}
+
 		# V2 + V3: module specialist validation pass. Primary keeps full
 		# severity; secondary modules (V3) get their blockers capped to
 		# warning so only primary-module notes can gate deploy.
