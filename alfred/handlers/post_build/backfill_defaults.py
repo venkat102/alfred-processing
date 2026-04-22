@@ -39,18 +39,28 @@ def backfill_defaults(changeset: Changeset) -> Changeset:
 
 
 def backfill_defaults_raw(
-	changes: list[dict], *, module: str | None = None,
+	changes: list[dict],
+	*,
+	module: str | None = None,
+	secondary_modules: list[str] | None = None,
 ) -> list[dict]:
 	"""Raw-dict variant used by the pipeline.
 
-	V1 behaviour (module is None): fills missing intent-registry fields in
-	``data`` and appends a ``field_defaults_meta`` annotation.
+	V1 behaviour (``module`` is None): fills missing intent-registry
+	fields in ``data`` and appends a ``field_defaults_meta`` annotation.
 
-	V2 behaviour (module set): after V1 pass, layers the module KB's
-	conventions on top - adds any missing ``permissions_add_roles`` entries
-	and, if the V1 pass defaulted ``autoname``, swaps in the first entry
-	from the module's ``naming_patterns`` with a module-aware rationale.
-	Unknown module keys fall back to V1 behaviour.
+	V2 behaviour (``module`` set): after V1 pass, layers the primary
+	module KB's conventions on top - adds any missing
+	``permissions_add_roles`` entries and, if the V1 pass defaulted
+	``autoname``, swaps in the first entry from the module's
+	``naming_patterns`` with a module-aware rationale.
+
+	V3 behaviour (``secondary_modules`` also set): each secondary
+	module's ``permissions_add_roles`` are appended too, deduped against
+	the primary's rows. Primary's naming pattern always wins - secondary
+	modules never override naming.
+
+	Unknown module keys (primary or secondary) are skipped silently.
 	"""
 	registry = IntentRegistry.load()
 	out: list[dict] = []
@@ -63,8 +73,54 @@ def backfill_defaults_raw(
 		backfilled = _backfill_raw(change, schema)
 		if module:
 			backfilled = _apply_module_defaults(backfilled, module)
+			for sec in secondary_modules or []:
+				backfilled = _apply_secondary_module_defaults(backfilled, sec)
 		out.append(backfilled)
 	return out
+
+
+def _apply_secondary_module_defaults(change: dict, module: str) -> dict:
+	"""Secondary-module defaults: permission rows only; no naming swap.
+
+	Primary module owns naming. Secondary contributes additional
+	permission rows deduped against whatever is already present.
+	Rationale tag flags these as secondary-context additions so the UI
+	can surface them differently.
+	"""
+	try:
+		kb = ModuleRegistry.load().get(module)
+	except UnknownModuleError:
+		return change
+
+	display_name = kb.get("display_name", module)
+	conv = kb.get("conventions", {})
+	new = {**change}
+	data = copy.deepcopy(new.get("data") or {})
+	meta = copy.deepcopy(new.get("field_defaults_meta") or {})
+
+	existing_perms = data.get("permissions") or []
+	existing_roles = {p.get("role") for p in existing_perms if isinstance(p, dict)}
+	appended: list[str] = []
+	for row in conv.get("permissions_add_roles", []):
+		if row.get("role") and row["role"] not in existing_roles:
+			existing_perms.append(copy.deepcopy(row))
+			existing_roles.add(row["role"])
+			appended.append(row["role"])
+	if appended:
+		data["permissions"] = existing_perms
+		prev = meta.get("permissions", {})
+		prev_rationale = prev.get("rationale", "")
+		addl = (
+			f"Added {', '.join(appended)} because request touches "
+			f"{display_name} as secondary context."
+		)
+		meta["permissions"] = {
+			"source": "default",
+			"rationale": (prev_rationale + " " + addl).strip() if prev_rationale else addl,
+		}
+	new["data"] = data
+	new["field_defaults_meta"] = meta
+	return new
 
 
 def _apply_module_defaults(change: dict, module: str) -> dict:
