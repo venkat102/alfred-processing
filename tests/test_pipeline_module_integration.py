@@ -89,3 +89,30 @@ async def test_provide_module_context_calls_specialist_when_module_set(monkeypat
 		await pipeline._phase_provide_module_context()
 		spy.assert_awaited_once()
 		assert ctx.module_context == "accounts snippet"
+
+
+def test_phase_ordering_classify_module_before_enhance_and_provide_after():
+	# Regression guard per code review: classify_module runs early (right
+	# after classify_intent) so enhance/inject_kb can see ctx.module if
+	# they ever grow that dependency; provide_module_context runs AFTER
+	# resolve_mode so the crew build can use the resulting context.
+	phases = AgentPipeline.PHASES
+	assert phases.index("classify_intent") < phases.index("classify_module")
+	assert phases.index("classify_module") < phases.index("enhance")
+	assert phases.index("resolve_mode") < phases.index("provide_module_context")
+	assert phases.index("provide_module_context") < phases.index("build_crew")
+
+
+@pytest.mark.asyncio
+async def test_classify_module_noop_when_v1_off_but_v2_on_with_prior_intent(monkeypatch):
+	# Cross-flag race: V2 flag on, V1 flag off, ctx.intent already set from
+	# a prior turn's V1 run. Module classification must still be a no-op
+	# because V2 depends on V1's prompt-enhancement path being active.
+	monkeypatch.delenv("ALFRED_PER_INTENT_BUILDERS", raising=False)
+	monkeypatch.setenv("ALFRED_MODULE_SPECIALISTS", "1")
+	ctx = _build_ctx("Customize Sales Invoice")
+	ctx.intent = "create_doctype"  # stale from prior turn
+	pipeline = AgentPipeline(ctx)
+	await pipeline._phase_classify_module()
+	assert ctx.module is None
+	assert ctx.module_source is None

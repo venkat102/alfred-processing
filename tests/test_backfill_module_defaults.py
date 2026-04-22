@@ -59,3 +59,17 @@ def test_module_unknown_falls_back_to_v1_behaviour():
 	roles = {p["role"] for p in perms}
 	assert "System Manager" in roles
 	assert "Accounts Manager" not in roles
+
+
+def test_applying_module_defaults_twice_is_idempotent():
+	# Regression guard: running backfill + module-defaults twice on the
+	# same changeset must not double-append permission rows.
+	changes = [_doctype_change({"name": "Voucher", "module": "Custom"})]
+	once = backfill_defaults_raw(changes, module="accounts")
+	twice = backfill_defaults_raw(once, module="accounts")
+	once_roles = [p["role"] for p in once[0]["data"]["permissions"]]
+	twice_roles = [p["role"] for p in twice[0]["data"]["permissions"]]
+	# Sorted because order is stable but we don't care about it
+	assert sorted(once_roles) == sorted(twice_roles)
+	# No duplicates
+	assert len(twice_roles) == len(set(twice_roles))
