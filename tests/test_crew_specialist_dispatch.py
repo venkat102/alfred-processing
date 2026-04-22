@@ -77,3 +77,33 @@ def test_enhance_task_description_applies_for_generate_changeset_create_doctype(
 		)
 		assert "base text" in out
 		assert "field_defaults_meta" in out
+
+
+def test_enhance_task_description_injects_module_context_when_provided():
+	with patch.dict(os.environ, {"ALFRED_PER_INTENT_BUILDERS": "1"}):
+		out = _enhance_task_description(
+			"generate_changeset", "create_doctype", "base text",
+			module_context="accounts snippet",
+		)
+		assert "base text" in out
+		assert "field_defaults_meta" in out
+		assert "accounts snippet" in out
+
+
+def test_enhance_task_description_ignores_module_context_for_other_tasks():
+	with patch.dict(os.environ, {"ALFRED_PER_INTENT_BUILDERS": "1"}):
+		out = _enhance_task_description(
+			"gather_requirements", "create_doctype", "base text",
+			module_context="accounts snippet",
+		)
+		assert out == "base text"
+
+
+def test_enhance_task_description_empty_module_context_equals_v1_path():
+	with patch.dict(os.environ, {"ALFRED_PER_INTENT_BUILDERS": "1"}):
+		out = _enhance_task_description(
+			"generate_changeset", "create_doctype", "base text",
+			module_context="",
+		)
+		assert "field_defaults_meta" in out
+		assert "MODULE CONTEXT" not in out
