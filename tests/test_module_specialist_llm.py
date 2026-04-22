@@ -4,9 +4,17 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from alfred.agents.specialists.module_specialist import (
+	_context_cache_clear,
 	provide_context,
 	validate_output,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_cache():
+	_context_cache_clear()
+	yield
+	_context_cache_clear()
 
 
 @pytest.mark.asyncio
@@ -126,3 +134,95 @@ async def test_validate_output_llm_malformed_json_falls_back_to_rules_only():
 	sources = {n.source for n in notes}
 	assert "module_rule:accounts_submittable_needs_gl" in sources
 	assert not any(s.startswith("module_specialist:") for s in sources)
+
+
+@pytest.mark.asyncio
+async def test_validate_output_dedups_llm_note_that_matches_rule_note():
+	# Rule runner will produce "Submittable Accounts DocTypes conventionally..."
+	# The LLM returns the SAME message verbatim - should be deduped.
+	rule_message = (
+		"Submittable Accounts DocTypes conventionally post GL entries on "
+		"submit. No on_submit hook detected in the changeset."
+	)
+	llm_reply = json.dumps([
+		{"severity": "warning", "issue": rule_message},
+	])
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(return_value=llm_reply),
+	):
+		notes = await validate_output(
+			module="accounts",
+			intent="create_doctype",
+			changes=[{
+				"op": "create", "doctype": "DocType",
+				"data": {"name": "Voucher", "is_submittable": 1},
+			}],
+			site_config={},
+		)
+	# Only ONE note with that message - the rule's copy, not the LLM's.
+	matching = [n for n in notes if "post GL entries on submit" in n.issue]
+	assert len(matching) == 1
+	assert matching[0].source.startswith("module_rule:")
+
+
+@pytest.mark.asyncio
+async def test_provide_context_caches_within_ttl():
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(return_value="cached snippet"),
+	) as llm:
+		first = await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Sales Invoice", site_config={},
+		)
+		second = await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Sales Invoice", site_config={},
+		)
+		assert first == second == "cached snippet"
+		# Second call should hit cache, not LLM
+		assert llm.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_provide_context_cache_keyed_on_all_three_inputs():
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(side_effect=["first", "second", "third"]),
+	) as llm:
+		await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Sales Invoice", site_config={},
+		)
+		# Different target_doctype -> cache miss
+		await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Journal Entry", site_config={},
+		)
+		# Different intent -> cache miss
+		await provide_context(
+			module="accounts", intent="create_server_script",
+			target_doctype="Sales Invoice", site_config={},
+		)
+		assert llm.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_provide_context_empty_reply_not_cached():
+	# Don't cache empty results - next caller should retry
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(side_effect=["", "real snippet"]),
+	) as llm:
+		first = await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Sales Invoice", site_config={},
+		)
+		second = await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Sales Invoice", site_config={},
+		)
+		assert first == ""
+		assert second == "real snippet"
+		assert llm.await_count == 2
