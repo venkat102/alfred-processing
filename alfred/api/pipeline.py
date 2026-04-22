@@ -348,9 +348,39 @@ def _detect_drift(result_text: str, user_prompt: str) -> str | None:
 	Called by `_phase_post_crew` before extraction + rescue to catch
 	training-data bleed and surface a specific error instead of the
 	usual EMPTY_CHANGESET message.
+
+	Happy-path short-circuit: the whole point of this check is to catch
+	agents slipping into prose / documentation mode instead of emitting
+	JSON. If the output is clearly a JSON array (the changeset shape
+	Alfred expects), the agent did not drift into prose - downstream
+	extraction handles malformed-JSON cases on its own. Skipping here
+	prevents false positives where a specialist's legitimate string
+	values (e.g. a Report changeset's `"report_type": "Report Builder"`
+	plus a rationale mentioning "Query Report" / "Script Report") match
+	the Title-Cased DocType-name regex and get flagged as foreign.
 	"""
 	if not result_text or not isinstance(result_text, str):
 		return None
+	stripped = result_text.strip()
+	# Strip markdown code fences if present (`````json ... `````) so a
+	# fenced-but-structurally-valid array still short-circuits.
+	if stripped.startswith("```"):
+		lines = stripped.splitlines()
+		if lines and lines[0].startswith("```"):
+			lines = lines[1:]
+		if lines and lines[-1].startswith("```"):
+			lines = lines[:-1]
+		stripped = "\n".join(lines).strip()
+	if stripped.startswith("[") and stripped.endswith("]"):
+		try:
+			parsed = json.loads(stripped)
+			if isinstance(parsed, list):
+				return None
+		except Exception:
+			# Malformed JSON falls through to drift checks below - if the
+			# agent tried to emit a changeset but wrote unparseable JSON,
+			# drift detection can still catch obvious prose mixed in.
+			pass
 	text = result_text.lower()
 	prompt_lower = (user_prompt or "").lower()
 
