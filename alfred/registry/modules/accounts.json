@@ -40,8 +40,9 @@
 			"GL Entry", "Cost Center", "Account", "Fiscal Year", "Currency Exchange"
 		],
 		"keyword_hints": [
-			"account", "accounting", "ledger", "gl ", "invoice", "journal",
-			"payment entry", "cost center", "fiscal", "currency exchange"
+			"accounting", "ledger", "gl", "invoice", "journal entry",
+			"payment entry", "cost center", "fiscal year", "currency exchange",
+			"general ledger", "account head"
 		]
 	}
 }

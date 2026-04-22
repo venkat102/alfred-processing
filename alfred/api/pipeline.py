@@ -426,6 +426,7 @@ class PipelineContext:
 	module_confidence: str | None = None
 	module_source: str | None = None
 	module_reason: str | None = None
+	module_target_doctype: str | None = None
 	module_context: str = ""
 	module_validation_notes: list[dict] = field(default_factory=list)
 
@@ -1182,15 +1183,22 @@ class AgentPipeline:
 
 		from alfred.orchestrator import detect_module
 
+		# Heuristic: use the first extracted target DocType so module
+		# detection can take the high-confidence path (target_doctype
+		# match) rather than falling back to keyword hints.
+		targets = _extract_target_doctypes(ctx.prompt)
+		first_target = targets[0] if targets else None
+
 		decision = await detect_module(
 			prompt=ctx.prompt,
-			target_doctype=None,
+			target_doctype=first_target,
 			site_config=ctx.conn.site_config or {},
 		)
 		ctx.module = decision.module
 		ctx.module_source = decision.source
 		ctx.module_confidence = decision.confidence
 		ctx.module_reason = decision.reason
+		ctx.module_target_doctype = first_target
 
 		logger.info(
 			"Module decision for conversation=%s: module=%s source=%s confidence=%s reason=%r",
@@ -1219,7 +1227,7 @@ class AgentPipeline:
 			snippet = await provide_context(
 				module=ctx.module,
 				intent=ctx.intent or "unknown",
-				target_doctype=None,
+				target_doctype=ctx.module_target_doctype,
 				site_config=ctx.conn.site_config or {},
 			)
 		except Exception as e:
