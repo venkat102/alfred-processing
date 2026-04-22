@@ -129,6 +129,23 @@ _FAST_PATH_INSIGHTS_PATTERNS = (
 	" are installed on",
 )
 
+# Analytics / "top N" verbs that should route to Insights rather than Dev.
+# Covers "show top", "list the top", counting, summaries, report-on phrasings.
+# Deploy verbs (build/create/add/make) are checked first in _fast_path() so
+# "build a Report DocType for top customers" still routes to Dev.
+_FAST_PATH_INSIGHTS_ANALYTICS_PREFIXES = (
+	"show top ",
+	"show the top ",
+	"show me top ",
+	"list the top ",
+	"count of ",
+	"summarize ",
+	"summarise ",
+	"summary of ",
+	"report on ",
+	"report me ",
+)
+
 _CLASSIFIER_SYSTEM_PROMPT = """\
 You classify user prompts into one of four modes for a Frappe customization assistant.
 
@@ -229,6 +246,11 @@ def _fast_path(prompt: str) -> str | None:
 	# Insights: interrogative prefixes that unambiguously ask for info
 	# about the user's current site state.
 	for prefix in _FAST_PATH_INSIGHTS_PREFIXES:
+		if normalized.startswith(prefix):
+			return "insights"
+
+	# Insights: analytics / "top N" / summary phrasings.
+	for prefix in _FAST_PATH_INSIGHTS_ANALYTICS_PREFIXES:
 		if normalized.startswith(prefix):
 			return "insights"
 
