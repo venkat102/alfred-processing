@@ -18,8 +18,11 @@ Spec: docs/specs/2026-04-22-module-specialists.md.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 
+from alfred.llm_client import ollama_chat as _ollama_chat
 from alfred.models.agent_outputs import ValidationNote
 from alfred.registry.module_loader import ModuleRegistry, UnknownModuleError
 
@@ -79,4 +82,161 @@ def run_rule_validation(
 					"Module rule %s failed while evaluating change %d: %s",
 					rule.get("id", "<unknown>"), idx, e,
 				)
+	return notes
+
+
+_JSON_ARRAY_RE = re.compile(r"\[[\s\S]*\]")
+
+
+def _strip_code_fences(text: str) -> str:
+	if not text:
+		return text
+	cleaned = text.strip()
+	if cleaned.startswith("```"):
+		lines = cleaned.splitlines()
+		if lines and lines[0].startswith("```"):
+			lines = lines[1:]
+		if lines and lines[-1].startswith("```"):
+			lines = lines[:-1]
+		cleaned = "\n".join(lines).strip()
+	return cleaned
+
+
+def _parse_llm_note_list(raw: str) -> list[dict] | None:
+	"""Parse the LLM's validation response as a JSON array of note dicts.
+
+	Mirrors handlers/plan.py's _parse_plan_doc_json robustness. Returns
+	None on unrecoverable parse failure so callers can fall back to
+	rule-only notes.
+	"""
+	if not raw:
+		return None
+	cleaned = _strip_code_fences(raw)
+	try:
+		parsed = json.loads(cleaned)
+		if isinstance(parsed, list):
+			return parsed
+	except Exception:
+		pass
+
+	decoder = json.JSONDecoder()
+	for idx, ch in enumerate(cleaned):
+		if ch != "[":
+			continue
+		try:
+			parsed, _ = decoder.raw_decode(cleaned[idx:])
+			if isinstance(parsed, list):
+				return parsed
+		except Exception:
+			continue
+	return None
+
+
+async def provide_context(
+	*,
+	module: str,
+	intent: str,
+	target_doctype: str | None,
+	site_config: dict,
+) -> str:
+	"""Context pre-pass. Returns a prompt snippet for the intent specialist."""
+	try:
+		kb = ModuleRegistry.load().get(module)
+	except UnknownModuleError:
+		return ""
+
+	user_parts = [f"Intent: {intent}"]
+	if target_doctype:
+		user_parts.append(f"Target DocType: {target_doctype}")
+	user_parts.append(
+		"Summarise the subset of your module knowledge relevant to this "
+		"intent + target. Output should be 3-6 sentences of concrete "
+		"conventions, role names, and gotchas. No prose introduction, no "
+		"JSON, no markdown headers."
+	)
+
+	try:
+		reply = await _ollama_chat(
+			messages=[
+				{"role": "system", "content": kb["backstory"]},
+				{"role": "user", "content": "\n".join(user_parts)},
+			],
+			site_config=site_config,
+			tier=site_config.get("llm_tier", "triage"),
+			max_tokens=400,
+			temperature=0.2,
+		)
+		return (reply or "").strip()
+	except Exception as e:
+		logger.warning("Module specialist provide_context failed (%s): %s", module, e)
+		return ""
+
+
+async def validate_output(
+	*,
+	module: str,
+	intent: str,
+	changes: list[dict],
+	site_config: dict,
+) -> list[ValidationNote]:
+	"""Validation post-pass. Merges deterministic rule notes with LLM notes."""
+	if not changes:
+		return []
+
+	try:
+		kb = ModuleRegistry.load().get(module)
+	except UnknownModuleError:
+		return []
+
+	# Rule-runner half (deterministic, always runs)
+	notes = run_rule_validation(module=module, changes=changes)
+
+	prompt_body = (
+		f"Intent: {intent}\n"
+		f"Changeset (JSON):\n{json.dumps(changes, indent=2)[:4000]}\n\n"
+		"Review the changeset against your module's conventions. Emit a "
+		"JSON array of notes where domain conventions have been dropped, "
+		"contradicted, or misapplied. Each note has keys: severity "
+		"(advisory|warning|blocker), issue (short string), field (optional "
+		"dotted path), fix (optional string). Output ONLY the JSON array. "
+		"If nothing is wrong, output: []"
+	)
+
+	try:
+		raw = await _ollama_chat(
+			messages=[
+				{"role": "system", "content": kb["backstory"]},
+				{"role": "user", "content": prompt_body},
+			],
+			site_config=site_config,
+			tier=site_config.get("llm_tier", "triage"),
+			max_tokens=600,
+			temperature=0.1,
+		)
+	except Exception as e:
+		logger.warning("Module specialist validate_output LLM failed (%s): %s", module, e)
+		return notes
+
+	parsed = _parse_llm_note_list(raw or "")
+	if parsed is None:
+		logger.warning(
+			"Module specialist validate_output returned unparseable JSON (first 300): %r",
+			(raw or "")[:300],
+		)
+		return notes
+
+	for entry in parsed:
+		if not isinstance(entry, dict):
+			continue
+		try:
+			notes.append(ValidationNote(
+				severity=entry.get("severity", "advisory"),
+				source=f"module_specialist:{module}",
+				issue=entry.get("issue", ""),
+				field=entry.get("field"),
+				fix=entry.get("fix"),
+			))
+		except Exception as e:
+			logger.debug("Dropping malformed LLM note %r: %s", entry, e)
+
 	return notes
