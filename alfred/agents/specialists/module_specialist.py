@@ -210,9 +210,17 @@ async def provide_context(
 	if redis is not None:
 		cached = await _context_cache_get_redis(redis, redis_key)
 		if cached is not None:
+			logger.info(
+				"Module context provided: module=%s intent=%s target=%r cached=redis chars=%d",
+				module, intent, target_doctype, len(cached),
+			)
 			return cached
 	cached = _context_cache_get_inmem(inmem_key)
 	if cached is not None:
+		logger.info(
+			"Module context provided: module=%s intent=%s target=%r cached=inmem chars=%d",
+			module, intent, target_doctype, len(cached),
+		)
 		return cached
 
 	user_parts = [f"Intent: {intent}"]
@@ -243,6 +251,15 @@ async def provide_context(
 			if redis is not None:
 				await _context_cache_set_redis(redis, redis_key, result)
 			_context_cache_set_inmem(inmem_key, result)
+			logger.info(
+				"Module context provided: module=%s intent=%s target=%r cached=miss chars=%d",
+				module, intent, target_doctype, len(result),
+			)
+		else:
+			logger.info(
+				"Module context provided: module=%s intent=%s target=%r cached=miss chars=0 (empty reply)",
+				module, intent, target_doctype,
+			)
 		return result
 	except Exception as e:
 		logger.warning("Module specialist provide_context failed (%s): %s", module, e)
@@ -308,6 +325,8 @@ async def validate_output(
 	# the same thing twice.
 	rule_issues = {_normalise_issue(n.issue) for n in notes}
 
+	rule_count = len(notes)
+	llm_added = 0
 	for entry in parsed:
 		if not isinstance(entry, dict):
 			continue
@@ -322,9 +341,14 @@ async def validate_output(
 				field=entry.get("field"),
 				fix=entry.get("fix"),
 			))
+			llm_added += 1
 		except Exception as e:
 			logger.debug("Dropping malformed LLM note %r: %s", entry, e)
 
+	logger.info(
+		"Module validation ran: module=%s intent=%s items=%d rule_notes=%d llm_notes=%d",
+		module, intent, len(changes), rule_count, llm_added,
+	)
 	return notes
 
 
