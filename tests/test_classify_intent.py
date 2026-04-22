@@ -71,3 +71,33 @@ def test_intent_decision_to_dict():
 		"source": "heuristic",
 		"reason": "x",
 	}
+
+
+@pytest.mark.asyncio
+async def test_heuristic_matches_save_as_report():
+	decision = await classify_intent(
+		"Save this as a report for next time",
+		site_config={},
+	)
+	assert decision.intent == "create_report"
+	assert decision.source == "heuristic"
+
+
+@pytest.mark.asyncio
+async def test_heuristic_matches_create_a_report():
+	decision = await classify_intent(
+		"Create a report listing customers",
+		site_config={},
+	)
+	assert decision.intent == "create_report"
+	assert decision.source == "heuristic"
+
+
+@pytest.mark.asyncio
+async def test_heuristic_matches_build_a_report():
+	decision = await classify_intent(
+		"Build a report for top suppliers",
+		site_config={},
+	)
+	assert decision.intent == "create_report"
+	assert decision.source == "heuristic"
