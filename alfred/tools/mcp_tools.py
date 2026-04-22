@@ -419,6 +419,41 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		return _mcp_call(mcp_client, "get_list", args)
 
 	@tool
+	def run_query(spec: str) -> str:
+		"""Run a structured aggregation/join query against the live site.
+
+		Use this when the user asks for SUMs, AVGs, counts grouped by a
+		field, or joins across two or three doctypes. For simple listings
+		prefer get_list; this tool is heavier.
+
+		`spec` is a JSON string. Minimal shape:
+		  {"from_doctype": "Sales Invoice",
+		   "select": [{"field": "customer"},
+		              {"field": "grand_total", "agg": "sum", "alias": "total"}],
+		   "where": [{"field": "status", "op": "=", "value": "Paid"}],
+		   "group_by": ["customer"],
+		   "order_by": [{"field": "total", "dir": "desc"}],
+		   "limit": 10}
+
+		Full shape supports joins, having, in/not_in, like. Aggregations:
+		count | sum | avg | min | max | count_distinct. Ops: = != < <= > >=
+		like not_like in not_in is is_not. Join types: left, inner.
+
+		Example (top 5 customers by total sales):
+		  run_query('{"from_doctype": "Sales Invoice", "select": [{"field": "customer"}, {"field": "grand_total", "agg": "sum", "alias": "total"}], "where": [{"field": "status", "op": "=", "value": "Paid"}], "group_by": ["customer"], "order_by": [{"field": "total", "dir": "desc"}], "limit": 5}')
+
+		Returns: {"rows": [...], "count": N, "truncated": bool, "doctypes": [...]}
+		or a structured error (invalid_spec, blocked_doctype,
+		permission_denied, query_failed). An empty rows list may mean
+		"no matches" OR "you can't read one of the referenced doctypes".
+
+		YOU CANNOT use this for window functions, CTEs, subqueries, or
+		raw expressions. If the question truly needs those, refuse and
+		suggest Dev mode (see the refusal script in your task description).
+		"""
+		return _mcp_call(mcp_client, "run_query", {"spec": spec})
+
+	@tool
 	def dry_run_changeset(changes: str) -> str:
 		"""Dry-run a changeset against the LIVE site using savepoint rollback. Returns {valid, issues, validated}. Does NOT commit. Validates mandatory fields, link targets, naming conflicts, Python/JS syntax, and Jinja templates. Use before presenting the final changeset.
 
@@ -544,6 +579,7 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		has_active_workflow,         # workflow presence check
 		check_has_records,           # does this DocType have data
 		get_list,                    # read actual records, permission-scoped
+		run_query,                   # aggregations + joins, permission-scoped
 		validate_name_available,     # name availability probe
 	]
 
