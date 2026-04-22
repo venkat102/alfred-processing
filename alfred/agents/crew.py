@@ -605,6 +605,7 @@ def build_alfred_crew(
 	previous_state: CrewState | None = None,
 	custom_tools: dict | None = None,
 	intent: str | None = None,
+	module_context: str = "",
 ) -> tuple[Crew, CrewState]:
 	"""Build the Alfred SDLC crew with all tasks and agents.
 
@@ -690,7 +691,8 @@ def build_alfred_crew(
 
 		desc_template = TASK_DESCRIPTIONS[task_name]
 		base_description = _enhance_task_description(
-			task_name, intent, desc_template["description"]
+			task_name, intent, desc_template["description"],
+			module_context=module_context,
 		)
 		description = base_description.format(**format_vars)
 		expected_output = desc_template["expected_output"]
@@ -918,13 +920,17 @@ def _get_specialist_developer_agent(
 
 
 def _enhance_task_description(
-	task_name: str, intent: str | None, base_description: str
+	task_name: str,
+	intent: str | None,
+	base_description: str,
+	module_context: str = "",
 ) -> str:
-	"""Return a possibly-enhanced description for a given task + intent.
+	"""Return a possibly-enhanced description for a given task + intent + module.
 
 	Only ``generate_changeset`` is enhanced. All other task descriptions
 	pass through unchanged. When the flag is off or the intent has no
-	specialist, the base description is returned unchanged.
+	specialist, the base description is returned unchanged regardless of
+	module_context.
 	"""
 	if not _per_intent_builders_enabled():
 		return base_description
@@ -935,6 +941,8 @@ def _enhance_task_description(
 
 	if intent == "create_doctype":
 		from alfred.agents.builders.doctype_builder import enhance_generate_changeset_description
-		return enhance_generate_changeset_description(base_description)
+		return enhance_generate_changeset_description(
+			base_description, module_context=module_context,
+		)
 
 	return base_description
