@@ -131,6 +131,36 @@ _NON_DOCTYPE_CAPITALIZED = frozenset({
 })
 
 
+_REPORT_CANDIDATE_MARKER_RE = _re.compile(
+	r"__report_candidate__\s*:\s*(\{[\s\S]*\})",
+	_re.IGNORECASE,
+)
+
+
+def _parse_report_candidate_marker(prompt: str) -> dict | None:
+	"""Return the JSON block attached to a prompt as a __report_candidate__ trailer.
+
+	The alfred_client "Save as Report" button appends this marker so the
+	pipeline can short-circuit intent classification to create_report with
+	the already-resolved query shape. Returns None when no marker is found
+	or the block fails to parse - caller falls back to normal classify.
+
+	Spec: docs/specs/2026-04-22-insights-to-report-handoff.md.
+	"""
+	if not prompt:
+		return None
+	m = _REPORT_CANDIDATE_MARKER_RE.search(prompt)
+	if not m:
+		return None
+	try:
+		parsed = json.loads(m.group(1))
+		if isinstance(parsed, dict):
+			return parsed
+	except Exception:
+		pass
+	return None
+
+
 def _extract_target_doctypes(prompt: str, limit: int = _INJECT_MAX_TARGETS) -> list[str]:
 	"""Pull likely-target DocType names out of an enhanced prompt.
 
@@ -435,6 +465,13 @@ class PipelineContext:
 	# provide_context snippet so the UI can attribute text to its source.
 	secondary_modules: list[str] = field(default_factory=list)
 	module_secondary_contexts: dict[str, str] = field(default_factory=dict)
+
+	# V4: structured Insights -> Report handoff payload. When the client
+	# injects a __report_candidate__ JSON block into the prompt (user
+	# clicked "Save as Report" on an Insights reply), the pipeline parses
+	# it here and force-classifies intent=create_report.
+	# Spec: docs/specs/2026-04-22-insights-to-report-handoff.md.
+	report_candidate: dict | None = None
 
 	# Services
 	store: "StateStore | None" = None
@@ -1157,6 +1194,26 @@ class AgentPipeline:
 			return
 		if _os.environ.get("ALFRED_PER_INTENT_BUILDERS") != "1":
 			return
+
+		# V4 handoff short-circuit: when the client's prompt carries a
+		# __report_candidate__ JSON block (user clicked "Save as Report"
+		# on an Insights reply), parse it, stash on ctx, and force-classify
+		# intent=create_report. Avoids a second heuristic/LLM pass - the
+		# Insights handler already did the interpretation work.
+		if _os.environ.get("ALFRED_REPORT_HANDOFF") == "1":
+			parsed = _parse_report_candidate_marker(ctx.prompt)
+			if parsed is not None:
+				ctx.report_candidate = parsed
+				ctx.intent = "create_report"
+				ctx.intent_source = "handoff"
+				ctx.intent_confidence = "high"
+				ctx.intent_reason = "__report_candidate__ marker present"
+				logger.info(
+					"Intent handoff for conversation=%s: intent=create_report "
+					"source=handoff candidate_keys=%s",
+					ctx.conversation_id, list(parsed.keys()),
+				)
+				return
 
 		from alfred.orchestrator import classify_intent
 
