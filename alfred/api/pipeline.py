@@ -1564,14 +1564,8 @@ class AgentPipeline:
 				drift_reason or "no",
 				ctx.result_text[:500],
 			)
-			user_message = (
-				"Alfred couldn't produce a valid changeset for your request. "
-				"This usually means the agent drifted off-topic. Try rephrasing "
-				"with the exact DocType name and the exact rule, e.g. "
-				"\"On Employee DocType, before insert, throw an error if age "
-				"is less than 24.\""
-			)
 			if drift_reason:
+				reason_slug = "drift_detected"
 				user_message = (
 					f"Alfred's output was off-topic ({drift_reason}). "
 					"The rescue path also couldn't produce a valid changeset. "
@@ -1579,10 +1573,23 @@ class AgentPipeline:
 					"rule, e.g. \"On Employee DocType, before insert, throw an "
 					"error if age is less than 24.\""
 				)
+			else:
+				reason_slug = "agent_returned_text"
+				user_message = (
+					"Alfred couldn't turn this request into a deployable change. "
+					"The agent produced text instead of a structured changeset, "
+					"which usually means the customization type isn't supported "
+					"yet or the request needs rephrasing. Try restating with the "
+					"exact DocType name and action, or check the docs for "
+					"supported capabilities."
+				)
+			agent_output_preview = (ctx.result_text or "").strip()[:400]
 			self._send_error_later(
 				user_message,
 				"EMPTY_CHANGESET",
 				drift_reason=drift_reason or "",
+				reason=reason_slug,
+				agent_output_preview=agent_output_preview,
 			)
 			return
 
