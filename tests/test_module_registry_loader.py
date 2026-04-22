@@ -150,6 +150,10 @@ def test_word_boundary_prevents_substring_false_positive():
 	("Opportunity", "crm"),
 	("Contract", "crm"),
 	("Appointment", "crm"),
+	("Salary Slip", "payroll"),
+	("Salary Structure", "payroll"),
+	("Payroll Entry", "payroll"),
+	("Income Tax Slab", "payroll"),
 	("Custom DocType Xyz", None),
 ])
 def test_for_doctype_across_modules(doctype, expected_module):
@@ -183,6 +187,9 @@ def test_for_doctype_across_modules(doctype, expected_module):
 	("lead source analytics dashboard", "crm"),
 	("opportunity stage probability chart", "crm"),
 	("contract template workflow", "crm"),
+	("add a salary slip preview", "payroll"),
+	("customize the salary structure form", "payroll"),
+	("income tax slab bracket helper", "payroll"),
 ])
 def test_keyword_detection_across_modules(phrase, expected_module):
 	registry = ModuleRegistry.load()
