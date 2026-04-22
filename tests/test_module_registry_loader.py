@@ -46,7 +46,7 @@ def test_for_doctype_matches_detection_hints():
 
 def test_for_doctype_unknown_returns_none():
 	registry = ModuleRegistry.load()
-	assert registry.for_doctype("Employee") is None
+	assert registry.for_doctype("Nonexistent Custom DocType Xyz") is None
 
 
 def test_detect_prefers_target_doctype_over_keywords():
@@ -105,3 +105,59 @@ def test_accounts_beats_custom_when_both_could_match():
 		target_doctype=None,
 	)
 	assert module_key == "accounts"
+
+
+def test_word_boundary_prevents_substring_false_positive():
+	# "accountant" should NOT match accounts's "accounting" keyword.
+	registry = ModuleRegistry.load()
+	module_key, _c = registry.detect(
+		prompt="I need a table to track accountants by certification",
+		target_doctype=None,
+	)
+	# Either no match (None) or another module - crucially, not accounts on
+	# the "accounting" fragment. Result depends on other module keywords;
+	# what matters is "accounting" didn't hit.
+	if module_key == "accounts":
+		pytest.fail("substring false positive: 'accountants' matched 'accounting'")
+
+
+@pytest.mark.parametrize("doctype,expected_module", [
+	("Employee", "hr"),
+	("Leave Application", "hr"),
+	("Attendance", "hr"),
+	("Item", "stock"),
+	("Warehouse", "stock"),
+	("Stock Entry", "stock"),
+	("Customer", "selling"),
+	("Sales Order", "selling"),
+	("Quotation", "selling"),
+	("Supplier", "buying"),
+	("Purchase Order", "buying"),
+	("Request for Quotation", "buying"),
+	("Custom DocType Xyz", None),
+])
+def test_for_doctype_across_modules(doctype, expected_module):
+	registry = ModuleRegistry.load()
+	kb = registry.for_doctype(doctype)
+	if expected_module is None:
+		assert kb is None
+	else:
+		assert kb is not None
+		assert kb["module"] == expected_module
+
+
+@pytest.mark.parametrize("phrase,expected_module", [
+	("show me leave applications by department", "hr"),
+	("track attendance for a shift type", "hr"),
+	("add a warehouse-specific validation", "stock"),
+	("build a stock entry preview dashboard", "stock"),
+	("customize the sales order form", "selling"),
+	("add a sales taxes rule", "selling"),
+	("create a supplier scorecard doctype", "buying"),
+	("make a purchase order review helper", "buying"),
+])
+def test_keyword_detection_across_modules(phrase, expected_module):
+	registry = ModuleRegistry.load()
+	module_key, confidence = registry.detect(prompt=phrase, target_doctype=None)
+	assert module_key == expected_module
+	assert confidence == "medium"

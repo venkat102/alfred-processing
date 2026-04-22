@@ -1,0 +1,46 @@
+{
+	"module": "selling",
+	"display_name": "Selling",
+	"frappe_module_key": "Selling",
+	"backstory": "You are the Alfred ERPNext Selling domain authority. You know Customer / Customer Group / Territory / Quotation / Sales Order / Sales Taxes and Charges Template conventions. You know the selling lifecycle runs Lead -> Opportunity (CRM) -> Quotation -> Sales Order -> Delivery Note (Stock) -> Sales Invoice (Accounts), and that touching any one of those doctypes has implications for the chain. You know Selling submittable DocTypes do NOT post to General Ledger directly - that's Accounts' job via Sales Invoice; Selling submittables commit demand (Sales Order reserves inventory via production / purchase planning) rather than ledger. You catch anti-patterns: bypassing party_type/party validation, hardcoding currency without referencing exchange_rate, missing tax template on a quotation, setting grand_total manually instead of deriving from items + taxes.",
+	"conventions": {
+		"permissions_add_roles": [
+			{"role": "Sales Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "Sales User", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Sales Master Manager", "read": 1, "write": 1, "create": 1, "delete": 0}
+		],
+		"naming_patterns": ["format:SEL-.YYYY.-.#####"],
+		"typical_linked_doctypes": ["Customer", "Customer Group", "Territory", "Item", "Sales Taxes and Charges Template", "Currency"],
+		"required_hooks_for_submittable": [],
+		"gotchas": [
+			"Selling submittables commit business intent (demand, reservation) not ledger impact. GL posting happens downstream at Sales Invoice in Accounts.",
+			"Every selling transaction needs a Customer link + currency. Don't let null flow through.",
+			"Totals (grand_total, net_total, total_taxes_and_charges) should derive from items + taxes, never be user-editable directly.",
+			"Sales Taxes and Charges Template is the canonical source for tax rows - apply the template instead of rewriting tax lines per document."
+		]
+	},
+	"validation_rules": [
+		{
+			"id": "selling_needs_sales_manager_perm",
+			"severity": "advisory",
+			"when": {"doctype": "DocType"},
+			"message": "Selling DocTypes typically include Sales Manager, Sales User, and Sales Master Manager permission rows.",
+			"fix": "Add Sales Manager (full), Sales User (no delete), and Sales Master Manager (no delete) rows to permissions."
+		}
+	],
+	"detection_hints": {
+		"target_doctype_matches": [
+			"Customer", "Customer Group", "Territory",
+			"Quotation", "Sales Order", "Blanket Order",
+			"Sales Taxes and Charges Template", "Sales Taxes and Charges",
+			"Shipping Rule", "Pricing Rule",
+			"Sales Partner", "Sales Person", "Sales Team"
+		],
+		"keyword_hints": [
+			"customer group", "sales order", "quotation",
+			"sales taxes", "sales manager", "sales user",
+			"territory", "sales partner", "sales person",
+			"pricing rule", "shipping rule", "blanket order"
+		]
+	}
+}

@@ -1,0 +1,52 @@
+{
+	"module": "hr",
+	"display_name": "HR",
+	"frappe_module_key": "HR",
+	"backstory": "You are the Alfred ERPNext HR domain authority. You know Employee / Department / Designation / Branch / Employee Grade / Leave Application / Leave Allocation / Attendance / Shift conventions. You know approval chains run through Workflow with explicit states and per-state roles (Employee, Leave Approver, HR User, HR Manager). You know HR DocTypes are rarely submittable in the Accounts sense - their lifecycle runs through Workflow state transitions, not docstatus. You know PII: personal details (gender, date of birth, marital status, national IDs) need restricted permissions. You catch anti-patterns: hardcoding leave balance without Leave Allocation records, bypassing Leave Approver roles, putting Employee link fields on arbitrary DocTypes without understanding reporting-to chains, mixing attendance ingestion with payroll computation.",
+	"conventions": {
+		"permissions_add_roles": [
+			{"role": "HR Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "HR User", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Employee", "read": 1, "write": 0, "create": 0, "delete": 0}
+		],
+		"naming_patterns": ["format:HR-.#####"],
+		"typical_linked_doctypes": ["Employee", "Department", "Designation", "Leave Type", "Holiday List"],
+		"required_hooks_for_submittable": [],
+		"gotchas": [
+			"HR approval chains belong in Workflow, not docstatus. A submittable HR DocType is the exception, not the rule.",
+			"Employee link fields should respect the reports_to hierarchy - don't let a subordinate approve their own manager.",
+			"PII fields (national IDs, bank details, emergency contact) need explicit permission gating, usually via permlevel.",
+			"Leave balances must derive from Leave Allocation + Leave Application records. Do not hardcode a balance field on Employee."
+		]
+	},
+	"validation_rules": [
+		{
+			"id": "hr_submittable_is_unusual",
+			"severity": "advisory",
+			"when": {"doctype": "DocType", "data.is_submittable": 1},
+			"message": "Submittable DocTypes in HR are unusual - HR lifecycles typically run through Workflow state transitions, not docstatus submit/cancel.",
+			"fix": "Consider modeling the lifecycle as a Workflow on a non-submittable DocType unless there's a clear reason to use docstatus."
+		},
+		{
+			"id": "hr_needs_hr_manager_perm",
+			"severity": "advisory",
+			"when": {"doctype": "DocType"},
+			"message": "HR DocTypes typically include HR Manager and HR User permission rows.",
+			"fix": "Add {role: 'HR Manager', read: 1, write: 1, create: 1, delete: 1} and an HR User row with delete: 0 to permissions."
+		}
+	],
+	"detection_hints": {
+		"target_doctype_matches": [
+			"Employee", "Department", "Designation", "Branch", "Employee Grade",
+			"Leave Application", "Leave Allocation", "Leave Type", "Leave Period",
+			"Attendance", "Attendance Request", "Shift Type", "Shift Assignment",
+			"Holiday List", "Appraisal", "Employee Onboarding", "Employee Separation"
+		],
+		"keyword_hints": [
+			"employee", "leave application", "leave approval", "leave balance",
+			"attendance", "holiday list", "hr manager", "hr user",
+			"department", "designation", "appraisal", "onboarding", "separation",
+			"shift type", "shift assignment", "employee grade"
+		]
+	}
+}

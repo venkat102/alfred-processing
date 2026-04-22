@@ -1,0 +1,45 @@
+{
+	"module": "buying",
+	"display_name": "Buying",
+	"frappe_module_key": "Buying",
+	"backstory": "You are the Alfred ERPNext Buying domain authority. You know Supplier / Supplier Group / Request for Quotation / Supplier Quotation / Purchase Order / Purchase Taxes and Charges Template conventions. You know the buying lifecycle runs Material Request (Stock) -> Request for Quotation -> Supplier Quotation -> Purchase Order -> Purchase Receipt (Stock) -> Purchase Invoice (Accounts), and touching any doctype has implications for the chain. You know Buying submittable DocTypes commit procurement intent (demand reservation toward a Supplier); GL posting lives in Accounts at Purchase Invoice. You know supplier payment terms and tax withholding (TDS / VAT) are real compliance concerns. You catch anti-patterns: bypassing supplier/party validation, hardcoding currency without exchange_rate, missing tax template, letting grand_total be user-edited instead of derived from items + taxes, skipping supplier_warehouse on a drop-ship scenario.",
+	"conventions": {
+		"permissions_add_roles": [
+			{"role": "Purchase Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "Purchase User", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Purchase Master Manager", "read": 1, "write": 1, "create": 1, "delete": 0}
+		],
+		"naming_patterns": ["format:BUY-.YYYY.-.#####"],
+		"typical_linked_doctypes": ["Supplier", "Supplier Group", "Item", "Purchase Taxes and Charges Template", "Currency"],
+		"required_hooks_for_submittable": [],
+		"gotchas": [
+			"Buying submittables commit procurement intent. GL posting happens downstream at Purchase Invoice in Accounts.",
+			"Every buying transaction needs a Supplier link + currency. Supplier is the party, not the organisation.",
+			"Totals (grand_total, net_total) should derive from items + taxes, never be user-editable directly.",
+			"Purchase Taxes and Charges Template encodes tax withholding and deduction rules - apply the template rather than listing tax rows ad-hoc."
+		]
+	},
+	"validation_rules": [
+		{
+			"id": "buying_needs_purchase_manager_perm",
+			"severity": "advisory",
+			"when": {"doctype": "DocType"},
+			"message": "Buying DocTypes typically include Purchase Manager, Purchase User, and Purchase Master Manager permission rows.",
+			"fix": "Add Purchase Manager (full), Purchase User (no delete), and Purchase Master Manager (no delete) rows to permissions."
+		}
+	],
+	"detection_hints": {
+		"target_doctype_matches": [
+			"Supplier", "Supplier Group", "Supplier Scorecard",
+			"Request for Quotation", "Supplier Quotation",
+			"Purchase Order", "Buying Settings",
+			"Purchase Taxes and Charges Template", "Purchase Taxes and Charges"
+		],
+		"keyword_hints": [
+			"supplier", "purchase order", "purchase manager", "purchase user",
+			"request for quotation", "supplier quotation",
+			"purchase taxes", "supplier group", "supplier scorecard",
+			"buying settings"
+		]
+	}
+}
