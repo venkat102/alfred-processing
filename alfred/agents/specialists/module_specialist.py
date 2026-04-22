@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
-import re
+import time
 
 from alfred.llm_client import ollama_chat as _ollama_chat
 from alfred.models.agent_outputs import ValidationNote
@@ -85,9 +85,6 @@ def run_rule_validation(
 	return notes
 
 
-_JSON_ARRAY_RE = re.compile(r"\[[\s\S]*\]")
-
-
 def _strip_code_fences(text: str) -> str:
 	if not text:
 		return text
@@ -132,6 +129,30 @@ def _parse_llm_note_list(raw: str) -> list[dict] | None:
 	return None
 
 
+_CONTEXT_CACHE_TTL_SECONDS = 300  # 5 minutes, per spec
+_context_cache: dict[tuple[str, str, str], tuple[float, str]] = {}
+
+
+def _context_cache_get(key: tuple[str, str, str]) -> str | None:
+	entry = _context_cache.get(key)
+	if entry is None:
+		return None
+	expires_at, value = entry
+	if time.time() > expires_at:
+		_context_cache.pop(key, None)
+		return None
+	return value
+
+
+def _context_cache_set(key: tuple[str, str, str], value: str) -> None:
+	_context_cache[key] = (time.time() + _CONTEXT_CACHE_TTL_SECONDS, value)
+
+
+def _context_cache_clear() -> None:
+	"""Test helper - clears the in-memory cache."""
+	_context_cache.clear()
+
+
 async def provide_context(
 	*,
 	module: str,
@@ -139,11 +160,21 @@ async def provide_context(
 	target_doctype: str | None,
 	site_config: dict,
 ) -> str:
-	"""Context pre-pass. Returns a prompt snippet for the intent specialist."""
+	"""Context pre-pass. Returns a prompt snippet for the intent specialist.
+
+	Process-local cache by (module, intent, target_doctype) with 5-minute
+	TTL avoids a fresh LLM call for every Dev-mode build that targets the
+	same DocType. Invalidated naturally when the processing app restarts.
+	"""
 	try:
 		kb = ModuleRegistry.load().get(module)
 	except UnknownModuleError:
 		return ""
+
+	cache_key = (module, intent, target_doctype or "")
+	cached = _context_cache_get(cache_key)
+	if cached is not None:
+		return cached
 
 	user_parts = [f"Intent: {intent}"]
 	if target_doctype:
@@ -166,7 +197,10 @@ async def provide_context(
 			max_tokens=400,
 			temperature=0.2,
 		)
-		return (reply or "").strip()
+		result = (reply or "").strip()
+		if result:
+			_context_cache_set(cache_key, result)
+		return result
 	except Exception as e:
 		logger.warning("Module specialist provide_context failed (%s): %s", module, e)
 		return ""
@@ -225,14 +259,23 @@ async def validate_output(
 		)
 		return notes
 
+	# Dedup LLM notes against rule notes by normalised issue text. If
+	# the LLM surfaces the same concern the rule runner already caught
+	# (different source but same message), skip - don't show the user
+	# the same thing twice.
+	rule_issues = {_normalise_issue(n.issue) for n in notes}
+
 	for entry in parsed:
 		if not isinstance(entry, dict):
+			continue
+		issue_text = entry.get("issue", "")
+		if _normalise_issue(issue_text) in rule_issues:
 			continue
 		try:
 			notes.append(ValidationNote(
 				severity=entry.get("severity", "advisory"),
 				source=f"module_specialist:{module}",
-				issue=entry.get("issue", ""),
+				issue=issue_text,
 				field=entry.get("field"),
 				fix=entry.get("fix"),
 			))
@@ -240,3 +283,10 @@ async def validate_output(
 			logger.debug("Dropping malformed LLM note %r: %s", entry, e)
 
 	return notes
+
+
+def _normalise_issue(text: str) -> str:
+	"""Lowercase + collapse whitespace so dedup ignores cosmetic differences."""
+	if not text:
+		return ""
+	return " ".join(text.lower().split())
