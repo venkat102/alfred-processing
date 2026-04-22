@@ -7,14 +7,19 @@ workflows against a live customer site over MCP.
 ## Architecture
 
 - **FastAPI** WebSocket server - one connection per active conversation.
-- **AgentPipeline state machine** (`alfred/api/pipeline.py`) - 12 named phases
+- **AgentPipeline state machine** (`alfred/api/pipeline.py`) - 15 named phases
   over a shared `PipelineContext`: `sanitize` → `load_state` → `warmup`
-  → `plan_check` → `orchestrate` → `enhance` → `clarify` → `inject_kb`
-  → `resolve_mode` → `build_crew` → `run_crew` → `post_crew`. Each phase is
-  unit-testable in isolation, auto-wrapped in a tracer span, and can abort via
-  `ctx.stop(error, code)`. The `warmup` phase pre-pulls distinct models across
-  the triage / reasoning / agent tiers with `keep_alive=10m` to eliminate the
-  cold-load penalty when a pipeline hits each tier.
+  → `plan_check` → `orchestrate` → `classify_intent` → `classify_module`
+  → `enhance` → `clarify` → `inject_kb` → `resolve_mode`
+  → `provide_module_context` → `build_crew` → `run_crew` → `post_crew`.
+  Each phase is unit-testable in isolation, auto-wrapped in a tracer span,
+  and can abort via `ctx.stop(error, code)`. The `warmup` phase pre-pulls
+  distinct models across the triage / reasoning / agent tiers with
+  `keep_alive=10m` to eliminate the cold-load penalty when a pipeline hits
+  each tier. `classify_intent`, `classify_module`, and
+  `provide_module_context` are flag-gated Dev-mode additions that select
+  per-intent Builder specialists and inject per-module domain context into
+  the Developer's prompt.
 - **Three-mode chat orchestrator** (`alfred/orchestrator.py`,
   feature-flagged via `ALFRED_ORCHESTRATOR_ENABLED`) - classifies every
   prompt into `dev` / `plan` / `insights` / `chat`. Conversational and
@@ -33,6 +38,46 @@ workflows against a live customer site over MCP.
     task.
   - **Lite Dev**: single-agent fast pass, ~1 min per task, ~5x cheaper
     - for simple customizations.
+- **Per-intent Builder specialists** (`alfred/agents/builders/`,
+  feature-flagged via `ALFRED_PER_INTENT_BUILDERS`) - the generic Developer
+  is swapped for a specialist Agent when the prompt matches a known intent.
+  Each specialist carries a domain-focused backstory plus a registry-driven
+  checklist of shape-defining fields the output must include, with defaults
+  layered by a post-crew backfill. Shipped specialists: **DocType Builder**
+  (`create_doctype`) and **Report Builder** (`create_report`). Registry
+  files live at `alfred/registry/intents/*.json` - adding a new intent is
+  one JSON file plus a builder module. Missing fields are surfaced as
+  editable "default" pills in the client preview (see `field_defaults_meta`
+  on `ChangesetItem`).
+- **Module specialists** (`alfred/agents/specialists/module_specialist.py`,
+  feature-flagged via `ALFRED_MODULE_SPECIALISTS`) - cross-cutting advisers
+  invoked twice per build. `provide_context` runs before the Developer and
+  injects module-specific conventions (roles, naming patterns, gotchas) as
+  a prompt addendum. `validate_output` runs after the crew emits its
+  changeset and returns domain-correctness notes (deterministic rules +
+  LLM pass, deduped). Shipped as data: 11 module KBs at
+  `alfred/registry/modules/*.json` - Accounts, Custom, HR, Stock, Selling,
+  Buying, Manufacturing, Projects, Assets, CRM, Payroll. Provide-context
+  calls are cached in Redis (falls back to in-memory) with a 5-minute TTL.
+- **Multi-module classification** (feature-flagged via `ALFRED_MULTI_MODULE`,
+  layers on top of module specialists) - heuristic classifier detects a
+  primary module plus up to 2 secondaries for cross-domain prompts (e.g.
+  *"Sales Invoice that auto-creates a Project task"* → primary=accounts,
+  secondaries=[projects]). Primary module's validation notes keep full
+  severity; secondary modules' blockers are capped to warning so only
+  primary-module concerns can gate deploy. Primary wins the naming pattern;
+  permissions are merged deduped across all detected modules.
+- **Insights → Report handoff** (feature-flagged via `ALFRED_REPORT_HANDOFF`)
+  - when an Insights reply represents a report-shaped query (tabular,
+  aggregation-ready), the handler attaches a structured `ReportCandidate`
+  the client uses to render a "Save as Report" button. Clicking fires a
+  Dev-mode turn with a `__report_candidate__` JSON trailer that the
+  pipeline parses to short-circuit intent classification to
+  `create_report` (no re-interpretation). Mode classifier's fast-path is
+  tightened so analytics verbs (*"show top N"*, *"list the top"*,
+  *"summary of"*, *"report on"*) route to Insights by default, while
+  explicit deploy verbs (*"build a report"*, *"create a report"*) still
+  win and route directly to Dev.
 - **MCP client** (`alfred/tools/mcp_client.py`) - sends JSON-RPC requests
   to the client-app MCP server (14 tools) over the same WebSocket so agents
   query the live Frappe site during reasoning. Uses `run_coroutine_threadsafe`
@@ -111,14 +156,36 @@ docker compose up -d
 
 ## Feature Flags (environment variables)
 
-| Variable | Default | Effect |
-|---|---|---|
-| `ALFRED_ORCHESTRATOR_ENABLED` | off | Enable the three-mode chat orchestrator (chat / insights / plan / dev routing, plan doc generation, cross-mode handoff). Fixes the "hi" → "Unable to classify prompt intent" bug as a side effect. |
-| `ALFRED_REFLECTION_ENABLED` | off | Enable the minimality reflection step |
-| `ALFRED_TRACING_ENABLED` | off | Enable structured pipeline tracing |
-| `ALFRED_TRACE_PATH` | `./alfred_trace.jsonl` | JSONL output path |
-| `ALFRED_TRACE_STDOUT` | off | Also emit a stderr summary per span |
-| `ALFRED_PHASE1_DISABLED` | off | Disable the Phase 1 MCP tracking state (benchmark use only) |
+| Variable | Default | Depends on | Effect |
+|---|---|---|---|
+| `ALFRED_ORCHESTRATOR_ENABLED` | off | none | Enable the three-mode chat orchestrator (chat / insights / plan / dev routing, plan doc generation, cross-mode handoff). Fixes the "hi" → "Unable to classify prompt intent" bug as a side effect. |
+| `ALFRED_PER_INTENT_BUILDERS` | off | none | Swap the generic Developer agent for a specialist Agent based on the classified intent (`create_doctype`, `create_report`). Surfaces "default" pills in the preview via `field_defaults_meta`. |
+| `ALFRED_MODULE_SPECIALISTS` | off | `ALFRED_PER_INTENT_BUILDERS=1` | Inject per-module domain context into the specialist's prompt pre-build and run a domain-validation pass post-crew. Emits a module badge and validation-notes section in the preview. |
+| `ALFRED_MULTI_MODULE` | off | `ALFRED_MODULE_SPECIALISTS=1` | Detect primary + up to 2 secondary modules per prompt. Secondary-module blockers are capped to warning so only primary blockers gate deploy. |
+| `ALFRED_REPORT_HANDOFF` | off | `ALFRED_PER_INTENT_BUILDERS=1` | Insights handler emits a structured `report_candidate` for report-shaped queries; client renders a "Save as Report" button; pipeline short-circuits intent classification to `create_report` on handoff. Also tightens mode classifier fast-path so analytics verbs route to Insights. |
+| `ALFRED_REFLECTION_ENABLED` | off | none | Enable the minimality reflection step |
+| `ALFRED_TRACING_ENABLED` | off | none | Enable structured pipeline tracing |
+| `ALFRED_TRACE_PATH` | `./alfred_trace.jsonl` | `ALFRED_TRACING_ENABLED=1` | JSONL output path |
+| `ALFRED_TRACE_STDOUT` | off | `ALFRED_TRACING_ENABLED=1` | Also emit a stderr summary per span |
+| `ALFRED_PHASE1_DISABLED` | off | none | Disable the Phase 1 MCP tracking state (benchmark use only) |
+
+### Specialist-feature flag stack
+
+The four V1-V4 flags form a layered stack. Each flag is a strict extension
+of the layer below - turning a higher flag on without the one it depends
+on is effectively a no-op (logged at startup). Behaviour at each layer:
+
+| Flags on | Behaviour |
+|---|---|
+| none | Pre-V1 Alfred (generic Developer, no specialists) |
+| `PER_INTENT_BUILDERS` | V1: DocType + Report specialists swap in based on intent |
+| `PER_INTENT_BUILDERS + MODULE_SPECIALISTS` | V2: single-module context injection + validation |
+| `PER_INTENT_BUILDERS + MODULE_SPECIALISTS + MULTI_MODULE` | V3: primary + up to 2 secondary modules |
+| any of the above + `REPORT_HANDOFF` | V4: Insights→Report handoff button + structured classification |
+
+At startup, Alfred logs the flag state:
+`Module-specialist flags: ALFRED_PER_INTENT_BUILDERS=ON/OFF ALFRED_MODULE_SPECIALISTS=ON/OFF ALFRED_MULTI_MODULE=ON/OFF`
+(The report handoff flag is logged at first handoff invocation rather than startup.)
 
 See the [Setup Guide](../frappe-bench/apps/alfred_client/docs/SETUP.md),
 [Admin Guide](../frappe-bench/apps/alfred_client/docs/admin-guide.md), and
