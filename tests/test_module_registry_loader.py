@@ -166,6 +166,70 @@ def test_for_doctype_across_modules(doctype, expected_module):
 		assert kb["module"] == expected_module
 
 
+def test_detect_all_returns_primary_only_when_no_secondary_keyword_match():
+	registry = ModuleRegistry.load()
+	primary, confidence, secondaries = registry.detect_all(
+		prompt="Customize Sales Invoice",
+		target_doctype="Sales Invoice",
+	)
+	assert primary == "accounts"
+	assert confidence == "high"
+	assert secondaries == []
+
+
+def test_detect_all_finds_secondary_from_keyword_when_primary_from_target():
+	registry = ModuleRegistry.load()
+	primary, confidence, secondaries = registry.detect_all(
+		prompt="Create a Sales Invoice that auto-creates a project task",
+		target_doctype="Sales Invoice",
+	)
+	assert primary == "accounts"
+	assert confidence == "high"
+	assert "projects" in secondaries
+
+
+def test_detect_all_caps_secondaries():
+	registry = ModuleRegistry.load()
+	primary, _, secondaries = registry.detect_all(
+		prompt="Sales Invoice that auto-creates a project task and logs an attendance entry and posts to a ledger",
+		target_doctype="Sales Invoice",
+		max_secondaries=1,
+	)
+	assert len(secondaries) <= 1
+
+
+def test_detect_all_dedups_primary_from_secondaries():
+	registry = ModuleRegistry.load()
+	primary, _, secondaries = registry.detect_all(
+		prompt="Sales Invoice with accounting impact via general ledger posting",
+		target_doctype="Sales Invoice",
+	)
+	assert primary == "accounts"
+	assert "accounts" not in secondaries
+
+
+def test_detect_all_no_match_returns_empty():
+	registry = ModuleRegistry.load()
+	primary, confidence, secondaries = registry.detect_all(
+		prompt="hello goodbye",
+		target_doctype=None,
+	)
+	assert primary is None
+	assert confidence == ""
+	assert secondaries == []
+
+
+def test_detect_all_primary_via_keyword_plus_secondary():
+	registry = ModuleRegistry.load()
+	primary, confidence, secondaries = registry.detect_all(
+		prompt="create a journal entry that logs a leave application detail",
+		target_doctype=None,
+	)
+	assert primary == "accounts"
+	assert confidence == "medium"
+	assert "hr" in secondaries
+
+
 @pytest.mark.parametrize("phrase,expected_module", [
 	("show me leave applications by department", "hr"),
 	("track attendance for a shift type", "hr"),
