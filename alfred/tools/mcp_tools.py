@@ -366,6 +366,59 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		return _mcp_call(mcp_client, "check_has_records", {"doctype": doctype})
 
 	@tool
+	def get_list(
+		doctype: str,
+		filters: str = "",
+		fields: str = "",
+		limit: int = 50,
+		order_by: str = "",
+	) -> str:
+		"""Read actual records from a DocType, respecting the session user's permissions.
+
+		Use this for Insights-mode data questions like:
+		  - "list of active customers": get_list("Customer", filters='{"disabled": 0}')
+		  - "recent projects": get_list("Project", order_by="modified desc", limit=10)
+		  - "count of pending invoices": get_list("Sales Invoice", filters='{"status": "Unpaid"}', limit=500) then report len(rows) with the truncated flag
+
+		`filters` and `fields` are JSON strings:
+		  - filters: dict '{"disabled": 0}' or list-of-triples '[["modified", ">=", "2026-01-01"]]'. Raw SQL is rejected.
+		  - fields: list '["name", "customer_name"]'. Unknown fields are silently dropped and returned in dropped_fields.
+		`limit` is clamped to [1, 500] server-side. `order_by` is a Frappe order-by string like "modified desc".
+
+		Returns: {"doctype": ..., "rows": [...], "count": N, "truncated": bool, "fields": [...], "dropped_fields": [...]}.
+		An empty rows list may mean "no matches" OR "user has no read access" - Frappe applies permissions automatically.
+
+		YOU CANNOT use this for aggregations (SUM, AVG, GROUP BY), joins across DocTypes, or derived computations.
+		If the user asks for those, refuse politely and suggest either rephrasing as a simple list or switching to Dev mode to build a Report.
+		"""
+		args: dict[str, Any] = {"doctype": doctype, "limit": limit}
+		if filters:
+			try:
+				args["filters"] = json.loads(filters) if isinstance(filters, str) else filters
+			except (ValueError, TypeError):
+				return json.dumps({
+					"error": "invalid_filters",
+					"message": "filters must be a JSON object or list of triples",
+				})
+		if fields:
+			try:
+				parsed_fields = json.loads(fields) if isinstance(fields, str) else fields
+				if not isinstance(parsed_fields, list):
+					return json.dumps({
+						"error": "invalid_argument",
+						"message": "fields must be a JSON list of strings",
+					})
+				args["fields"] = parsed_fields
+			except (ValueError, TypeError):
+				return json.dumps({
+					"error": "invalid_argument",
+					"message": "fields must be a JSON list of strings",
+				})
+		if order_by:
+			args["order_by"] = order_by
+		return _mcp_call(mcp_client, "get_list", args)
+
+	@tool
 	def dry_run_changeset(changes: str) -> str:
 		"""Dry-run a changeset against the LIVE site using savepoint rollback. Returns {valid, issues, validated}. Does NOT commit. Validates mandatory fields, link targets, naming conflicts, Python/JS syntax, and Jinja templates. Use before presenting the final changeset.
 
@@ -490,6 +543,7 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		check_permission,            # "can I do X?"
 		has_active_workflow,         # workflow presence check
 		check_has_records,           # does this DocType have data
+		get_list,                    # read actual records, permission-scoped
 		validate_name_available,     # name availability probe
 	]
 
