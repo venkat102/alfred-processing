@@ -1,0 +1,54 @@
+{
+	"module": "manufacturing",
+	"display_name": "Manufacturing",
+	"frappe_module_key": "Manufacturing",
+	"backstory": "You are the Alfred ERPNext Manufacturing domain authority. You know BOM / Work Order / Job Card / Routing / Operation / Workstation / Production Plan conventions. You know the lifecycle runs Production Plan -> Work Order (per finished good) -> Job Card (per operation), consuming raw materials and producing finished goods via Stock Entry postings to the Stock Ledger. You know BOMs are versioned and recursive - a BOM item can be a sub-assembly with its own BOM, and replace-all-with-new-version is a one-way operation. You know Work Orders bind to a specific BOM version at submit and carry required_items / required_qty that reserve inventory. You know Workstations carry capacity (hour rate, holiday list) that throttles Job Card scheduling. You catch anti-patterns: BOM with zero-quantity line items, Work Order without a BOM reference, Job Card without a routing operation, skipping Stock Entry when consuming raw materials, mixing subcontracted and in-house operations on the same Work Order without supplier validation.",
+	"conventions": {
+		"permissions_add_roles": [
+			{"role": "Manufacturing Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "Manufacturing User", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Stock User", "read": 1, "write": 0, "create": 0, "delete": 0}
+		],
+		"naming_patterns": ["format:MFG-.YYYY.-.#####"],
+		"typical_linked_doctypes": ["BOM", "Work Order", "Job Card", "Workstation", "Operation", "Routing", "Item"],
+		"required_hooks_for_submittable": ["on_submit_stock_ledger_posting"],
+		"gotchas": [
+			"Submittable Manufacturing DocTypes (Work Order, Stock Entry from a Job Card) post to Stock Ledger Entry - consumed raw materials and produced finished goods both flow through stock.",
+			"BOMs bind to a Work Order at submit - changing the BOM after that does NOT retroactively update the Work Order's required_items.",
+			"Workstation capacity (hour_rate, working_hours, holiday_list) throttles Job Card scheduling. Assigning Job Cards without checking Workstation availability produces impossible schedules.",
+			"Subcontracting operations require a valid Supplier on the Job Card and a separate Purchase Order for the conversion service - not a single document."
+		]
+	},
+	"validation_rules": [
+		{
+			"id": "manufacturing_submittable_needs_stock_ledger",
+			"severity": "warning",
+			"when": {"doctype": "DocType", "data.is_submittable": 1},
+			"message": "Submittable Manufacturing DocTypes typically post to Stock Ledger Entry on submit - raw material consumption and finished goods production both flow through stock.",
+			"fix": "Add a Server Script with doctype_event='on_submit' that inserts Stock Ledger Entry rows for consumed and produced items, or confirm this DocType is exempt (e.g. pure planning without inventory impact)."
+		},
+		{
+			"id": "manufacturing_needs_manufacturing_manager_perm",
+			"severity": "advisory",
+			"when": {"doctype": "DocType"},
+			"message": "Manufacturing DocTypes typically include Manufacturing Manager, Manufacturing User, and read-only Stock User permission rows.",
+			"fix": "Add Manufacturing Manager (full), Manufacturing User (no delete), and Stock User (read-only) rows to permissions."
+		}
+	],
+	"detection_hints": {
+		"target_doctype_matches": [
+			"BOM", "BOM Item", "BOM Operation", "BOM Scrap Item",
+			"Work Order", "Work Order Item", "Work Order Operation",
+			"Job Card", "Job Card Item", "Job Card Time Log",
+			"Workstation", "Workstation Type", "Operation",
+			"Routing", "Routing Operation",
+			"Production Plan", "Manufacturing Settings"
+		],
+		"keyword_hints": [
+			"bill of materials", "work order", "job card",
+			"production plan", "workstation", "routing operation",
+			"manufacturing manager", "manufacturing user",
+			"subcontracting", "finished good", "raw material consumption"
+		]
+	}
+}

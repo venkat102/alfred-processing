@@ -1,0 +1,45 @@
+{
+	"module": "projects",
+	"display_name": "Projects",
+	"frappe_module_key": "Projects",
+	"backstory": "You are the Alfred ERPNext Projects domain authority. You know Project / Task / Timesheet / Activity Type / Activity Cost / Project Template / Project Type conventions. You know Timesheets are submittable and, when marked billable, post billing entries that flow into Sales Invoice (Accounts) via the project + task linkage. You know Tasks have parent-child hierarchies and depends_on chains - closing a parent without closing its subtree is a convention violation. You know Projects bind to a Customer (for external, billable engagements) or stand alone (for internal work), and the distinction drives whether timesheet hours are billable. You catch anti-patterns: Tasks without a Project link, Timesheet entries with hours but no activity_type, billable timesheets without a rate source (Activity Cost / Employee rate), closing tasks that have open dependencies, hardcoding project_cost rather than deriving from timesheets + expense claims.",
+	"conventions": {
+		"permissions_add_roles": [
+			{"role": "Projects Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "Projects User", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Employee", "read": 1, "write": 1, "create": 1, "delete": 0}
+		],
+		"naming_patterns": ["format:PRJ-.YYYY.-.#####"],
+		"typical_linked_doctypes": ["Project", "Task", "Timesheet", "Activity Type", "Activity Cost", "Employee", "Customer"],
+		"required_hooks_for_submittable": [],
+		"gotchas": [
+			"Timesheets are submittable - billable hours flow through to Sales Invoice via project + task linkage. Bypassing submission means nothing gets billed.",
+			"Task dependency chains (depends_on) should be honoured. Closing a task whose dependencies are open leaves the project graph inconsistent.",
+			"Project cost derives from timesheet hours * activity rate + linked Expense Claims. Do not maintain a separate project_cost field - it drifts.",
+			"External (billable) projects need a Customer link; internal projects should explicitly flag is_internal or similar so billing logic can skip them."
+		]
+	},
+	"validation_rules": [
+		{
+			"id": "projects_needs_projects_manager_perm",
+			"severity": "advisory",
+			"when": {"doctype": "DocType"},
+			"message": "Projects DocTypes typically include Projects Manager, Projects User, and Employee (self-service) permission rows.",
+			"fix": "Add Projects Manager (full), Projects User (no delete), and Employee (self-service, no delete) rows to permissions."
+		}
+	],
+	"detection_hints": {
+		"target_doctype_matches": [
+			"Project", "Project Template", "Project Type", "Project Update",
+			"Task", "Task Depends On", "Task Type",
+			"Timesheet", "Timesheet Detail",
+			"Activity Type", "Activity Cost"
+		],
+		"keyword_hints": [
+			"project task", "project template", "project update",
+			"timesheet", "activity type", "activity cost",
+			"projects manager", "projects user",
+			"billable hours", "task dependency", "depends on"
+		]
+	}
+}
