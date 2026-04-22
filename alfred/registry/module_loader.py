@@ -10,6 +10,7 @@ Spec: docs/specs/2026-04-22-module-specialists.md.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import ClassVar
 
@@ -74,7 +75,10 @@ class ModuleRegistry:
 		low = (prompt or "").lower()
 		for kb in self._by_module.values():
 			for kw in kb.get("detection_hints", {}).get("keyword_hints", []):
-				if kw.lower() in low:
+				# Word-boundary match so "account" doesn't hit "accountant"
+				# or "accounts receivable agent". Multi-word phrases and
+				# hyphenated keywords work naturally via \b on each edge.
+				if re.search(rf"\b{re.escape(kw.strip().lower())}\b", low):
 					return kb["module"], "medium"
 
 		return None, None
