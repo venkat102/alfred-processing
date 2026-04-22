@@ -130,10 +130,18 @@ def _parse_llm_note_list(raw: str) -> list[dict] | None:
 
 
 _CONTEXT_CACHE_TTL_SECONDS = 300  # 5 minutes, per spec
+
+# Process-local fallback cache. Used when the pipeline cannot supply a
+# Redis client (local dev without Redis, Redis reachability loss mid-run).
+# Redis is the primary backend and lets multiple workers share a hit.
 _context_cache: dict[tuple[str, str, str], tuple[float, str]] = {}
 
 
-def _context_cache_get(key: tuple[str, str, str]) -> str | None:
+def _cache_key_str(module: str, intent: str, target_doctype: str | None) -> str:
+	return f"alfred:module_ctx:{module}:{intent}:{target_doctype or ''}"
+
+
+def _context_cache_get_inmem(key: tuple[str, str, str]) -> str | None:
 	entry = _context_cache.get(key)
 	if entry is None:
 		return None
@@ -144,12 +152,31 @@ def _context_cache_get(key: tuple[str, str, str]) -> str | None:
 	return value
 
 
-def _context_cache_set(key: tuple[str, str, str], value: str) -> None:
+def _context_cache_set_inmem(key: tuple[str, str, str], value: str) -> None:
 	_context_cache[key] = (time.time() + _CONTEXT_CACHE_TTL_SECONDS, value)
 
 
+async def _context_cache_get_redis(redis, key_str: str) -> str | None:
+	try:
+		return await redis.get(key_str)
+	except Exception as e:
+		logger.debug("Module context cache Redis read failed: %s", e)
+		return None
+
+
+async def _context_cache_set_redis(redis, key_str: str, value: str) -> None:
+	try:
+		await redis.setex(key_str, _CONTEXT_CACHE_TTL_SECONDS, value)
+	except Exception as e:
+		logger.debug("Module context cache Redis write failed: %s", e)
+
+
 def _context_cache_clear() -> None:
-	"""Test helper - clears the in-memory cache."""
+	"""Test helper - clears the in-memory cache.
+
+	Redis cache is not cleared here because tests that use Redis mock it
+	explicitly. For real Redis-connected runs, entries expire via TTL.
+	"""
 	_context_cache.clear()
 
 
@@ -159,20 +186,32 @@ async def provide_context(
 	intent: str,
 	target_doctype: str | None,
 	site_config: dict,
+	redis=None,
 ) -> str:
 	"""Context pre-pass. Returns a prompt snippet for the intent specialist.
 
-	Process-local cache by (module, intent, target_doctype) with 5-minute
-	TTL avoids a fresh LLM call for every Dev-mode build that targets the
-	same DocType. Invalidated naturally when the processing app restarts.
+	Cache backend selection:
+	  - When ``redis`` is provided and healthy, the cache is shared across
+	    workers and persists across process restarts (TTL 5 minutes).
+	  - Otherwise, the process-local in-memory cache is used - still
+	    avoids duplicate LLM calls within a single worker's lifetime.
+
+	Key format: ``alfred:module_ctx:<module>:<intent>:<target_doctype>``.
 	"""
 	try:
 		kb = ModuleRegistry.load().get(module)
 	except UnknownModuleError:
 		return ""
 
-	cache_key = (module, intent, target_doctype or "")
-	cached = _context_cache_get(cache_key)
+	inmem_key = (module, intent, target_doctype or "")
+	redis_key = _cache_key_str(module, intent, target_doctype)
+
+	# Cache read: prefer Redis if available, fall back to in-memory.
+	if redis is not None:
+		cached = await _context_cache_get_redis(redis, redis_key)
+		if cached is not None:
+			return cached
+	cached = _context_cache_get_inmem(inmem_key)
 	if cached is not None:
 		return cached
 
@@ -199,7 +238,11 @@ async def provide_context(
 		)
 		result = (reply or "").strip()
 		if result:
-			_context_cache_set(cache_key, result)
+			# Write-through: Redis when available (so other workers hit it),
+			# plus in-memory (so this worker's next hit skips Redis roundtrip).
+			if redis is not None:
+				await _context_cache_set_redis(redis, redis_key, result)
+			_context_cache_set_inmem(inmem_key, result)
 		return result
 	except Exception as e:
 		logger.warning("Module specialist provide_context failed (%s): %s", module, e)
