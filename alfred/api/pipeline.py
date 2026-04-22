@@ -430,6 +430,12 @@ class PipelineContext:
 	module_context: str = ""
 	module_validation_notes: list[dict] = field(default_factory=list)
 
+	# V3 multi-module additions. Populated only when ALFRED_MULTI_MODULE=1.
+	# module_secondary_contexts maps module key -> that module's
+	# provide_context snippet so the UI can attribute text to its source.
+	secondary_modules: list[str] = field(default_factory=list)
+	module_secondary_contexts: dict[str, str] = field(default_factory=dict)
+
 	# Services
 	store: "StateStore | None" = None
 	conversation_memory: "ConversationMemory | None" = None
@@ -1181,14 +1187,36 @@ class AgentPipeline:
 		if _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") != "1":
 			return
 
-		from alfred.orchestrator import detect_module
-
 		# Heuristic: use the first extracted target DocType so module
 		# detection can take the high-confidence path (target_doctype
 		# match) rather than falling back to keyword hints.
 		targets = _extract_target_doctypes(ctx.prompt)
 		first_target = targets[0] if targets else None
+		ctx.module_target_doctype = first_target
 
+		if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
+			# V3: primary + secondaries
+			from alfred.orchestrator import detect_modules
+			multi = await detect_modules(
+				prompt=ctx.prompt,
+				target_doctype=first_target,
+				site_config=ctx.conn.site_config or {},
+			)
+			ctx.module = multi.module
+			ctx.secondary_modules = multi.secondary_modules
+			ctx.module_source = multi.source
+			ctx.module_confidence = multi.confidence
+			ctx.module_reason = multi.reason
+			logger.info(
+				"Multi-module decision for conversation=%s: primary=%s "
+				"secondaries=%s source=%s confidence=%s reason=%r",
+				ctx.conversation_id, multi.module, multi.secondary_modules,
+				multi.source, multi.confidence, multi.reason,
+			)
+			return
+
+		# V2: single-module path (unchanged)
+		from alfred.orchestrator import detect_module
 		decision = await detect_module(
 			prompt=ctx.prompt,
 			target_doctype=first_target,
@@ -1198,7 +1226,6 @@ class AgentPipeline:
 		ctx.module_source = decision.source
 		ctx.module_confidence = decision.confidence
 		ctx.module_reason = decision.reason
-		ctx.module_target_doctype = first_target
 
 		logger.info(
 			"Module decision for conversation=%s: module=%s source=%s confidence=%s reason=%r",
@@ -1222,6 +1249,7 @@ class AgentPipeline:
 			return
 
 		from alfred.agents.specialists.module_specialist import provide_context
+		from alfred.registry.module_loader import ModuleRegistry
 
 		# Surface the Redis client (if configured) to the specialist so
 		# the 5-min context cache is shared across workers. When Redis is
@@ -1230,8 +1258,17 @@ class AgentPipeline:
 		redis = getattr(getattr(ctx.conn, "websocket", None), "app", None)
 		redis = getattr(getattr(redis, "state", None), "redis", None)
 
+		registry = ModuleRegistry.load()
+
+		def _display(m: str) -> str:
+			try:
+				return registry.get(m).get("display_name", m)
+			except Exception:
+				return m
+
+		# Primary context call (same as V2 path)
 		try:
-			snippet = await provide_context(
+			primary_ctx = await provide_context(
 				module=ctx.module,
 				intent=ctx.intent or "unknown",
 				target_doctype=ctx.module_target_doctype,
@@ -1243,9 +1280,44 @@ class AgentPipeline:
 				"provide_module_context failed for conversation=%s module=%s: %s",
 				ctx.conversation_id, ctx.module, e,
 			)
-			snippet = ""
+			primary_ctx = ""
 
-		ctx.module_context = snippet
+		# V3: secondary context calls (silent failure each)
+		secondary_ctxs: dict[str, str] = {}
+		if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
+			for m in ctx.secondary_modules:
+				try:
+					snippet = await provide_context(
+						module=m,
+						intent=ctx.intent or "unknown",
+						target_doctype=ctx.module_target_doctype,
+						site_config=ctx.conn.site_config or {},
+						redis=redis,
+					)
+					if snippet:
+						secondary_ctxs[m] = snippet
+				except Exception as e:
+					logger.warning(
+						"secondary provide_context failed for %s: %s", m, e,
+					)
+
+		# V2 path: bare primary snippet, no header wrapper. V3 path:
+		# labeled PRIMARY / SECONDARY sections so the LLM can distinguish
+		# the target domain from advisory context. Header wrapping only
+		# applies when V3 flag is on - V2-only runs keep their existing
+		# prompt shape.
+		if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
+			parts: list[str] = []
+			if primary_ctx:
+				parts.append(f"PRIMARY MODULE ({_display(ctx.module)}):\n{primary_ctx}")
+			elif ctx.secondary_modules:
+				parts.append(f"PRIMARY MODULE ({_display(ctx.module)}): (no context)")
+			for m, s in secondary_ctxs.items():
+				parts.append(f"SECONDARY MODULE CONTEXT ({_display(m)}):\n{s}")
+			ctx.module_context = "\n\n".join(parts) if parts else primary_ctx
+		else:
+			ctx.module_context = primary_ctx
+		ctx.module_secondary_contexts = secondary_ctxs
 
 	async def _phase_enhance(self) -> None:
 		if self.ctx.mode != "dev":
@@ -1718,9 +1790,20 @@ class AgentPipeline:
 				backfill_defaults_raw,
 			)
 			try:
+				module_arg = (
+					ctx.module
+					if _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") == "1"
+					else None
+				)
+				secondary_arg = (
+					ctx.secondary_modules
+					if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1"
+					else []
+				)
 				ctx.changes = backfill_defaults_raw(
 					ctx.changes,
-					module=ctx.module if _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") == "1" else None,
+					module=module_arg,
+					secondary_modules=secondary_arg,
 				)
 			except Exception as e:
 				# Safety net: never let backfill crash the pipeline. Log and
@@ -1731,23 +1814,43 @@ class AgentPipeline:
 					ctx.conversation_id, e, exc_info=True,
 				)
 
-		# V2: module specialist validation pass. Runs only when both flags
-		# on, a module was detected, and we have changes to validate.
+		# V2 + V3: module specialist validation pass. Primary keeps full
+		# severity; secondary modules (V3) get their blockers capped to
+		# warning so only primary-module notes can gate deploy.
 		if (
 			ctx.changes
 			and ctx.module
 			and _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") == "1"
 			and _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") == "1"
 		):
-			from alfred.agents.specialists.module_specialist import validate_output
+			from alfred.agents.specialists.module_specialist import (
+				cap_secondary_severity,
+				validate_output,
+			)
 			try:
-				notes = await validate_output(
+				primary_notes = await validate_output(
 					module=ctx.module,
 					intent=ctx.intent or "unknown",
 					changes=ctx.changes,
 					site_config=ctx.conn.site_config or {},
 				)
-				ctx.module_validation_notes = [n.model_dump() for n in notes]
+				secondary_notes: list = []
+				if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
+					for m in ctx.secondary_modules:
+						try:
+							notes = await validate_output(
+								module=m,
+								intent=ctx.intent or "unknown",
+								changes=ctx.changes,
+								site_config=ctx.conn.site_config or {},
+							)
+							secondary_notes.extend(cap_secondary_severity(notes))
+						except Exception as e:
+							logger.warning(
+								"secondary validate for %s failed: %s", m, e,
+							)
+				all_notes = primary_notes + secondary_notes
+				ctx.module_validation_notes = [n.model_dump() for n in all_notes]
 			except Exception as e:
 				logger.warning(
 					"validate_output failed for conversation=%s module=%s: %s",
@@ -1839,6 +1942,8 @@ class AgentPipeline:
 				"dry_run": ctx.dry_run_result,
 				"module_validation_notes": ctx.module_validation_notes,
 				"detected_module": ctx.module,
+				"detected_module_secondaries": ctx.secondary_modules,
+				"module_confidence": ctx.module_confidence,
 			},
 		})
 
