@@ -36,7 +36,12 @@ class ModuleRegistry:
 		if cls._instance is not None:
 			return cls._instance
 		kbs: dict[str, dict] = {}
-		for path in SCHEMA_DIR.glob("*.json"):
+		# Sort by filename for deterministic iteration order. Path.glob
+		# returns filesystem-insertion order (not alphabetical) which
+		# makes detection tie-breaking non-deterministic on different
+		# systems or after re-saves. Sorting fixes the order so tests
+		# and prod agree on which module wins when multiple keywords hit.
+		for path in sorted(SCHEMA_DIR.glob("*.json"), key=lambda p: p.name):
 			if path.name.startswith("_"):
 				continue
 			data = json.loads(path.read_text())
@@ -82,3 +87,41 @@ class ModuleRegistry:
 					return kb["module"], "medium"
 
 		return None, None
+
+	def detect_all(
+		self, *, prompt: str, target_doctype: str | None, max_secondaries: int = 2,
+	) -> tuple[str | None, str, list[str]]:
+		"""Return (primary, confidence, secondaries).
+
+		Primary is chosen by target_doctype match (high confidence) or
+		first keyword match (medium confidence). Additional keyword
+		matches past the primary become secondaries, up to
+		max_secondaries, deduped against the primary.
+
+		Used by the V3 multi-module pipeline. The V2 single-module
+		``detect()`` remains unchanged for back-compat.
+		"""
+		primary: str | None = None
+		confidence: str = ""
+
+		if target_doctype:
+			kb = self._by_target_doctype.get(target_doctype)
+			if kb is not None:
+				primary = kb["module"]
+				confidence = "high"
+
+		low = (prompt or "").lower()
+		keyword_hits: list[str] = []
+		for kb in self._by_module.values():
+			for kw in kb.get("detection_hints", {}).get("keyword_hints", []):
+				if re.search(rf"\b{re.escape(kw.strip().lower())}\b", low):
+					if kb["module"] not in keyword_hits:
+						keyword_hits.append(kb["module"])
+					break
+
+		if primary is None and keyword_hits:
+			primary = keyword_hits[0]
+			confidence = "medium"
+
+		secondaries = [m for m in keyword_hits if m != primary][:max_secondaries]
+		return primary, confidence, secondaries
