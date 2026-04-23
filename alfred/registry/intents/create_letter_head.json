@@ -10,40 +10,63 @@
 			"required": true
 		},
 		{
+			"key": "source",
+			"label": "Header source",
+			"type": "select",
+			"options": ["HTML", "Image"],
+			"default": "HTML",
+			"rationale": "HTML lets the header adapt to page layout and supports Jinja. Image uses an uploaded image file (flat, no templating). If source='Image' and the image field is set, set_image() auto-converts the attachment into <img> HTML and stores it in the content field at validate time - the conversion is one-way."
+		},
+		{
+			"key": "footer_source",
+			"label": "Footer source",
+			"type": "select",
+			"options": ["HTML", "Image"],
+			"default": "HTML",
+			"rationale": "Same HTML vs Image choice as header, but scoped to the footer. Footer visibility in non-PDF renders is unreliable; design for the PDF path."
+		},
+		{
 			"key": "content",
-			"label": "Header HTML",
+			"label": "Header HTML (when source='HTML')",
 			"type": "text",
 			"default": "",
-			"rationale": "HTML for the document header (logo, company name, address, contact block). Empty means no header. Referenced by Print Formats via their letter_head field."
+			"rationale": "HTML for the document header (logo, company name, address, contact block). Jinja-templated; `doc` context is available when rendered inside a Print Format. Empty means no header body."
 		},
 		{
 			"key": "footer",
-			"label": "Footer HTML",
+			"label": "Footer HTML (when footer_source='HTML')",
 			"type": "text",
 			"default": "",
-			"rationale": "HTML for the document footer (page number, legal disclaimer, bank details). Empty means no footer."
+			"rationale": "HTML for the document footer (page number, legal disclaimer, bank details). Jinja-templated; footer only renders reliably in PDF output - preview pages may show it differently."
+		},
+		{
+			"key": "image",
+			"label": "Header image (when source='Image')",
+			"type": "data",
+			"default": "",
+			"rationale": "Attach Image file path. When source='Image' and this field is set at save time, set_image() auto-generates an <img> HTML snippet into the content field with dimensions from image_height / image_width if provided."
+		},
+		{
+			"key": "align",
+			"label": "Header alignment",
+			"type": "select",
+			"options": ["Left", "Center", "Right"],
+			"default": "Left",
+			"rationale": "Default Left. Center / Right shift the HTML-wrapped content within the page margin."
 		},
 		{
 			"key": "is_default",
-			"label": "Default site-wide",
+			"label": "Default letter head",
 			"type": "check",
 			"default": 0,
-			"rationale": "Default to 0. Set to 1 only if this should become the site-wide default letter head (replaces any existing default; existing documents re-render with the new header on next print)."
+			"rationale": "Site-wide singleton: setting is_default=1 auto-clears is_default on every other Letter Head. If the current default is deleted, the next Letter Head saved auto-becomes the default (on_update forces is_default=1 when no other default exists). A Letter Head cannot be both disabled=1 AND is_default=1 - the controller rejects that combo."
 		},
 		{
 			"key": "disabled",
 			"label": "Disabled",
 			"type": "check",
 			"default": 0,
-			"rationale": "Disabled letter heads are hidden from Print Format dropdowns. Default enabled."
-		},
-		{
-			"key": "source",
-			"label": "Source",
-			"type": "select",
-			"options": ["HTML", "Image"],
-			"default": "HTML",
-			"rationale": "HTML lets the letter head adapt to the page layout and uses Jinja. Image uses a flat image (uploaded to the filesystem) and skips Jinja - use only for legally-required fixed layouts."
+			"rationale": "Default enabled. Disabled letter heads are hidden from Print Format dropdowns. Cannot be combined with is_default=1."
 		}
 	]
 }

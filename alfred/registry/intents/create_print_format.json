@@ -10,48 +10,102 @@
 			"required": true
 		},
 		{
+			"key": "print_format_for",
+			"label": "Target kind",
+			"type": "select",
+			"options": ["DocType", "Report"],
+			"default": "DocType",
+			"rationale": "DocType is the common case (per-document layout). Report formats render Report Builder output; they auto-set custom_format=1 because Report output cannot be templated via the visual Print Format Builder."
+		},
+		{
 			"key": "doc_type",
-			"label": "Target DocType",
+			"label": "Target DocType (when print_format_for='DocType')",
 			"type": "link",
 			"link_doctype": "DocType",
-			"required": true
+			"default": "",
+			"rationale": "Required when print_format_for='DocType'. Empty when print_format_for='Report'."
+		},
+		{
+			"key": "report",
+			"label": "Target Report (when print_format_for='Report')",
+			"type": "link",
+			"link_doctype": "Report",
+			"default": "",
+			"rationale": "Required when print_format_for='Report'. The controller rejects the save if empty in that case."
+		},
+		{
+			"key": "custom_format",
+			"label": "Custom (non-Builder) format",
+			"type": "check",
+			"default": 1,
+			"rationale": "When 1, the print format is hand-authored (Jinja HTML or raw printer commands) - the html or raw_commands field is required. When 0, the format uses the visual Print Format Builder (drag-and-drop). Report formats force custom_format=1 at save."
 		},
 		{
 			"key": "print_format_type",
-			"label": "Type",
+			"label": "Template type (when custom_format=1)",
 			"type": "select",
-			"options": ["Jinja", "Server", "Builder"],
+			"options": ["Jinja", "JS"],
 			"default": "Jinja",
-			"rationale": "Jinja is the common case: you write HTML with {{ doc.fieldname }} placeholders. Builder is drag-and-drop (raw_printing=0). Server is legacy Python; avoid unless explicitly required."
+			"rationale": "Jinja is the canonical path: validate_template() checks syntax at save. JS is deprecated (legacy JavaScript-rendered formats); avoid unless explicitly required. Ignored when custom_format=0."
+		},
+		{
+			"key": "raw_printing",
+			"label": "Raw printing (thermal / label printers)",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, bypass HTML rendering and use raw_commands (native printer commands like ESC/POS, ZPL). Used for thermal receipts and label printers. When 0, the html field is used. Mutually exclusive with html being present."
 		},
 		{
 			"key": "html",
-			"label": "HTML template (for Jinja)",
+			"label": "Jinja HTML body (when !raw_printing)",
 			"type": "text",
 			"default": "",
-			"rationale": "Required when print_format_type=Jinja. Complete HTML body referencing doc.<field> values. Use {%- -%} for whitespace control. Empty for Builder / Server types."
+			"rationale": "Required when custom_format=1 AND raw_printing=0. Full Jinja HTML referencing `doc.<field>`. The Jinja context is ONLY the doc object plus a small set of helpers - no frappe.session, no arbitrary frappe.* calls. Use doc.get_formatted('field') for currency / date formatting. validate_template checks syntax at save."
+		},
+		{
+			"key": "raw_commands",
+			"label": "Raw printer commands (when raw_printing=1)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required when raw_printing=1. Native printer language commands (ESC/POS for thermal receipts, ZPL for Zebra labels). Jinja-rendered on the server side like html but output straight to the printer."
 		},
 		{
 			"key": "standard",
 			"label": "Standard",
 			"type": "select",
-			"options": ["Yes", "No"],
+			"options": ["No", "Yes"],
 			"default": "No",
-			"rationale": "No means site-local (DB-only). Yes writes to an app's filesystem and requires a module; use only when shipping the print format in an app."
+			"rationale": "'No' = site-local (DB-only). 'Yes' writes to an app's filesystem and requires developer_mode AND the caller cannot be in migrate / install / test context - the controller rejects saves of standard formats outside those explicit flows."
 		},
 		{
 			"key": "default",
 			"label": "Default for DocType",
 			"type": "check",
 			"default": 0,
-			"rationale": "Default to 0. Set to 1 only if this should replace the built-in default print format for the DocType."
+			"rationale": "Default 0. When 1, this format replaces the DocType's built-in default print format. Setting default=1 on a new format does NOT auto-clear default=1 on existing formats - the user sees two 'defaults' until one is manually cleared."
 		},
 		{
 			"key": "letter_head",
 			"label": "Letter head",
-			"type": "data",
+			"type": "link",
+			"link_doctype": "Letter Head",
 			"default": "",
-			"rationale": "Optional; names a Letter Head whose header / footer wraps this print format. Empty means no letter head."
+			"rationale": "Optional. Names an existing Letter Head whose content / footer wraps this print format. Empty means no letter head wrapper."
+		},
+		{
+			"key": "pdf_generator",
+			"label": "PDF generator",
+			"type": "select",
+			"options": ["wkhtmltopdf", "chrome"],
+			"default": "wkhtmltopdf",
+			"rationale": "wkhtmltopdf is the default and works for most layouts. chrome uses headless Chromium and renders modern CSS better (flexbox, grid) but is slower and has a heavier runtime dependency."
+		},
+		{
+			"key": "disabled",
+			"label": "Disabled",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default enabled. Disabled formats are hidden from the Print dialog but kept in the DB for restoration."
 		}
 	]
 }

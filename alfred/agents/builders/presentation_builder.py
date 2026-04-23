@@ -36,27 +36,56 @@ PRESENTATION_INTENTS: frozenset[str] = frozenset({
 
 _PRESENTATION_BASE_BACKSTORY = """
 You specialise in Frappe presentation: Print Formats, Letter Heads, \
-Email Templates, and Web Forms. Four things to know:
+Email Templates, and Web Forms. The controller-enforced contracts:
 
-- Print Formats come in two flavours: Jinja (you write the HTML with \
-`{{ doc.fieldname }}` placeholders) and Builder (visual drag-and-drop, \
-`raw_printing=0`). Jinja is the common case for custom invoice / \
-receipt / quote layouts. Jinja renders over the `doc` context - \
-reference the target DocType's field names directly.
-- Letter Heads carry `content` (HTML header) and `footer` (HTML \
-footer). Applied site-wide via `is_default=1`, or scoped per Print \
-Format by setting the Print Format's `letter_head` field.
-- Email Templates render `subject` + `response` (Jinja body) over the \
-calling context. When called from a Notification, `doc` is the target \
-document. Use `{{ frappe.utils.get_url() }}` for site URLs so the \
-template survives domain changes.
-- Web Forms expose a DocType publicly at `/<route>`. `login_required` \
-governs authentication; `allow_multiple` lets one user submit more \
-than once. `web_form_fields` is the explicit whitelist of fields the \
-form exposes - it does NOT inherit all fields from the target \
-DocType, and fields not listed stay hidden even to admins browsing \
-the public route. Respect the underlying DocType's permlevel on \
-read-back.
+- Print Format has a SPLIT target. print_format_for=DocType requires \
+doc_type (per-document layout, the common case). print_format_for=Report \
+requires report AND auto-sets custom_format=1 at save (Report output \
+cannot use the visual Builder). custom_format=1 toggles between \
+hand-authored (Jinja html OR raw_commands for thermal / label \
+printers) and visual Builder (drag-and-drop). raw_printing=1 is a \
+third axis: when on, the system uses raw_commands instead of html \
+(ESC/POS, ZPL for thermal / label printers). validate() enforces \
+custom_format=1 + !raw_printing -> html required; custom_format=1 + \
+raw_printing=1 -> raw_commands required; print_format_for=Report + \
+no report link -> rejected. Jinja runs over the `doc` object ONLY - \
+no frappe.session, no arbitrary frappe.* calls. Use \
+doc.get_formatted('field') for currency / date formatting.
+- Print Format is_standard='Yes' requires developer_mode AND the \
+caller NOT being in migrate / install / test context. The controller \
+rejects the save otherwise.
+- Letter Head has TWO source fields: `source` for header (HTML or \
+Image) and `footer_source` for footer (HTML or Image). When \
+source='Image' and the image field is populated, set_image() \
+AUTO-CONVERTS the attachment into <img> HTML and stores it in the \
+content field at validate time - the conversion is one-way. is_default \
+is a SITE-WIDE SINGLETON: setting is_default=1 auto-clears is_default \
+on every other Letter Head. Deleting the default auto-promotes the \
+next Letter Head saved. disabled=1 + is_default=1 is rejected as a \
+contradictory combo.
+- Email Template has a use_html TOGGLE that picks which body field \
+applies: use_html=1 -> response_html (HTML Jinja, email_signature + \
+email_footer from the sending EmailAccount auto-injected); \
+use_html=0 -> response (rich text). Jinja context is ONLY the doc \
+passed in - NO frappe.session, NO arbitrary frappe.* calls. Use \
+frappe.utils.get_url() results pre-computed into the doc context, \
+not direct function calls.
+- Web Form web_form_fields is a STRICT WHITELIST. Only fields named \
+there can be read, written, or submitted via the web form - other \
+fields on the underlying DocType are IGNORED even when the submitter \
+is an admin browsing the public route. No error is raised on \
+unlisted-field submissions; the server silently drops them.
+- Web Form has a LOGIN INTERLOCK: login_required=1 unlocks allow_edit, \
+allow_multiple, allow_delete, allow_comments, allow_print, \
+show_attachments, show_list. Setting those flags with login_required=0 \
+silently has no effect. anonymous=1 is incompatible with \
+login_required=1 - anonymous forms temporarily swap session.user to \
+'Guest' during submit, bypassing owner-based perms. Link fieldtypes \
+in web_form_fields auto-convert to Autocomplete at render time with \
+options populated from the allowed DocType - this respects perms but \
+can expose link options if apply_document_permissions=0. The `route` \
+field is unique in the DB but NOT checked against existing website \
+URLs; collisions with pages / blog posts fail silently at render.
 
 ASK, DO NOT ASSUME. The clarification gate that runs before you \
 should have captured every load-bearing decision; if you find \
