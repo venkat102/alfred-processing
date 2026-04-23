@@ -1,0 +1,39 @@
+{
+	"intent": "create_email_template",
+	"display_name": "Create Email Template",
+	"doctype": "Email Template",
+	"fields": [
+		{
+			"key": "name",
+			"label": "Template name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "subject",
+			"label": "Subject (Jinja)",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "response",
+			"label": "Response body (Jinja)",
+			"type": "text",
+			"required": true
+		},
+		{
+			"key": "use_html",
+			"label": "HTML body",
+			"type": "check",
+			"default": 1,
+			"rationale": "HTML is the canonical body format for Frappe email. Set to 0 only for plain-text-only channels."
+		},
+		{
+			"key": "reference_doctype",
+			"label": "Reference DocType",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional. Names the DocType whose fields are in scope when rendering Jinja (enables Jinja tools + autocomplete in Desk). Empty means the template is generic."
+		}
+	]
+}

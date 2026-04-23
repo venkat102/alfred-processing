@@ -954,6 +954,9 @@ def _get_specialist_developer_agent(
 	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS, build_schema_agent
 	from alfred.agents.builders.reports_builder import REPORTS_INTENTS, build_reports_agent
 	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS, build_automation_agent
+	from alfred.agents.builders.presentation_builder import (
+		PRESENTATION_INTENTS, build_presentation_agent,
+	)
 
 	if intent in SCHEMA_INTENTS:
 		agent = build_schema_agent(
@@ -981,6 +984,18 @@ def _get_specialist_developer_agent(
 
 	if intent in AUTOMATION_INTENTS:
 		agent = build_automation_agent(
+			intent=intent,
+			site_config=site_config,
+			custom_tools=custom_tools,
+		)
+		logger.info(
+			"Builder specialist selected: intent=%s agent_role=%r",
+			intent, agent.role,
+		)
+		return agent
+
+	if intent in PRESENTATION_INTENTS:
+		agent = build_presentation_agent(
 			intent=intent,
 			site_config=site_config,
 			custom_tools=custom_tools,
@@ -1026,6 +1041,10 @@ def _enhance_task_description(
 	from alfred.agents.builders.automation_builder import (
 		enhance_generate_changeset_description as enhance_automation,
 	)
+	from alfred.agents.builders.presentation_builder import PRESENTATION_INTENTS
+	from alfred.agents.builders.presentation_builder import (
+		enhance_generate_changeset_description as enhance_presentation,
+	)
 
 	if intent in SCHEMA_INTENTS:
 		return enhance_schema(
@@ -1039,6 +1058,11 @@ def _enhance_task_description(
 
 	if intent in AUTOMATION_INTENTS:
 		return enhance_automation(
+			base_description, intent=intent, module_context=module_context,
+		)
+
+	if intent in PRESENTATION_INTENTS:
+		return enhance_presentation(
 			base_description, intent=intent, module_context=module_context,
 		)
 

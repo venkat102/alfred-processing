@@ -1,0 +1,49 @@
+{
+	"intent": "create_letter_head",
+	"display_name": "Create Letter Head",
+	"doctype": "Letter Head",
+	"fields": [
+		{
+			"key": "letter_head_name",
+			"label": "Letter head name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "content",
+			"label": "Header HTML",
+			"type": "text",
+			"default": "",
+			"rationale": "HTML for the document header (logo, company name, address, contact block). Empty means no header. Referenced by Print Formats via their letter_head field."
+		},
+		{
+			"key": "footer",
+			"label": "Footer HTML",
+			"type": "text",
+			"default": "",
+			"rationale": "HTML for the document footer (page number, legal disclaimer, bank details). Empty means no footer."
+		},
+		{
+			"key": "is_default",
+			"label": "Default site-wide",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default to 0. Set to 1 only if this should become the site-wide default letter head (replaces any existing default; existing documents re-render with the new header on next print)."
+		},
+		{
+			"key": "disabled",
+			"label": "Disabled",
+			"type": "check",
+			"default": 0,
+			"rationale": "Disabled letter heads are hidden from Print Format dropdowns. Default enabled."
+		},
+		{
+			"key": "source",
+			"label": "Source",
+			"type": "select",
+			"options": ["HTML", "Image"],
+			"default": "HTML",
+			"rationale": "HTML lets the letter head adapt to the page layout and uses Jinja. Image uses a flat image (uploaded to the filesystem) and skips Jinja - use only for legally-required fixed layouts."
+		}
+	]
+}

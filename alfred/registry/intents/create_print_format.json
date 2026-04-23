@@ -1,0 +1,57 @@
+{
+	"intent": "create_print_format",
+	"display_name": "Create Print Format",
+	"doctype": "Print Format",
+	"fields": [
+		{
+			"key": "name",
+			"label": "Print format name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "doc_type",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "print_format_type",
+			"label": "Type",
+			"type": "select",
+			"options": ["Jinja", "Server", "Builder"],
+			"default": "Jinja",
+			"rationale": "Jinja is the common case: you write HTML with {{ doc.fieldname }} placeholders. Builder is drag-and-drop (raw_printing=0). Server is legacy Python; avoid unless explicitly required."
+		},
+		{
+			"key": "html",
+			"label": "HTML template (for Jinja)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required when print_format_type=Jinja. Complete HTML body referencing doc.<field> values. Use {%- -%} for whitespace control. Empty for Builder / Server types."
+		},
+		{
+			"key": "standard",
+			"label": "Standard",
+			"type": "select",
+			"options": ["Yes", "No"],
+			"default": "No",
+			"rationale": "No means site-local (DB-only). Yes writes to an app's filesystem and requires a module; use only when shipping the print format in an app."
+		},
+		{
+			"key": "default",
+			"label": "Default for DocType",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default to 0. Set to 1 only if this should replace the built-in default print format for the DocType."
+		},
+		{
+			"key": "letter_head",
+			"label": "Letter head",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional; names a Letter Head whose header / footer wraps this print format. Empty means no letter head."
+		}
+	]
+}

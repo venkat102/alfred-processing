@@ -462,6 +462,10 @@ _SUPPORTED_INTENTS: tuple[str, ...] = (
 	"create_client_script",
 	"create_notification",
 	"create_workflow",
+	"create_print_format",
+	"create_letter_head",
+	"create_email_template",
+	"create_web_form",
 )
 
 # Heuristic substring matches (lowercased prompt). Order matters: more
@@ -577,6 +581,35 @@ _HEURISTIC_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
 		"custom button on",
 		"hide field",
 		"show field",
+	),
+	"create_print_format": (
+		"print format",
+		"invoice template",
+		"invoice layout",
+		"quote template",
+		"quote layout",
+		"receipt template",
+		"receipt layout",
+		"document layout",
+	),
+	"create_letter_head": (
+		"letter head",
+		"letterhead",
+		"company header",
+		"company footer",
+		"branded header",
+		"branded footer",
+	),
+	"create_email_template": (
+		"email template",
+	),
+	"create_web_form": (
+		"web form",
+		"public form",
+		"portal form",
+		"external form",
+		"form on the website",
+		"form on the portal",
 	),
 }
 
