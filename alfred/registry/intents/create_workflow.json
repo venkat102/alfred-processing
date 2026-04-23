@@ -1,0 +1,53 @@
+{
+	"intent": "create_workflow",
+	"display_name": "Create Workflow",
+	"doctype": "Workflow",
+	"fields": [
+		{
+			"key": "workflow_name",
+			"label": "Workflow name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "document_type",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "is_active",
+			"label": "Active",
+			"type": "check",
+			"default": 1,
+			"rationale": "Default to active. A Workflow only governs its target DocType when is_active=1; Frappe allows only ONE active workflow per DocType, so check has_active_workflow first before creating a second."
+		},
+		{
+			"key": "override_status",
+			"label": "Override status",
+			"type": "check",
+			"default": 0,
+			"rationale": "Leave off unless you want the workflow state to replace Frappe's native status field. Most workflows run alongside native status."
+		},
+		{
+			"key": "send_email_alert",
+			"label": "Send email on state change",
+			"type": "check",
+			"default": 0,
+			"rationale": "Enables built-in email-on-transition. Default off; prefer a dedicated Notification with richer templating unless the user explicitly wants basic alerts."
+		},
+		{
+			"key": "states",
+			"label": "States (list of Workflow State rows)",
+			"type": "text",
+			"required": true
+		},
+		{
+			"key": "transitions",
+			"label": "Transitions (list of {state, action, next_state, allowed_roles})",
+			"type": "text",
+			"required": true
+		}
+	]
+}

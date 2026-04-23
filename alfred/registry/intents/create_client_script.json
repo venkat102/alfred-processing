@@ -1,0 +1,42 @@
+{
+	"intent": "create_client_script",
+	"display_name": "Create Client Script",
+	"doctype": "Client Script",
+	"fields": [
+		{
+			"key": "name",
+			"label": "Descriptive name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "dt",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "view",
+			"label": "View",
+			"type": "select",
+			"options": ["Form", "List", "Report"],
+			"default": "Form",
+			"rationale": "Form is the canonical place for client logic (field show/hide, set_value, custom buttons). List applies to the list view; Report applies to report builder pages."
+		},
+		{
+			"key": "script",
+			"label": "Script body",
+			"type": "text",
+			"default": "",
+			"rationale": "Browser-side JS. Use frappe.ui.form.on with the DocType name, then handler functions like refresh, <fieldname> (on change), validate, after_save. Read via frm.doc.<field>, mutate via frm.set_value. Avoid jQuery selectors against Desk chrome."
+		},
+		{
+			"key": "enabled",
+			"label": "Enabled",
+			"type": "check",
+			"default": 1,
+			"rationale": "Default to enabled. Use 0 for staging-only scripts."
+		}
+	]
+}

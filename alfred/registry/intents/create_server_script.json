@@ -1,0 +1,62 @@
+{
+	"intent": "create_server_script",
+	"display_name": "Create Server Script",
+	"doctype": "Server Script",
+	"fields": [
+		{
+			"key": "name",
+			"label": "Descriptive name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "script_type",
+			"label": "Script type",
+			"type": "select",
+			"options": ["DocType Event", "API", "Scheduler Event", "Permission Query"],
+			"default": "DocType Event",
+			"rationale": "DocType Event is the common case: hook into Before Save / After Save / On Submit / etc. API exposes a whitelisted endpoint. Scheduler Event runs on a cron cadence. Permission Query filters rows at the query layer."
+		},
+		{
+			"key": "reference_doctype",
+			"label": "Target DocType (for DocType Event / Permission Query)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when script_type is DocType Event or Permission Query. Names the target. Empty for API or Scheduler scripts."
+		},
+		{
+			"key": "doctype_event",
+			"label": "Event (for DocType Event)",
+			"type": "select",
+			"options": [
+				"Before Save",
+				"After Save",
+				"Before Insert",
+				"After Insert",
+				"Before Submit",
+				"On Submit",
+				"Before Cancel",
+				"On Cancel",
+				"On Trash",
+				"Before Naming",
+				"On Update After Submit"
+			],
+			"default": "Before Save",
+			"rationale": "Before Save runs on every save attempt - use to throw() and cancel the save. On Submit fires only on 0->1 docstatus transition. On Trash covers deletes. Each event has a specific semantic; read the Frappe docs before picking."
+		},
+		{
+			"key": "script",
+			"label": "Script body",
+			"type": "text",
+			"default": "",
+			"rationale": "RestrictedPython. NO `import` statements - the deploy dry-run rejects any script containing `import`. Use pre-bound `frappe`, `frappe.utils`, `frappe.db`, `json`, `datetime` directly. Start with a frappe.has_permission check before reading or mutating doc state."
+		},
+		{
+			"key": "disabled",
+			"label": "Disabled",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default to enabled. Use only when staging a script for later activation."
+		}
+	]
+}

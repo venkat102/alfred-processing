@@ -1,0 +1,80 @@
+{
+	"intent": "create_notification",
+	"display_name": "Create Notification",
+	"doctype": "Notification",
+	"fields": [
+		{
+			"key": "name",
+			"label": "Descriptive name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "document_type",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "event",
+			"label": "Event",
+			"type": "select",
+			"options": [
+				"New",
+				"Save",
+				"Submit",
+				"Cancel",
+				"Days After",
+				"Days Before",
+				"Value Change",
+				"Method"
+			],
+			"default": "New",
+			"rationale": "Event choice is load-bearing. New alerts the approver BEFORE they act. Submit alerts the requester / downstream AFTER approval. Save fires on every draft save (rarely what you want). Days After / Days Before drive date-based reminders. Value Change fires when a specific field mutates."
+		},
+		{
+			"key": "channel",
+			"label": "Channel",
+			"type": "select",
+			"options": ["Email", "SMS", "System Notification", "Slack"],
+			"default": "Email",
+			"rationale": "Email is the canonical channel and the one most sites have configured. System Notification is free (no SMTP / SMS gateway needed) but users only see it inside Desk."
+		},
+		{
+			"key": "recipients",
+			"label": "Recipients (list)",
+			"type": "text",
+			"default": "",
+			"rationale": "List of recipient rows. Each row is either `receiver_by_document_field` (dynamic: names a link field on the target holding the user, e.g. 'expense_approver'), `{role: '...'}` (static: every user with that role), or `{email: '...'}` (fully static). Dynamic is preferred for per-document routing."
+		},
+		{
+			"key": "subject",
+			"label": "Subject (Jinja over doc)",
+			"type": "data",
+			"default": "",
+			"rationale": "Jinja-rendered over the target document context. Reference fields with {{ doc.fieldname }}. Empty defaults to a generic system subject."
+		},
+		{
+			"key": "message",
+			"label": "Message body (Jinja HTML)",
+			"type": "text",
+			"default": "",
+			"rationale": "Jinja-rendered HTML body. Reference doc fields via {{ doc.<field> }}. Keep short and actionable; the user usually just needs to know what changed and how to act."
+		},
+		{
+			"key": "condition",
+			"label": "Condition (Python expression)",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional Python expression evaluated against `doc`. Only fires the notification when true. Example: doc.amount > 10000. Empty means always fire."
+		},
+		{
+			"key": "enabled",
+			"label": "Enabled",
+			"type": "check",
+			"default": 1,
+			"rationale": "Default to enabled. Use 0 for staging-only notifications."
+		}
+	]
+}

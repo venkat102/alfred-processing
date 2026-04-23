@@ -953,6 +953,7 @@ def _get_specialist_developer_agent(
 
 	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS, build_schema_agent
 	from alfred.agents.builders.reports_builder import REPORTS_INTENTS, build_reports_agent
+	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS, build_automation_agent
 
 	if intent in SCHEMA_INTENTS:
 		agent = build_schema_agent(
@@ -968,6 +969,18 @@ def _get_specialist_developer_agent(
 
 	if intent in REPORTS_INTENTS:
 		agent = build_reports_agent(
+			intent=intent,
+			site_config=site_config,
+			custom_tools=custom_tools,
+		)
+		logger.info(
+			"Builder specialist selected: intent=%s agent_role=%r",
+			intent, agent.role,
+		)
+		return agent
+
+	if intent in AUTOMATION_INTENTS:
+		agent = build_automation_agent(
 			intent=intent,
 			site_config=site_config,
 			custom_tools=custom_tools,
@@ -1009,6 +1022,10 @@ def _enhance_task_description(
 	from alfred.agents.builders.reports_builder import (
 		enhance_generate_changeset_description as enhance_reports,
 	)
+	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS
+	from alfred.agents.builders.automation_builder import (
+		enhance_generate_changeset_description as enhance_automation,
+	)
 
 	if intent in SCHEMA_INTENTS:
 		return enhance_schema(
@@ -1017,6 +1034,11 @@ def _enhance_task_description(
 
 	if intent in REPORTS_INTENTS:
 		return enhance_reports(
+			base_description, intent=intent, module_context=module_context,
+		)
+
+	if intent in AUTOMATION_INTENTS:
+		return enhance_automation(
 			base_description, intent=intent, module_context=module_context,
 		)
 
