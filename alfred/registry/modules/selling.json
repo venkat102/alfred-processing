@@ -2,30 +2,77 @@
 	"module": "selling",
 	"display_name": "Selling",
 	"frappe_module_key": "Selling",
-	"backstory": "You are the Alfred ERPNext Selling domain authority. You know Customer / Customer Group / Territory / Quotation / Sales Order / Sales Taxes and Charges Template conventions. You know the selling lifecycle runs Lead -> Opportunity (CRM) -> Quotation -> Sales Order -> Delivery Note (Stock) -> Sales Invoice (Accounts), and that touching any one of those doctypes has implications for the chain. You know Selling submittable DocTypes do NOT post to General Ledger directly - that's Accounts' job via Sales Invoice; Selling submittables commit demand (Sales Order reserves inventory via production / purchase planning) rather than ledger. You catch anti-patterns: bypassing party_type/party validation, hardcoding currency without referencing exchange_rate, missing tax template on a quotation, setting grand_total manually instead of deriving from items + taxes.",
+	"backstory": "You are the Alfred ERPNext Selling domain authority. You know the selling lifecycle runs Lead -> Opportunity (CRM) -> Quotation -> Sales Order -> Delivery Note (Stock) -> Sales Invoice (Accounts). Each stage has a different ledger impact: Quotation is pre-commitment (no posting), Sales Order COMMITS demand / reserves inventory, Delivery Note posts to the STOCK LEDGER on_submit via update_stock_ledger() (the canonical stock-OUT document - selling is NOT where stock moves; Stock is), and Sales Invoice posts to the GENERAL LEDGER in Accounts. Never add an on_submit GL hook to a Selling submittable - that's Accounts' job at Sales Invoice. You know Delivery Note inherits Stock User / Stock Manager roles (stock/doctype/delivery_note/delivery_note.json permissions), NOT Sales roles, because it's a Stock document that merely references Selling. You know Shipping Rule priority: when Shipping Rule is active it overrides Sales Taxes and Charges Template for tax rate computation (selling_controller.py:180). You know Pricing Rule vs Coupon Code conflict resolution is deterministic: Pricing Rule wins unless Coupon Code has higher priority (sales_invoice.py:510-511). You know Blanket Order is a long-term supply agreement with qty-per-period limits - behaves differently from a regular SO (doesn't immediately reserve full qty). You know Loyalty Program enrolls at SO time but redeems at SI submission (sales_invoice.py:514-526). You know Product Bundle is a bundle with component items that auto-expand into packed_items on SO/DN - a broken Product Bundle link silently fails at DN creation (selling_controller.py:29-36). You catch anti-patterns: bypassing party validation; hardcoding currency without exchange_rate; user-editing totals instead of deriving from items + taxes; treating Delivery Note as a Selling document (it's Stock).",
 	"conventions": {
 		"permissions_add_roles": [
 			{"role": "Sales Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
 			{"role": "Sales User", "read": 1, "write": 1, "create": 1, "delete": 0},
 			{"role": "Sales Master Manager", "read": 1, "write": 1, "create": 1, "delete": 0}
 		],
-		"naming_patterns": ["format:SEL-.YYYY.-.#####"],
-		"typical_linked_doctypes": ["Customer", "Customer Group", "Territory", "Item", "Sales Taxes and Charges Template", "Currency"],
-		"required_hooks_for_submittable": [],
+		"naming_patterns": [
+			"format:SAL-ORD-.YYYY.-.#####",
+			"format:SAL-QTN-.YYYY.-.#####",
+			"format:MAT-DN-.YYYY.-.#####"
+		],
+		"typical_linked_doctypes": [
+			"Customer", "Customer Group", "Territory", "Item", "Item Group",
+			"Sales Taxes and Charges Template", "Currency",
+			"Delivery Note", "Installation Note", "Product Bundle",
+			"Sales Partner", "Sales Person", "Sales Team",
+			"Pricing Rule", "Shipping Rule", "Coupon Code",
+			"Loyalty Program", "Warehouse"
+		],
+		"required_hooks_for_submittable": [
+			"on_submit_commit_demand_for_Sales_Order",
+			"on_submit_stock_ledger_posting_for_Delivery_Note"
+		],
 		"gotchas": [
-			"Selling submittables commit business intent (demand, reservation) not ledger impact. GL posting happens downstream at Sales Invoice in Accounts.",
-			"Every selling transaction needs a Customer link + currency. Don't let null flow through.",
-			"Totals (grand_total, net_total, total_taxes_and_charges) should derive from items + taxes, never be user-editable directly.",
-			"Sales Taxes and Charges Template is the canonical source for tax rows - apply the template instead of rewriting tax lines per document."
+			"Sales Order COMMITS demand (reserves inventory) on submit; Delivery Note posts to Stock Ledger via update_stock_ledger() (selling_controller.py); Sales Invoice posts to General Ledger. Three distinct ledgers across the chain - do NOT conflate them.",
+			"Delivery Note is a Stock module document even though it sits in the Selling lifecycle. Its permissions use Stock User / Stock Manager, not Sales roles (stock/doctype/delivery_note/delivery_note.json).",
+			"Shipping Rule, when active, OVERRIDES Sales Taxes and Charges Template for tax rate calculation (selling_controller.py:180). Having both configured is fine; Shipping Rule wins.",
+			"Pricing Rule vs Coupon Code: Pricing Rule wins unless Coupon Code has higher priority (sales_invoice.py:510-511). Check both chains when discounts look wrong.",
+			"Product Bundle expansion: a Sales Order / Delivery Note with a Product Bundle item auto-populates packed_items; a broken Product Bundle link silently fails at DN creation (selling_controller.py:29-36). Verify the Product Bundle exists before building a bundle-item SO.",
+			"Loyalty Program redemption happens at Sales Invoice submission, not Sales Order. Loyalty points are earned at invoice submission too (sales_invoice.py:514-526).",
+			"Blanket Order reserves differently from a regular Sales Order - it has qty-per-period limits and does NOT immediately reserve the full qty. Treat Blanket-Order-to-SO conversion explicitly.",
+			"Totals (grand_total, net_total, total_taxes_and_charges) should derive from items + taxes. Never user-edit them directly - the controller recomputes at validate.",
+			"Sales Person commission from Sales Team rows computes at Sales Invoice submission and posts to GL. A Sales Order with a Sales Team but no Commission Rate silently fails commission posting."
 		]
 	},
 	"validation_rules": [
 		{
+			"id": "selling_product_bundle_item_needs_valid_bundle_link",
+			"severity": "blocker",
+			"when": {"doctype": "Sales Order", "data.has_product_bundle_items": 1},
+			"message": "Sales Order with a Product Bundle item requires the Product Bundle record to exist. selling_controller.py:29-36 silently fails to expand packed_items when the Product Bundle link is broken - the DN later crashes on creation.",
+			"fix": "Verify each bundle item's `item_code` has a corresponding Product Bundle with the component items defined before submitting the SO."
+		},
+		{
+			"id": "selling_return_needs_matching_return_against",
+			"severity": "blocker",
+			"when": {"doctype": "Sales Invoice", "data.is_return": 1},
+			"message": "Sales Invoice return without a return_against Sales Order / Delivery Note / Sales Invoice fails 5 consistency checks (sales_and_purchase_return.py:22-83): return_against exists, party matches, posting_date >= original, conversion_rate matches, update_stock consistency.",
+			"fix": "Set data.return_against to the original submitted SO / DN / SI the return is against; ensure party + currency + update_stock match."
+		},
+		{
+			"id": "selling_dn_uses_stock_roles",
+			"severity": "advisory",
+			"when": {"doctype": "Delivery Note"},
+			"message": "Delivery Note is conventionally governed by Stock User + Stock Manager, not Sales roles. Emitting it with Sales-only permissions breaks the Stock team's access path.",
+			"fix": "Include {role: 'Stock User', read: 1, write: 1, create: 1, delete: 0} and {role: 'Stock Manager', read: 1, write: 1, create: 1, delete: 1} in permissions."
+		},
+		{
+			"id": "selling_loyalty_redeem_needs_active_program",
+			"severity": "blocker",
+			"when": {"doctype": "Sales Invoice", "data.redeem_loyalty_points": 1},
+			"message": "Sales Invoice with redeem_loyalty_points=1 requires an ACTIVE Loyalty Program for the Customer. Inactive or expired programs silently fail to create points reconciliation (sales_invoice.py:514-520).",
+			"fix": "Verify the Customer has an active Loyalty Program assignment before enabling redemption; fall back to redeem_loyalty_points=0 if none exists."
+		},
+		{
 			"id": "selling_needs_sales_manager_perm",
 			"severity": "advisory",
-			"when": {"doctype": "DocType"},
-			"message": "Selling DocTypes typically include Sales Manager, Sales User, and Sales Master Manager permission rows.",
-			"fix": "Add Sales Manager (full), Sales User (no delete), and Sales Master Manager (no delete) rows to permissions."
+			"when": {"doctype": "DocType", "data.module": "Selling"},
+			"message": "Selling DocTypes typically include Sales Manager (full), Sales User (no delete), and Sales Master Manager (no delete) permission rows.",
+			"fix": "Add the three Sales roles with their standard permission flags."
 		}
 	],
 	"detection_hints": {
@@ -33,14 +80,20 @@
 			"Customer", "Customer Group", "Territory",
 			"Quotation", "Sales Order", "Blanket Order",
 			"Sales Taxes and Charges Template", "Sales Taxes and Charges",
-			"Shipping Rule", "Pricing Rule",
-			"Sales Partner", "Sales Person", "Sales Team"
+			"Delivery Note", "Installation Note",
+			"Shipping Rule", "Pricing Rule", "Coupon Code",
+			"Sales Partner", "Sales Person", "Sales Team",
+			"Product Bundle", "Sales BOM",
+			"Campaign", "Industry Type"
 		],
 		"keyword_hints": [
-			"customer group", "sales order", "quotation",
+			"customer", "customer group", "sales order", "quotation",
 			"sales taxes", "sales manager", "sales user",
-			"territory", "sales partner", "sales person",
-			"pricing rule", "shipping rule", "blanket order"
+			"territory", "sales partner", "sales person", "sales team",
+			"pricing rule", "shipping rule", "coupon code",
+			"blanket order", "delivery note", "installation note",
+			"product bundle", "sales bom", "campaign",
+			"loyalty program redemption"
 		]
 	}
 }
