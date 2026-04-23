@@ -6,6 +6,7 @@ import pytest
 from alfred.agents.specialists.module_specialist import (
 	_context_cache_clear,
 	provide_context,
+	provide_family_context,
 	validate_output,
 )
 
@@ -328,3 +329,71 @@ async def test_provide_context_without_redis_uses_inmem_cache():
 			target_doctype="Sales Invoice", site_config={},
 		)
 		assert llm.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_provide_family_context_unknown_family_returns_empty():
+	out = await provide_family_context(
+		family="not_a_real_family",
+		intent="create_doctype",
+		site_config={},
+	)
+	assert out == ""
+
+
+@pytest.mark.asyncio
+async def test_provide_family_context_fetches_and_caches():
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(return_value="family summary"),
+	) as llm:
+		first = await provide_family_context(
+			family="transactions", intent="create_doctype", site_config={},
+		)
+		second = await provide_family_context(
+			family="transactions", intent="create_doctype", site_config={},
+		)
+	assert first == second == "family summary"
+	# Second call should hit cache, not LLM
+	assert llm.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_provide_family_context_cache_key_is_family_plus_intent():
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(side_effect=["first", "second", "third"]),
+	) as llm:
+		await provide_family_context(
+			family="transactions", intent="create_doctype", site_config={},
+		)
+		# Different intent -> cache miss
+		await provide_family_context(
+			family="transactions", intent="create_server_script", site_config={},
+		)
+		# Different family -> cache miss
+		await provide_family_context(
+			family="operations", intent="create_doctype", site_config={},
+		)
+	assert llm.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_provide_family_context_does_not_reuse_module_cache():
+	"""Family cache and module cache are keyed differently. Calling
+	provide_context('accounts', ...) and provide_family_context('transactions', ...)
+	both make LLM calls - one doesn't satisfy the other."""
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(side_effect=["module", "family"]),
+	) as llm:
+		m = await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Sales Invoice", site_config={},
+		)
+		f = await provide_family_context(
+			family="transactions", intent="create_doctype", site_config={},
+		)
+	assert m == "module"
+	assert f == "family"
+	assert llm.await_count == 2

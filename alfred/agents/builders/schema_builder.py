@@ -268,8 +268,16 @@ _MODULE_CONTEXT_MARKER = "MODULE CONTEXT"
 
 def _wrap_module_context(snippet: str) -> str:
 	return (
-		f"{_MODULE_CONTEXT_MARKER} (target-module conventions - respect these "
+		f"{_MODULE_CONTEXT_MARKER} (ERPNext domain knowledge - respect these "
 		"alongside the shape-defining fields above):\n"
+		"The snippet may contain layered sections labeled PRIMARY FAMILY "
+		"(cross-module invariants shared across a family like Transactions "
+		"or Operations), PRIMARY MODULE (the specific ERPNext module's "
+		"conventions), and SECONDARY MODULE CONTEXT (advisory context from "
+		"related modules). Treat every labeled section as authoritative. "
+		"If a FAMILY-level invariant conflicts with a shape-defining "
+		"default above, the FAMILY invariant wins - families encode real "
+		"controller-enforced rules.\n\n"
 		f"{snippet}"
 	)
 

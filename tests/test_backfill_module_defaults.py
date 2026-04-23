@@ -27,7 +27,10 @@ def test_module_accounts_adds_accounts_roles():
 def test_module_accounts_swaps_defaulted_autoname():
 	changes = [_doctype_change({"name": "Voucher", "module": "Custom"})]
 	out = backfill_defaults_raw(changes, module="accounts")
-	assert out[0]["data"]["autoname"] == "format:ACC-.YYYY.-.####"
+	# accounts ships multiple per-DocType patterns (JV / PAY / SINV / PINV / GL);
+	# backfill picks the first, which is the Journal Entry pattern. This is
+	# a reasonable catch-all default for a generic submittable Accounts doc.
+	assert out[0]["data"]["autoname"] == "format:ACC-JV-.YYYY.-.#####"
 	meta = out[0]["field_defaults_meta"]["autoname"]
 	assert meta["source"] == "default"
 	assert "Accounts" in meta["rationale"] or "ACC" in meta["rationale"]
