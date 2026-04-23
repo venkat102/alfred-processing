@@ -1,0 +1,74 @@
+{
+	"intent": "create_dashboard_chart",
+	"display_name": "Create Dashboard Chart",
+	"doctype": "Dashboard Chart",
+	"fields": [
+		{
+			"key": "chart_name",
+			"label": "Chart name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "source",
+			"label": "Source type",
+			"type": "select",
+			"options": ["Report", "DocType"],
+			"default": "DocType",
+			"rationale": "DocType aggregation is the common case for KPI-style charts. Use Report when the user explicitly wants to plot an existing Report's output."
+		},
+		{
+			"key": "report_name",
+			"label": "Report name (when source=Report)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when source=Report. Names an existing Report in the site. Empty for DocType source."
+		},
+		{
+			"key": "document_type",
+			"label": "DocType (when source=DocType)",
+			"type": "link",
+			"link_doctype": "DocType",
+			"default": "",
+			"rationale": "Required when source=DocType. Names the DocType to aggregate. Empty for Report source."
+		},
+		{
+			"key": "chart_type",
+			"label": "Chart type",
+			"type": "select",
+			"options": ["Line", "Bar", "Pie", "Donut", "Percentage", "Heatmap"],
+			"default": "Bar",
+			"rationale": "Bar is a safe default for categorical data. Line fits time-series, Pie and Donut fit distributions under ~6 categories, Heatmap fits per-day density."
+		},
+		{
+			"key": "timespan",
+			"label": "Timespan",
+			"type": "select",
+			"options": ["Last Year", "Last Quarter", "Last Month", "Last Week", "Select Date Range"],
+			"default": "Last Year",
+			"rationale": "Last Year balances meaningful trend signal with query cost. Users can narrow to shorter spans."
+		},
+		{
+			"key": "based_on",
+			"label": "Date field to group by (time-based charts)",
+			"type": "data",
+			"default": "",
+			"rationale": "For Line / Bar charts on DocType source, names the date field driving the X axis (e.g. posting_date). Empty for non-time-series."
+		},
+		{
+			"key": "value_based_on",
+			"label": "Numeric field to aggregate",
+			"type": "data",
+			"default": "",
+			"rationale": "For Sum / Average / Min / Max aggregations on DocType source, names the numeric field. Empty when counting rows (set aggregate_function_based_on separately for Count)."
+		},
+		{
+			"key": "group_by_type",
+			"label": "Grouping",
+			"type": "select",
+			"options": ["Count", "Sum", "Average"],
+			"default": "Count",
+			"rationale": "Count is the safe default for categorical summaries. Sum / Average require a numeric value_based_on."
+		}
+	]
+}

@@ -455,13 +455,20 @@ _SUPPORTED_INTENTS: tuple[str, ...] = (
 	"create_custom_field",
 	"create_role_with_permissions",
 	"create_report",
+	"create_dashboard",
+	"create_dashboard_chart",
+	"create_number_card",
 )
 
 # Heuristic substring matches (lowercased prompt). Order matters: more
-# specific Schema-family patterns (role, custom field) must live BEFORE
-# the generic create_doctype patterns, otherwise "add a role on X
-# DocType" would match create_doctype first. Dict iteration preserves
-# insertion order in Python 3.7+.
+# specific patterns MUST live before more general ones, because dict
+# iteration preserves insertion order (Python 3.7+) and the first
+# matching family wins. Specifically:
+#   - Schema-family role/custom-field patterns run BEFORE create_doctype
+#     so "add a role on X DocType" doesn't match create_doctype first.
+#   - Reports-family number_card / dashboard_chart / dashboard patterns
+#     run BEFORE create_report so "create a dashboard with a chart"
+#     doesn't match create_report first.
 _HEURISTIC_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
 	"create_role_with_permissions": (
 		"create a role",
@@ -493,6 +500,28 @@ _HEURISTIC_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
 		"add doctype",
 		"build a doctype",
 		"make a doctype",
+	),
+	"create_number_card": (
+		"number card",
+		"kpi card",
+		"metric card",
+		"count card",
+	),
+	"create_dashboard_chart": (
+		"dashboard chart",
+		"add a chart",
+		"add chart",
+		"create a chart",
+		"new chart",
+		"build a chart",
+	),
+	"create_dashboard": (
+		"create a dashboard",
+		"create dashboard",
+		"new dashboard",
+		"add a dashboard",
+		"add dashboard",
+		"build a dashboard",
 	),
 	"create_report": (
 		"save as report",

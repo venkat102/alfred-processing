@@ -1,0 +1,49 @@
+{
+	"intent": "create_number_card",
+	"display_name": "Create Number Card",
+	"doctype": "Number Card",
+	"fields": [
+		{
+			"key": "label",
+			"label": "Card label",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "document_type",
+			"label": "Source DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "function",
+			"label": "Aggregation function",
+			"type": "select",
+			"options": ["Count", "Sum", "Average", "Minimum", "Maximum"],
+			"default": "Count",
+			"rationale": "Count rows matching filters is the canonical KPI (pending invoices, overdue tasks). Sum / Average / Minimum / Maximum require a numeric aggregate_function_based_on."
+		},
+		{
+			"key": "aggregate_function_based_on",
+			"label": "Numeric field (for non-Count functions)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when function is Sum / Average / Minimum / Maximum. Names a numeric field on the source DocType. Empty when function=Count."
+		},
+		{
+			"key": "filters_json",
+			"label": "Filters (JSON string)",
+			"type": "text",
+			"default": "[]",
+			"rationale": "JSON string of Frappe filter triples, e.g. '[[\"Sales Invoice\", \"status\", \"=\", \"Unpaid\"]]'. Empty list means no filter (aggregates across the whole DocType)."
+		},
+		{
+			"key": "color",
+			"label": "Accent colour",
+			"type": "data",
+			"default": "#449CF0",
+			"rationale": "Subtle accent on the card face. Frappe's default blue (#449CF0) is a safe fallback; flip to red-tones for warning KPIs and green-tones for healthy KPIs."
+		}
+	]
+}

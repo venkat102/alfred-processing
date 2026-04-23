@@ -1,0 +1,34 @@
+{
+	"intent": "create_dashboard",
+	"display_name": "Create Dashboard",
+	"doctype": "Dashboard",
+	"fields": [
+		{
+			"key": "dashboard_name",
+			"label": "Dashboard name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "module",
+			"label": "Module",
+			"type": "link",
+			"link_doctype": "Module Def",
+			"required": true
+		},
+		{
+			"key": "is_standard",
+			"label": "Standard?",
+			"type": "check",
+			"default": 0,
+			"rationale": "Standard dashboards live in an app's filesystem and ship with the module. Default to non-standard (site-local) unless explicitly shipping in an app."
+		},
+		{
+			"key": "chart_options",
+			"label": "Chart options (list of chart names)",
+			"type": "text",
+			"default": "",
+			"rationale": "Comma-separated Dashboard Chart names. Empty means the dashboard ships without charts and charts are added later (or alongside in the same changeset). If the user named charts that don't exist yet, emit the Dashboard Chart items BEFORE the Dashboard in the changeset so links resolve on apply."
+		}
+	]
+}
