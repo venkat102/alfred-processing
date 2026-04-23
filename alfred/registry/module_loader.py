@@ -4,6 +4,13 @@ Mirrors alfred/registry/loader.py (IntentRegistry). Module KBs declare
 per-ERPNext-module conventions, validation rules, and detection hints
 that module specialists use to reason about domain correctness.
 
+Families (added 2026-04-23) group related modules together and carry
+cross-module invariants shared by their members. Every non-custom
+module JSON declares a ``family`` field pointing to one of the family
+KBs under ``modules/_families/``. The module specialist uses the
+family KB to prepend a FAMILY CONTEXT section above the per-module
+snippet so Frappe intent specialists see both layers.
+
 Spec: docs/specs/2026-04-22-module-specialists.md.
 """
 
@@ -15,17 +22,23 @@ from pathlib import Path
 from typing import ClassVar
 
 SCHEMA_DIR = Path(__file__).parent / "modules"
+FAMILIES_DIR = SCHEMA_DIR / "_families"
 
 
 class UnknownModuleError(KeyError):
 	"""Raised when a module key is not in the registry."""
 
 
+class UnknownFamilyError(KeyError):
+	"""Raised when a family key is not in the registry."""
+
+
 class ModuleRegistry:
 	_instance: ClassVar["ModuleRegistry | None"] = None
 
-	def __init__(self, kbs: dict[str, dict]):
+	def __init__(self, kbs: dict[str, dict], families: dict[str, dict]):
 		self._by_module = kbs
+		self._by_family = families
 		self._by_target_doctype: dict[str, dict] = {}
 		for kb in kbs.values():
 			for dt in kb.get("detection_hints", {}).get("target_doctype_matches", []):
@@ -46,7 +59,16 @@ class ModuleRegistry:
 				continue
 			data = json.loads(path.read_text())
 			kbs[data["module"]] = data
-		cls._instance = cls(kbs)
+
+		families: dict[str, dict] = {}
+		if FAMILIES_DIR.is_dir():
+			for path in sorted(FAMILIES_DIR.glob("*.json"), key=lambda p: p.name):
+				if path.name.startswith("_"):
+					continue
+				data = json.loads(path.read_text())
+				families[data["name"]] = data
+
+		cls._instance = cls(kbs, families)
 		return cls._instance
 
 	def modules(self) -> list[str]:
@@ -56,6 +78,25 @@ class ModuleRegistry:
 		if module not in self._by_module:
 			raise UnknownModuleError(module)
 		return self._by_module[module]
+
+	def families(self) -> list[str]:
+		return sorted(self._by_family.keys())
+
+	def get_family(self, family: str) -> dict:
+		if family not in self._by_family:
+			raise UnknownFamilyError(family)
+		return self._by_family[family]
+
+	def family_for_module(self, module: str) -> str | None:
+		"""Return the family name for a module, or None if the module has no family.
+
+		``custom`` is intentionally familyless - it's the catch-all KB
+		for user-defined DocTypes outside canonical ERPNext modules.
+		"""
+		kb = self._by_module.get(module)
+		if kb is None:
+			return None
+		return kb.get("family")
 
 	def for_doctype(self, doctype: str | None) -> dict | None:
 		if not doctype:
