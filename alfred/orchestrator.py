@@ -450,9 +450,41 @@ async def classify_mode(
 # "unknown" on failure. Spec:
 # docs/specs/2026-04-21-doctype-builder-specialist.md
 
-_SUPPORTED_INTENTS: tuple[str, ...] = ("create_doctype", "create_report")
+_SUPPORTED_INTENTS: tuple[str, ...] = (
+	"create_doctype",
+	"create_custom_field",
+	"create_role_with_permissions",
+	"create_report",
+)
 
+# Heuristic substring matches (lowercased prompt). Order matters: more
+# specific Schema-family patterns (role, custom field) must live BEFORE
+# the generic create_doctype patterns, otherwise "add a role on X
+# DocType" would match create_doctype first. Dict iteration preserves
+# insertion order in Python 3.7+.
 _HEURISTIC_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
+	"create_role_with_permissions": (
+		"create a role",
+		"create role",
+		"new role",
+		"add a role",
+		"add role",
+		"role with permission",
+		"role with permissions",
+		"grant permission",
+		"grant permissions",
+		"give permission",
+		"give permissions",
+	),
+	"create_custom_field": (
+		"add a custom field",
+		"add custom field",
+		"new custom field",
+		"create a custom field",
+		"create custom field",
+		"add a field to",
+		"add a field on",
+	),
 	"create_doctype": (
 		"create a doctype",
 		"create doctype",

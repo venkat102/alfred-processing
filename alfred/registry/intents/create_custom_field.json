@@ -1,0 +1,93 @@
+{
+	"intent": "create_custom_field",
+	"display_name": "Add Custom Field",
+	"doctype": "Custom Field",
+	"fields": [
+		{
+			"key": "dt",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "fieldname",
+			"label": "Fieldname (snake_case)",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "label",
+			"label": "Label",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "fieldtype",
+			"label": "Fieldtype",
+			"type": "select",
+			"options": [
+				"Data",
+				"Select",
+				"Link",
+				"Int",
+				"Float",
+				"Check",
+				"Date",
+				"Datetime",
+				"Small Text",
+				"Text",
+				"Long Text",
+				"Currency",
+				"Duration",
+				"JSON",
+				"Table",
+				"Table MultiSelect"
+			],
+			"default": "Data",
+			"rationale": "Data is the safest default for free-text identifiers or short strings. Select requires `options`; Link requires `options` naming the target DocType; Table / Table MultiSelect require `options` naming the child DocType."
+		},
+		{
+			"key": "options",
+			"label": "Options (for Select / Link / Table)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required for Select (newline-separated values), Link (target DocType name), Table / Table MultiSelect (child DocType name). Empty for other fieldtypes."
+		},
+		{
+			"key": "insert_after",
+			"label": "Insert after field",
+			"type": "data",
+			"default": "",
+			"rationale": "Without insert_after the field lands at the bottom of the form, which confuses users. Use lookup_doctype on the target DocType first to pick an existing field near a semantic neighbour."
+		},
+		{
+			"key": "reqd",
+			"label": "Required",
+			"type": "check",
+			"default": 0,
+			"rationale": "Mark required only when the field is genuinely load-bearing. New required fields on populated DocTypes break existing records and existing flows unless backfilled."
+		},
+		{
+			"key": "in_list_view",
+			"label": "Show in list view",
+			"type": "check",
+			"default": 0,
+			"rationale": "Adding a column to list view is cheap but clutters the UI. Enable only when users will filter or scan by this field."
+		},
+		{
+			"key": "unique",
+			"label": "Unique",
+			"type": "check",
+			"default": 0,
+			"rationale": "Unique constraints fail on existing duplicate records. Enable only on fresh fields or after confirming no duplicates."
+		},
+		{
+			"key": "read_only",
+			"label": "Read only",
+			"type": "check",
+			"default": 0,
+			"rationale": "Read-only fields are populated by scripts or hooks, not the user. Enable when the value is derived."
+		}
+	]
+}
