@@ -1,0 +1,49 @@
+{
+	"intent": "create_property_setter",
+	"display_name": "Create Property Setter (tweak existing DocField)",
+	"doctype": "Property Setter",
+	"fields": [
+		{
+			"key": "doc_type",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "field_name",
+			"label": "Target fieldname (empty for DocType-level property)",
+			"type": "data",
+			"default": "",
+			"rationale": "Names an existing DocField on the target DocType. Empty means the Property Setter targets a property of the DocType itself (e.g. title_field, default_print_format, search_fields) rather than any specific field. The controller auto-routes based on emptiness: empty field_name + property='some_doctype_prop' sets a DocType-level override; non-empty sets a DocField-level override."
+		},
+		{
+			"key": "property",
+			"label": "Property to override",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "property_type",
+			"label": "Property type",
+			"type": "select",
+			"options": ["Check", "Data", "Int", "Select", "Text", "Code", "Small Text", "Long Text"],
+			"required": true
+		},
+		{
+			"key": "value",
+			"label": "New value",
+			"type": "text",
+			"default": "",
+			"rationale": "The override value. MUST match property_type: Check properties take '0' or '1' (string); Data / Text take plain strings; Select takes one of the property's valid option strings; Int takes a numeric string. Mismatches are accepted at save but fail at render time. Empty string is a valid value for clearing a Data / Text property."
+		},
+		{
+			"key": "for_doctype",
+			"label": "Scope hint ('DocType' or 'DocField')",
+			"type": "select",
+			"options": ["DocType", "DocField"],
+			"default": "DocField",
+			"rationale": "Usually DocField (you're overriding a DocField property like reqd / label / hidden / options / read_only). Set to DocType when overriding a DocType-level property (title_field, search_fields, default_print_format, allow_import) - and leave field_name empty in that case."
+		}
+	]
+}

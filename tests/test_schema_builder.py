@@ -16,6 +16,8 @@ def test_schema_intents_cover_the_family():
 		"create_doctype",
 		"create_custom_field",
 		"create_role_with_permissions",
+		"create_property_setter",
+		"create_user_permission",
 	})
 
 
@@ -89,6 +91,51 @@ def test_build_schema_agent_rejects_unknown_intent():
 		build_schema_agent(
 			intent="create_workflow", site_config={}, custom_tools=None,
 		)
+
+
+def test_build_schema_agent_property_setter_intent():
+	agent = build_schema_agent(
+		intent="create_property_setter", site_config={}, custom_tools=None,
+	)
+	assert "Property Setter" in agent.role
+	# Distinction vs Custom Field must be in the backstory
+	assert "Custom Field" in agent.backstory
+	assert "Property Setter" in agent.backstory
+
+
+def test_build_schema_agent_user_permission_intent():
+	agent = build_schema_agent(
+		intent="create_user_permission", site_config={}, custom_tools=None,
+	)
+	assert "User Permission" in agent.role
+	# Distinction vs DocPerm must be in the backstory
+	assert "User Permission" in agent.backstory
+	assert "DocPerm" in agent.backstory
+
+
+def test_render_checklist_property_setter_lists_every_field():
+	schema = IntentRegistry.load().get("create_property_setter")
+	text = render_registry_checklist(schema, intent="create_property_setter")
+	for key in ("doc_type", "field_name", "property", "property_type", "value"):
+		assert key in text
+
+
+def test_render_checklist_user_permission_lists_every_field():
+	schema = IntentRegistry.load().get("create_user_permission")
+	text = render_registry_checklist(schema, intent="create_user_permission")
+	for key in ("user", "allow", "for_value", "apply_to_all_doctypes"):
+		assert key in text
+
+
+def test_role_with_permissions_action_flags_include_select_and_if_owner():
+	# Regression: select + if_owner + mask are canonical DocPerm flags
+	# that earlier registries silently dropped.
+	schema = IntentRegistry.load().get("create_role_with_permissions")
+	action_flags_field = next(f for f in schema["fields"] if f["key"] == "action_flags")
+	default = action_flags_field["default"]
+	assert "select=1" in default
+	assert "if_owner=0" in default
+	assert "mask=0" in default
 
 
 # ── enhance_generate_changeset_description ───────────────────

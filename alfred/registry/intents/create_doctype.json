@@ -107,6 +107,34 @@
 			"rationale": "Users with write access can rename records. Default 1 is the Frappe standard; set 0 for DocTypes where the name is an immutable identifier referenced by other records."
 		},
 		{
+			"key": "allow_import",
+			"label": "Allow bulk import",
+			"type": "check",
+			"default": 0,
+			"rationale": "Required 1 if any DocPerm row on the DocType sets `import=1`. Default 0; enable only for DocTypes that should accept CSV / XLSX imports via the Desk Import tool."
+		},
+		{
+			"key": "image_field",
+			"label": "Image field (fieldname)",
+			"type": "data",
+			"default": "",
+			"rationale": "Names an Attach Image field on this DocType; when set, that image renders as the document thumbnail in list and link-preview contexts. Must name a real Attach Image field - Frappe does NOT validate the fieldtype, so pointing at a Data field renders broken thumbnails."
+		},
+		{
+			"key": "timeline_field",
+			"label": "Timeline field (fieldname)",
+			"type": "data",
+			"default": "",
+			"rationale": "Names a Link field on this DocType whose target's timeline (comments + communications) should be merged into this DocType's timeline. Common for transactional docs that reference a master (Sales Invoice -> Customer)."
+		},
+		{
+			"key": "default_print_format",
+			"label": "Default print format",
+			"type": "data",
+			"default": "",
+			"rationale": "Names an existing Print Format for this DocType that should be the default in the Print dialog. Empty means Frappe's built-in standard print format. Validated at render time, not save."
+		},
+		{
 			"key": "permissions",
 			"label": "Permissions",
 			"type": "table",

@@ -17,6 +17,9 @@ def test_automation_intents_cover_the_family():
 		"create_client_script",
 		"create_notification",
 		"create_workflow",
+		"create_webhook",
+		"create_auto_repeat",
+		"create_assignment_rule",
 	})
 
 
@@ -93,6 +96,65 @@ def test_build_automation_agent_rejects_unknown_intent():
 		build_automation_agent(
 			intent="create_doctype", site_config={}, custom_tools=None,
 		)
+
+
+def test_build_automation_agent_webhook_intent():
+	agent = build_automation_agent(
+		intent="create_webhook", site_config={}, custom_tools=None,
+	)
+	assert "Webhook" in agent.role
+	# Webhook vs Server Script API distinction is critical
+	assert "OUTBOUND" in agent.backstory or "outbound" in agent.backstory.lower()
+
+
+def test_build_automation_agent_auto_repeat_intent():
+	agent = build_automation_agent(
+		intent="create_auto_repeat", site_config={}, custom_tools=None,
+	)
+	assert "Auto Repeat" in agent.role
+	# Stale-snapshot gotcha must be in backstory
+	assert "COPIES" in agent.backstory or "reflect" in agent.backstory.lower()
+
+
+def test_build_automation_agent_assignment_rule_intent():
+	agent = build_automation_agent(
+		intent="create_assignment_rule", site_config={}, custom_tools=None,
+	)
+	assert "Assignment Rule" in agent.role
+	# Round Robin / Load Balancing / Based on Field strategies in backstory
+	assert "Round Robin" in agent.backstory
+
+
+def test_render_checklist_webhook_lists_every_field():
+	schema = IntentRegistry.load().get("create_webhook")
+	text = render_registry_checklist(schema, intent="create_webhook")
+	for key in ("webhook_doctype", "webhook_docevent", "request_url", "request_method"):
+		assert key in text
+
+
+def test_render_checklist_auto_repeat_lists_every_field():
+	schema = IntentRegistry.load().get("create_auto_repeat")
+	text = render_registry_checklist(schema, intent="create_auto_repeat")
+	for key in ("reference_doctype", "reference_document", "frequency", "start_date"):
+		assert key in text
+
+
+def test_render_checklist_assignment_rule_lists_every_field():
+	schema = IntentRegistry.load().get("create_assignment_rule")
+	text = render_registry_checklist(schema, intent="create_assignment_rule")
+	for key in ("document_type", "rule", "assign_condition", "users"):
+		assert key in text
+
+
+def test_notification_has_attach_print_and_sender():
+	# Regression: these were missing from the prior registry, preventing
+	# the specialist from emitting "attach the invoice PDF" notifications.
+	schema = IntentRegistry.load().get("create_notification")
+	field_keys = {f["key"] for f in schema["fields"]}
+	assert "attach_print" in field_keys
+	assert "print_format" in field_keys
+	assert "sender" in field_keys
+	assert "minutes_offset" in field_keys
 
 
 # ── enhance_generate_changeset_description ───────────────────

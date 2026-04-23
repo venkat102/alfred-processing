@@ -55,6 +55,13 @@
 			"label": "Transitions (list of {state, action, next_state, allowed, condition?})",
 			"type": "text",
 			"required": true
+		},
+		{
+			"key": "enable_action_confirmation",
+			"label": "Prompt for confirmation on every transition",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, every transition action pops a confirmation dialog before the state change. Useful for destructive transitions (reject / cancel) where accidental clicks would cost. Default 0 (fast-path)."
 		}
 	]
 }

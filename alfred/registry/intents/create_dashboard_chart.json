@@ -142,6 +142,42 @@
 			"type": "check",
 			"default": 0,
 			"rationale": "0 = only visible to the owner. 1 = visible to every user. Dashboards that are_standard=1 typically use is_public=1 charts."
+		},
+		{
+			"key": "y_axis",
+			"label": "Y-axis fields (list, for chart_type='Report' !use_report_chart)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required when chart_type='Report' AND use_report_chart=0. JSON list of report-column names that drive the Y axis. The prior registry treated this as a single field (value_based_on) but Frappe's Dashboard Chart actually supports multiple Y-axes for multi-series Report-sourced charts. Empty for non-Report chart_types."
+		},
+		{
+			"key": "dynamic_filters_json",
+			"label": "Dynamic filters (JSON)",
+			"type": "text",
+			"default": "",
+			"rationale": "JSON list of filter triples that are evaluated at RENDER time rather than save time - useful for 'current user' / 'this month' / 'today' style filters that would freeze if baked into filters_json. Empty for static filters only."
+		},
+		{
+			"key": "show_values_over_chart",
+			"label": "Show values above bars / points",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only meaningful when type is Bar or Line. Adds numeric labels above each data point. Default off for cleaner visuals; enable for data-dense reports where exact values matter."
+		},
+		{
+			"key": "currency",
+			"label": "Currency for monetary axes",
+			"type": "link",
+			"link_doctype": "Currency",
+			"default": "",
+			"rationale": "Optional. Names a Currency when the Y-axis represents monetary values; the chart renders values with that currency's symbol. Empty defaults to the company currency."
+		},
+		{
+			"key": "roles",
+			"label": "Restrict chart to these roles (list)",
+			"type": "text",
+			"default": "",
+			"rationale": "Optional list of Role names. When non-empty, ONLY users with at least one of the listed roles see the chart on a dashboard. Empty means all users (subject to is_public / owner)."
 		}
 	]
 }

@@ -113,6 +113,34 @@
 			"type": "data",
 			"default": "#449CF0",
 			"rationale": "Subtle accent on the card face. Frappe's default blue is safe; switch to red for warning KPIs (overdue) and green for healthy KPIs (on-time)."
+		},
+		{
+			"key": "background_color",
+			"label": "Card background colour",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional. Overrides the card's default background. Empty uses the theme's card surface colour."
+		},
+		{
+			"key": "show_full_number",
+			"label": "Show full number (no abbreviation)",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default 0: values are abbreviated (1.2M, 42K) for readability. Set 1 when precision matters (financial KPIs where the exact amount is the signal)."
+		},
+		{
+			"key": "dynamic_filters_json",
+			"label": "Dynamic filters (JSON)",
+			"type": "text",
+			"default": "",
+			"rationale": "JSON list of filter triples evaluated at RENDER time (useful for 'current user' / 'this month' / 'today'). Complementary to filters_json (which is evaluated at save time and frozen)."
+		},
+		{
+			"key": "filters_config",
+			"label": "Filter UI definition (for type='Custom')",
+			"type": "text",
+			"default": "",
+			"rationale": "Required when type='Custom'. JSON defining the filter UI controls exposed to users of this card (label, fieldname, fieldtype, options). The corresponding Custom method receives these filter values. Empty for Document Type / Report sources."
 		}
 	]
 }

@@ -1,0 +1,97 @@
+{
+	"intent": "create_auto_repeat",
+	"display_name": "Create Auto Repeat (recurring document)",
+	"doctype": "Auto Repeat",
+	"fields": [
+		{
+			"key": "reference_doctype",
+			"label": "Source DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "reference_document",
+			"label": "Source document name (the template)",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "frequency",
+			"label": "Frequency",
+			"type": "select",
+			"options": ["Daily", "Weekly", "Monthly", "Quarterly", "Half-yearly", "Yearly"],
+			"default": "Monthly",
+			"rationale": "Monthly is the common case for recurring invoices / subscriptions. Daily / Weekly for shorter-cadence workflows."
+		},
+		{
+			"key": "start_date",
+			"label": "Start date",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "end_date",
+			"label": "End date (empty = open-ended)",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional. When empty, Auto Repeat continues indefinitely (until disabled). Set to cap the schedule (e.g. a 12-month subscription)."
+		},
+		{
+			"key": "submit_on_creation",
+			"label": "Submit the generated document automatically",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only meaningful when reference_doctype is submittable. When 1, each generated copy is auto-submitted (docstatus=1) without manual review. Default 0 (generate as draft, user submits). Enable only for fully automated recurring flows."
+		},
+		{
+			"key": "repeat_on_last_day",
+			"label": "Repeat on last day of month (Monthly only)",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only meaningful when frequency='Monthly'. When 1, each copy is generated on the LAST day of the month regardless of start_date's day. When 0, Monthly repeats on the same day-of-month as start_date, SKIPPING months with fewer days (e.g. a Jan 31 start skips Feb 28, Apr 30, etc.). Default 0."
+		},
+		{
+			"key": "notify_by_email",
+			"label": "Notify recipients by email",
+			"type": "check",
+			"default": 1,
+			"rationale": "Default on: recipients receive an email whenever a new copy is generated. Disable for silent / invisible recurrence."
+		},
+		{
+			"key": "recipients",
+			"label": "Email recipients (one per line, when notify_by_email=1)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required when notify_by_email=1. One email address per line. Empty with notify_by_email=1 is accepted at save but silently drops the notification."
+		},
+		{
+			"key": "subject",
+			"label": "Notification subject (Jinja)",
+			"type": "data",
+			"default": "",
+			"rationale": "Jinja-templated over the target document. Empty falls back to 'New <DocType> generated from Auto Repeat'."
+		},
+		{
+			"key": "message",
+			"label": "Notification body (Jinja)",
+			"type": "text",
+			"default": "",
+			"rationale": "Jinja-templated over the target document. Empty falls back to a generic message."
+		},
+		{
+			"key": "update_auto_repeat_id",
+			"label": "Stamp auto_repeat field on generated copies",
+			"type": "check",
+			"default": 1,
+			"rationale": "When 1, each generated copy carries the Auto Repeat name in its `auto_repeat` field - this links copies back to the schedule. Default 1; disable only when that field would conflict."
+		},
+		{
+			"key": "disabled",
+			"label": "Disabled",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default enabled. Disabled Auto Repeats skip generation but stay in the DB. Use instead of delete to pause a schedule."
+		}
+	]
+}

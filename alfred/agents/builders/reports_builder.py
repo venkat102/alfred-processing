@@ -33,6 +33,7 @@ REPORTS_INTENTS: frozenset[str] = frozenset({
 	"create_dashboard",
 	"create_dashboard_chart",
 	"create_number_card",
+	"create_auto_email_report",
 })
 
 _REPORTS_BASE_BACKSTORY = """
@@ -80,6 +81,19 @@ every other Dashboard. is_standard=1 enforces that every referenced \
 chart / card MUST also be is_standard=1 (the controller rejects mixing). \
 chart_options (JSON string) provides rendering defaults merged into \
 every chart at render time.
+- Auto Email Report schedules recurring delivery of an existing Report \
+via email. TWO silent-failure modes to design around: (a) when \
+send_if_data=1 (the default) AND the filtered report returns zero rows, \
+the email is SUPPRESSED WITH NO NOTIFICATION - fine for exception \
+reports ('send if overdue'), confusing for confirmation reports ('send \
+weekly status even if clean'); (b) the scheduler MUST be running for \
+Auto Email Reports to fire - no scheduler means no email, and no \
+in-band error. Script Reports running via Auto Email Report need their \
+`roles` field to include a role the scheduler worker holds, otherwise \
+the background job fails silently. Use from_date_field + \
+dynamic_date_filters_based_on for rolling windows (last 7 days, last \
+month) so the same job makes sense week-over-week without manual \
+filter edits.
 
 ASK, DO NOT ASSUME. The clarification gate that runs before you should \
 have captured every load-bearing decision; if you find yourself about \
@@ -175,11 +189,30 @@ parent_document_type.\n\
 (Sum / Average / Minimum / Maximum - Count is NOT valid here; use \
 type=Document Type with function=Count instead).\n\
   - type=Custom: emit method (dotted path to a whitelisted Python \
-function returning {value, fieldtype, route?}).\n\
+function returning {value, fieldtype, route?}) AND filters_config (the \
+filter UI JSON exposed to dashboard users of this card).\n\
 filters_json is a JSON STRING of Frappe filter triples (e.g. \
 '[[\"Sales Invoice\",\"status\",\"=\",\"Unpaid\"]]'), not a Python \
 dict. '[]' means 'across all rows' - if the user said anything \
-implying a filter, that's a blocker, not a default.
+implying a filter, that's a blocker, not a default. Use \
+dynamic_filters_json for render-time filters (current user, this \
+month, today) that should not freeze at save.
+""".strip(),
+
+	"create_auto_email_report": """
+Your current task is to CREATE AN AUTO EMAIL REPORT that emails an \
+existing Report on a schedule. Emit report (the Report to run), \
+email_to (one recipient per line), frequency (Daily / Weekdays / \
+Weekly / Monthly), format (HTML inline, or CSV / XLSX / PDF \
+attachment), filters (JSON string of filter values matching the \
+Report's declared filters), and send_if_data (default 1 - SILENTLY \
+SUPPRESSES the email when the filtered report has zero rows). For \
+rolling-window reports ('last 7 days', 'last month'), combine \
+from_date_field (the Report's date column name) with \
+dynamic_date_filters_based_on (Daily / Weekly / Monthly / Yearly) so \
+the scheduler auto-fills the date range. Remember: the scheduler must \
+be running for Auto Email Reports to fire; Script Reports need roles \
+the scheduler worker holds.
 """.strip(),
 }
 
@@ -204,6 +237,12 @@ _INTENT_GOALS: dict[str, str] = {
 		"`label`, `doctype`, `function`, and (for non-Count) a numeric "
 		"`aggregate_function_based_on`."
 	),
+	"create_auto_email_report": (
+		"Generate an Auto Email Report changeset item that delivers an "
+		"existing Report on the named frequency in the named format, "
+		"with filters (and optional rolling-date window) scoped to "
+		"produce a meaningful recurring payload."
+	),
 }
 
 _INTENT_ROLES: dict[str, str] = {
@@ -211,6 +250,7 @@ _INTENT_ROLES: dict[str, str] = {
 	"create_dashboard": "Frappe Developer - Reports Specialist (Dashboard)",
 	"create_dashboard_chart": "Frappe Developer - Reports Specialist (Dashboard Chart)",
 	"create_number_card": "Frappe Developer - Reports Specialist (Number Card)",
+	"create_auto_email_report": "Frappe Developer - Reports Specialist (Auto Email Report)",
 }
 
 _MODULE_CONTEXT_MARKER = "MODULE CONTEXT"

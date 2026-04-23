@@ -106,6 +106,76 @@
 			"type": "check",
 			"default": 0,
 			"rationale": "Default enabled. Disabled formats are hidden from the Print dialog but kept in the DB for restoration."
+		},
+		{
+			"key": "margin_top",
+			"label": "Top margin (mm)",
+			"type": "int",
+			"default": 15,
+			"rationale": "Page margin in millimetres. Frappe default 15mm fits most business documents. Lower margins (5-10mm) for dense invoices; raise for letterhead-only print formats."
+		},
+		{
+			"key": "margin_bottom",
+			"label": "Bottom margin (mm)",
+			"type": "int",
+			"default": 15,
+			"rationale": "Bottom margin; must accommodate the footer content. Default 15mm."
+		},
+		{
+			"key": "margin_left",
+			"label": "Left margin (mm)",
+			"type": "int",
+			"default": 15,
+			"rationale": "Left margin. Default 15mm. Asymmetric margins (e.g. larger left for binding) are common for printed reports."
+		},
+		{
+			"key": "margin_right",
+			"label": "Right margin (mm)",
+			"type": "int",
+			"default": 15,
+			"rationale": "Right margin. Default 15mm."
+		},
+		{
+			"key": "font",
+			"label": "Google Font name",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional. Names a Google Font to load in the rendered HTML (e.g. 'Inter', 'Roboto'). Empty uses the system default (usually Helvetica / Arial fallback). Not applied when custom_format=1 + print_format_type='Jinja' with inline styling."
+		},
+		{
+			"key": "font_size",
+			"label": "Base font size (pt)",
+			"type": "int",
+			"default": 14,
+			"rationale": "Base point size for body text. Default 14pt. Lower (10-12pt) for dense reports; raise for accessibility."
+		},
+		{
+			"key": "css",
+			"label": "Additional CSS",
+			"type": "text",
+			"default": "",
+			"rationale": "Custom CSS rules appended to the rendered print HTML. Use for brand styling (borders, colours, spacing) that the Jinja template doesn't express inline. Empty for unstyled defaults."
+		},
+		{
+			"key": "align_labels_right",
+			"label": "Right-align field labels",
+			"type": "check",
+			"default": 0,
+			"rationale": "Cosmetic: when 1, field labels align to the right of their columns. Common in RTL layouts and formal letterhead styles."
+		},
+		{
+			"key": "show_section_headings",
+			"label": "Show section break headings",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, Section Break labels render as printed headings. Useful for long documents where section boundaries help readers; noise for short invoices."
+		},
+		{
+			"key": "absolute_value",
+			"label": "Show negatives as positive (for credit notes)",
+			"type": "check",
+			"default": 0,
+			"rationale": "Niche: when 1, negative values in Currency / Quantity / Count fields render as their absolute value. Used on Credit Note / refund print formats where the negativity is implicit in the document type, not shown in the number."
 		}
 	]
 }

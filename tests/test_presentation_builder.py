@@ -17,6 +17,7 @@ def test_presentation_intents_cover_the_family():
 		"create_letter_head",
 		"create_email_template",
 		"create_web_form",
+		"update_print_settings",
 	})
 
 
@@ -90,6 +91,45 @@ def test_build_presentation_agent_rejects_unknown_intent():
 		build_presentation_agent(
 			intent="create_doctype", site_config={}, custom_tools=None,
 		)
+
+
+def test_build_presentation_agent_print_settings_intent():
+	agent = build_presentation_agent(
+		intent="update_print_settings", site_config={}, custom_tools=None,
+	)
+	assert "Print Settings" in agent.role
+	# Singleton semantics must be in backstory
+	assert "SINGLETON" in agent.backstory or "singleton" in agent.backstory.lower()
+
+
+def test_render_checklist_print_settings_lists_every_field():
+	schema = IntentRegistry.load().get("update_print_settings")
+	text = render_registry_checklist(schema, intent="update_print_settings")
+	for key in ("pdf_generator", "with_letterhead", "allow_print_for_draft", "allow_print_for_cancelled"):
+		assert key in text
+
+
+def test_print_format_has_margin_fields():
+	# Regression: margins were missing from the prior registry,
+	# preventing print-quality-sensitive prompts from landing.
+	schema = IntentRegistry.load().get("create_print_format")
+	field_keys = {f["key"] for f in schema["fields"]}
+	assert "margin_top" in field_keys
+	assert "margin_bottom" in field_keys
+	assert "margin_left" in field_keys
+	assert "margin_right" in field_keys
+
+
+def test_web_form_has_seo_and_interlock_fields():
+	schema = IntentRegistry.load().get("create_web_form")
+	field_keys = {f["key"] for f in schema["fields"]}
+	# SEO
+	assert "meta_title" in field_keys
+	assert "meta_description" in field_keys
+	# Portal UX interlocks
+	assert "introduction_text" in field_keys
+	assert "show_list" in field_keys
+	assert "show_sidebar" in field_keys
 
 
 # ── enhance_generate_changeset_description ───────────────────

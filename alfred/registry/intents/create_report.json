@@ -74,6 +74,35 @@
 			"type": "check",
 			"default": 0,
 			"rationale": "Appends a totals row. Silently ignored for Report Builder (depends_on in the JSON form gates it to Query / Script Report). Safe default off."
+		},
+		{
+			"key": "letter_head",
+			"label": "Letter head (for PDF / printed reports)",
+			"type": "link",
+			"link_doctype": "Letter Head",
+			"default": "",
+			"rationale": "Only applicable when is_standard='No'. Names an existing Letter Head whose header / footer wraps PDF / print renders of this report. Auto-nulled at save when is_standard='Yes' - standard reports use the system-wide Print Settings default instead."
+		},
+		{
+			"key": "reference_report",
+			"label": "Reference Report (for Custom Report)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when report_type='Custom Report'. Names the underlying Report Builder report whose filter + doctype config is reused; the Custom Report overrides only the columns. Empty for other report_types."
+		},
+		{
+			"key": "add_translate_data",
+			"label": "Translate data in output",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, report output values pass through the Translation layer at render (useful for Select-option labels, status values). Default 0."
+		},
+		{
+			"key": "timeout",
+			"label": "Prepared report timeout (seconds)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Only meaningful when prepared_report=1. Caps the background job duration; 0 uses the system default (usually 30 minutes). Raise for heavy Script Reports; lower for quick queries that should fail fast."
 		}
 	]
 }

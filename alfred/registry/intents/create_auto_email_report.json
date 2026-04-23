@@ -1,0 +1,94 @@
+{
+	"intent": "create_auto_email_report",
+	"display_name": "Create Auto Email Report (scheduled delivery)",
+	"doctype": "Auto Email Report",
+	"fields": [
+		{
+			"key": "report",
+			"label": "Target Report",
+			"type": "link",
+			"link_doctype": "Report",
+			"required": true
+		},
+		{
+			"key": "email_to",
+			"label": "Recipients (one email per line)",
+			"type": "text",
+			"required": true
+		},
+		{
+			"key": "frequency",
+			"label": "Frequency",
+			"type": "select",
+			"options": ["Daily", "Weekdays", "Weekly", "Monthly"],
+			"default": "Weekly",
+			"rationale": "Weekdays skips Saturday / Sunday. Weekly fires once a week on the day_of_week field. Monthly fires on the day_of_month field (default 1st). Daily fires every day at the site's scheduler tick."
+		},
+		{
+			"key": "day_of_week",
+			"label": "Day of week (Weekly only)",
+			"type": "select",
+			"options": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+			"default": "Monday",
+			"rationale": "Only meaningful when frequency='Weekly'. Default Monday matches the common 'weekly review on Monday morning' convention."
+		},
+		{
+			"key": "format",
+			"label": "Report format",
+			"type": "select",
+			"options": ["HTML", "CSV", "XLSX", "PDF"],
+			"default": "HTML",
+			"rationale": "HTML renders inline in the email body (most accessible). CSV / XLSX attach as files. PDF attaches as PDF - requires the underlying Report to render via a Print Format, which adds a dependency on wkhtmltopdf / chrome."
+		},
+		{
+			"key": "filters",
+			"label": "Report filters (JSON string)",
+			"type": "text",
+			"default": "{}",
+			"rationale": "JSON object of filter values passed to the Report at run time. Example: '{\"status\": \"Overdue\"}' for an Overdue Invoices report. '{}' means run the report with its default filters. The keys must match the Report's declared filters."
+		},
+		{
+			"key": "from_date_field",
+			"label": "Date field for rolling window",
+			"type": "data",
+			"default": "",
+			"rationale": "When set, names a date column in the Report's output. Combined with dynamic_date_filters_based_on, the scheduler auto-fills a rolling window (e.g. last 7 days, last month) so the same Auto Email Report runs sensibly week-over-week without manual filter edits."
+		},
+		{
+			"key": "dynamic_date_filters_based_on",
+			"label": "Rolling window preset",
+			"type": "select",
+			"options": ["", "Daily", "Weekly", "Monthly", "Yearly"],
+			"default": "",
+			"rationale": "Used with from_date_field to auto-compute a rolling date filter. 'Weekly' = last 7 days; 'Monthly' = last month; etc. Empty disables the rolling window (filters stay static)."
+		},
+		{
+			"key": "no_of_rows",
+			"label": "Max rows to include",
+			"type": "int",
+			"default": 100,
+			"rationale": "Caps the number of rows in the email. Large reports become unwieldy in email body; 100 is a reasonable balance. Raise for CSV / XLSX formats where attachment size is the only constraint."
+		},
+		{
+			"key": "send_if_data",
+			"label": "Only send if report has data",
+			"type": "check",
+			"default": 1,
+			"rationale": "Default 1: SILENTLY SUPPRESSES the email when the filtered report has zero rows. Useful for exception reports ('overdue invoices') where no data means no action. Set 0 to always send (confirms the job is alive but clutters inboxes)."
+		},
+		{
+			"key": "description",
+			"label": "Description (included in the email body)",
+			"type": "text",
+			"default": "",
+			"rationale": "Optional intro paragraph rendered above the report output. Jinja-templated over the report context."
+		},
+		{
+			"key": "enabled",
+			"label": "Enabled",
+			"type": "check",
+			"default": 1,
+			"rationale": "Default enabled. Disabled Auto Email Reports remain in the DB but are skipped by the scheduler."
+		}
+	]
+}
