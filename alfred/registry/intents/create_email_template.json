@@ -42,7 +42,7 @@
 			"type": "link",
 			"link_doctype": "DocType",
 			"default": "",
-			"rationale": "Optional. When set, Desk's Jinja editor offers autocomplete for fields on this DocType when editing subject / response. Empty means the template is generic (no autocomplete context). The template still renders correctly at send time regardless."
+			"rationale": "Optional but strongly recommended. When set, Desk's Jinja editor offers autocomplete for fields on this DocType when editing subject / response. It also scopes the template to that DocType for discoverability in the Notification / Email Template picker. Empty means the template is generic. The template still renders correctly at send time regardless, but downstream users have to remember which DocType's fields to reference."
 		}
 	]
 }

@@ -472,6 +472,7 @@ _SUPPORTED_INTENTS: tuple[str, ...] = (
 	"create_letter_head",
 	"create_email_template",
 	"create_web_form",
+	"update_print_settings",
 )
 
 # Heuristic substring matches (lowercased prompt). Order matters: more
@@ -696,6 +697,18 @@ _HEURISTIC_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
 		"external form",
 		"form on the website",
 		"form on the portal",
+	),
+	"update_print_settings": (
+		"print settings",
+		"site print config",
+		"site-wide print",
+		"change pdf generator",
+		"switch pdf generator",
+		"enable print for draft",
+		"allow print for draft",
+		"allow print for cancelled",
+		"allow print cancelled",
+		"enable raw printing",
 	),
 }
 

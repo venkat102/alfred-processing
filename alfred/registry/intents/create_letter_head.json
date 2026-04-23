@@ -67,6 +67,63 @@
 			"type": "check",
 			"default": 0,
 			"rationale": "Default enabled. Disabled letter heads are hidden from Print Format dropdowns. Cannot be combined with is_default=1."
+		},
+		{
+			"key": "image_height",
+			"label": "Header image height (px, when source=Image)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Only meaningful when source=Image. Constrains the image's height; leaving 0 preserves native dimensions. Used together with image_width to scale the image proportionally - set ONE (not both) to avoid distortion; the controller scales the other dimension to maintain aspect ratio."
+		},
+		{
+			"key": "image_width",
+			"label": "Header image width (px, when source=Image)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Only meaningful when source=Image. Constrains the image's width. Set either image_height OR image_width (not both) to scale proportionally. 0 preserves native width."
+		},
+		{
+			"key": "footer_image",
+			"label": "Footer image (when footer_source=Image)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when footer_source=Image. Attach Image file path. Auto-converted to <img> HTML in the footer field at validate time, same as the header image path."
+		},
+		{
+			"key": "footer_image_height",
+			"label": "Footer image height (px)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Only meaningful when footer_source=Image. 0 preserves native height; set either height or width to scale proportionally."
+		},
+		{
+			"key": "footer_image_width",
+			"label": "Footer image width (px)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Only meaningful when footer_source=Image. 0 preserves native width."
+		},
+		{
+			"key": "footer_align",
+			"label": "Footer alignment",
+			"type": "select",
+			"options": ["Left", "Center", "Right"],
+			"default": "Left",
+			"rationale": "Independent of header align. Default Left matches legal / bank-detail footer conventions; Center for 'page N of M' style centred footers."
+		},
+		{
+			"key": "header_script",
+			"label": "Header script (advanced JS)",
+			"type": "text",
+			"default": "",
+			"rationale": "Advanced: JavaScript executed during print render to mutate the header at print time (date / page number injection). Only for users who know the print-render lifecycle. Empty for static headers."
+		},
+		{
+			"key": "footer_script",
+			"label": "Footer script (advanced JS)",
+			"type": "text",
+			"default": "",
+			"rationale": "Same as header_script but scoped to the footer. Typical use: injecting the current page number / total pages via rendered JS."
 		}
 	]
 }

@@ -32,6 +32,7 @@ PRESENTATION_INTENTS: frozenset[str] = frozenset({
 	"create_letter_head",
 	"create_email_template",
 	"create_web_form",
+	"update_print_settings",
 })
 
 _PRESENTATION_BASE_BACKSTORY = """
@@ -75,6 +76,15 @@ there can be read, written, or submitted via the web form - other \
 fields on the underlying DocType are IGNORED even when the submitter \
 is an admin browsing the public route. No error is raised on \
 unlisted-field submissions; the server silently drops them.
+- Print Settings is a SINGLETON DocType (issingle=1). There is exactly \
+ONE Print Settings record per site, and the intent is UPDATE, not \
+create. The changeset item MUST use op='update' and target the \
+document name 'Print Settings' (not a new identifier). Settings are \
+site-wide defaults; individual Print Formats can override with_letterhead \
+and letter_head on their own row. The pdf_generator choice is a \
+site-wide trade-off: wkhtmltopdf is faster and more-tested but lacks \
+modern CSS support; chrome renders flexbox / grid / web fonts but is \
+slower and needs a heavier runtime dependency.
 - Web Form has a LOGIN INTERLOCK: login_required=1 unlocks allow_edit, \
 allow_multiple, allow_delete, allow_comments, allow_print, \
 show_attachments, show_list. Setting those flags with login_required=0 \
@@ -160,6 +170,23 @@ many rows; `allow_edit=1` lets them edit their own. Respect the \
 target DocType's permlevel on fields - high-permlevel fields leak \
 via a public form only if explicitly listed in web_form_fields.
 """.strip(),
+
+	"update_print_settings": """
+Your current task is to UPDATE PRINT SETTINGS - a SINGLETON Frappe \
+DocType that holds site-wide print configuration. The changeset item \
+MUST use op='update' and target the document name 'Print Settings' - \
+this is NOT a create operation because issingle=1 means the site has \
+exactly one Print Settings record already. Pick only the fields the \
+user explicitly asked to change; leave every other field out of the \
+changeset so their current values stay as-is. Key trade-offs: \
+pdf_generator='wkhtmltopdf' is the default and the most-tested path; \
+switch to 'chrome' only when a specific print format needs modern CSS \
+(flexbox / grid / web fonts) and you've accepted the slower render + \
+heavier runtime dependency. allow_print_for_draft=0 and \
+allow_print_for_cancelled=0 are audit-discipline levers. raw_printing=1 \
+requires a configured print_server - leave off unless the deployment \
+has a network print server listening.
+""".strip(),
 }
 
 _INTENT_GOALS: dict[str, str] = {
@@ -182,6 +209,11 @@ _INTENT_GOALS: dict[str, str] = {
 		"login_required, and a route that doesn't collide with an "
 		"existing site URL."
 	),
+	"update_print_settings": (
+		"Generate an UPDATE changeset item targeting the singleton "
+		"'Print Settings' document with only the site-wide fields the "
+		"user asked to change."
+	),
 }
 
 _INTENT_ROLES: dict[str, str] = {
@@ -189,6 +221,7 @@ _INTENT_ROLES: dict[str, str] = {
 	"create_letter_head": "Frappe Developer - Presentation Specialist (Letter Head)",
 	"create_email_template": "Frappe Developer - Presentation Specialist (Email Template)",
 	"create_web_form": "Frappe Developer - Presentation Specialist (Web Form)",
+	"update_print_settings": "Frappe Developer - Presentation Specialist (Print Settings)",
 }
 
 _MODULE_CONTEXT_MARKER = "MODULE CONTEXT"

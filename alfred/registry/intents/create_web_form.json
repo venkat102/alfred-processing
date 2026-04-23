@@ -118,6 +118,126 @@
 			"type": "check",
 			"default": 0,
 			"rationale": "Only takes effect when login_required=1. Adds a comments section to submitted records for the logged-in user."
+		},
+		{
+			"key": "introduction_text",
+			"label": "Form preamble (HTML)",
+			"type": "text",
+			"default": "",
+			"rationale": "HTML rendered ABOVE the form fields. Use for instructions, legal disclaimers, or privacy notices. Empty for bare-form layouts."
+		},
+		{
+			"key": "show_list",
+			"label": "Show list of prior submissions (login_required)",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only takes effect when login_required=1 AND allow_multiple=1. When 1, the portal shows a list view of the user's prior submissions on the form route. Empty disables the list (one-form-one-submission UX)."
+		},
+		{
+			"key": "list_title",
+			"label": "List view title (when show_list=1)",
+			"type": "data",
+			"default": "",
+			"rationale": "Heading for the prior-submissions list. Empty falls back to the Web Form title."
+		},
+		{
+			"key": "list_columns",
+			"label": "List columns (list of {fieldname, label})",
+			"type": "text",
+			"default": "",
+			"rationale": "Columns shown in the prior-submissions list. Each row is {fieldname, label}. Empty shows a default [name, modified] column set."
+		},
+		{
+			"key": "show_sidebar",
+			"label": "Show portal sidebar",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, renders a sidebar from website_sidebar alongside the form. Used on heavily branded portals. Default off (clean single-column layout)."
+		},
+		{
+			"key": "website_sidebar",
+			"label": "Sidebar definition (when show_sidebar=1)",
+			"type": "link",
+			"link_doctype": "Website Sidebar",
+			"default": "",
+			"rationale": "Names an existing Website Sidebar. Required when show_sidebar=1."
+		},
+		{
+			"key": "breadcrumbs",
+			"label": "Breadcrumbs (JSON list of {label, route})",
+			"type": "text",
+			"default": "",
+			"rationale": "JSON list defining the breadcrumb trail shown at the top of the form page. Empty uses the default (Home -> Form Title)."
+		},
+		{
+			"key": "success_title",
+			"label": "Success page title",
+			"type": "data",
+			"default": "",
+			"rationale": "Heading on the success page. Empty falls back to 'Thank you'. Only shown when success_url is not set."
+		},
+		{
+			"key": "banner_image",
+			"label": "Banner image (hero graphic)",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional hero image rendered at the top of the form. Attach Image path. Empty for text-only form pages."
+		},
+		{
+			"key": "meta_title",
+			"label": "SEO meta title",
+			"type": "data",
+			"default": "",
+			"rationale": "Title tag on the form's public page. For SEO and social-share cards. Empty falls back to the Web Form title."
+		},
+		{
+			"key": "meta_description",
+			"label": "SEO meta description",
+			"type": "text",
+			"default": "",
+			"rationale": "Meta description for search engines and social shares. Empty uses introduction_text as the fallback description."
+		},
+		{
+			"key": "meta_image",
+			"label": "SEO meta image (social card)",
+			"type": "data",
+			"default": "",
+			"rationale": "Image used in social-share cards (og:image). Attach Image path. Empty uses the site's default meta image."
+		},
+		{
+			"key": "custom_css",
+			"label": "Custom CSS",
+			"type": "text",
+			"default": "",
+			"rationale": "CSS scoped to the form page. Use for brand styling the default Web Form theme doesn't cover."
+		},
+		{
+			"key": "client_script",
+			"label": "Client script (JS)",
+			"type": "text",
+			"default": "",
+			"rationale": "JavaScript executed in the public form page. Use for client-side validations, field-change handlers, payment-gateway integrations. Runs in the browser sandbox - not RestrictedPython."
+		},
+		{
+			"key": "hide_navbar",
+			"label": "Hide site navbar",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, the site-wide navbar is hidden on this form page. Useful for standalone / kiosk / embedded forms where site chrome distracts from the form."
+		},
+		{
+			"key": "hide_footer",
+			"label": "Hide site footer",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, the site-wide footer is hidden. Often paired with hide_navbar=1 for bare-page forms."
+		},
+		{
+			"key": "allowed_embedding_domains",
+			"label": "Iframe embedding allow-list",
+			"type": "text",
+			"default": "",
+			"rationale": "One domain per line. When set, sets the Content-Security-Policy frame-ancestors header so the form can be iframe-embedded on listed domains (example.com, partner.com). Empty disallows iframe embedding entirely."
 		}
 	]
 }
