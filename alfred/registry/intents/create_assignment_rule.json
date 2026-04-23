@@ -1,0 +1,97 @@
+{
+	"intent": "create_assignment_rule",
+	"display_name": "Create Assignment Rule (document routing)",
+	"doctype": "Assignment Rule",
+	"fields": [
+		{
+			"key": "name",
+			"label": "Rule name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "document_type",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "priority",
+			"label": "Priority (lower numbers win)",
+			"type": "int",
+			"default": 0,
+			"rationale": "When multiple Assignment Rules match a document, the one with LOWEST priority wins. Default 0 puts the rule at the top of the stack; raise to let other rules take precedence. Duplicate priorities are tie-broken by creation order."
+		},
+		{
+			"key": "rule",
+			"label": "Assignment strategy",
+			"type": "select",
+			"options": ["Round Robin", "Load Balancing", "Based on Field"],
+			"default": "Round Robin",
+			"rationale": "Round Robin cycles through the users list for each match (balanced assignment, ignores current load). Load Balancing picks the user with the FEWEST open assignments on the target DocType (better for support queues). Based on Field maps the target doc's field value to a specific user (deterministic routing by territory / department / etc.)."
+		},
+		{
+			"key": "field",
+			"label": "Field to route on (when rule='Based on Field')",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when rule='Based on Field'. Names a Link-to-User field on the target DocType. The document is assigned to whoever that field names. Empty for Round Robin / Load Balancing."
+		},
+		{
+			"key": "assign_condition",
+			"label": "Assign condition (Python expression)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required for the rule to fire at all. Python expression evaluated on the target doc; assignment fires only when truthy. Example: `doc.status == 'Open' and doc.priority == 'High'`. Empty means no rule fires - the controller rejects saves without a condition."
+		},
+		{
+			"key": "unassign_condition",
+			"label": "Unassign condition (Python expression)",
+			"type": "text",
+			"default": "",
+			"rationale": "Optional. When truthy, the document is UNASSIGNED from whoever holds it (ToDo is removed). Useful for 'move back to the queue when status changes' flows. Empty means assignments stick until manually removed or closed."
+		},
+		{
+			"key": "close_condition",
+			"label": "Close condition (Python expression)",
+			"type": "text",
+			"default": "",
+			"rationale": "Optional. When truthy, the ToDo is marked CLOSED (not deleted). Example: `doc.status == 'Completed'`. Empty means ToDos stay open until manually closed."
+		},
+		{
+			"key": "users",
+			"label": "Candidate users (list of User rows)",
+			"type": "text",
+			"required": true
+		},
+		{
+			"key": "due_date_based_on",
+			"label": "Date field for ToDo due date",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional. Names a Date / Datetime field on the target DocType; each ToDo's due date is set to that field's value. Must be a real date field or ToDos are created with no due date."
+		},
+		{
+			"key": "assignment_days",
+			"label": "Eligible days (list of {day})",
+			"type": "text",
+			"default": "",
+			"rationale": "Optional. List of days of the week when a user is eligible for assignment. Used to skip users who are on time-off. Empty means every user is eligible every day."
+		},
+		{
+			"key": "description",
+			"label": "Description (for ToDo body)",
+			"type": "text",
+			"default": "",
+			"rationale": "Optional. Description appended to each generated ToDo. Empty falls back to a default 'Assigned via <rule name>'."
+		},
+		{
+			"key": "disabled",
+			"label": "Disabled",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default enabled. Disabled rules stay in the DB but don't fire."
+		}
+	]
+}

@@ -106,6 +106,28 @@
 			"type": "check",
 			"default": 0,
 			"rationale": "Default enabled. Disabled Scheduler Event scripts stop the underlying Scheduled Job Type; disabled DocType Event scripts skip the hook silently. Use for staging or emergency kill-switch."
+		},
+		{
+			"key": "rate_limit_count",
+			"label": "Rate-limit request count (API only, when enable_rate_limit=1)",
+			"type": "int",
+			"default": 5,
+			"rationale": "Only meaningful when script_type=API and enable_rate_limit=1. Caps requests per caller to this many per rate_limit_seconds window. Default 5 is conservative."
+		},
+		{
+			"key": "rate_limit_seconds",
+			"label": "Rate-limit window (seconds)",
+			"type": "int",
+			"default": 86400,
+			"rationale": "Only meaningful when enable_rate_limit=1. Window size; default 86400 = 24 hours. Shorten for more aggressive per-hour / per-minute limits."
+		},
+		{
+			"key": "module",
+			"label": "Module (required when is_standard=1)",
+			"type": "link",
+			"link_doctype": "Module Def",
+			"default": "",
+			"rationale": "Required when is_standard=1 (standard Server Scripts live in an app's filesystem). Empty for site-local scripts (the common case)."
 		}
 	]
 }

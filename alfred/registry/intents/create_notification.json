@@ -120,6 +120,93 @@
 			"type": "check",
 			"default": 0,
 			"rationale": "When 1, creates a Notification Log entry even if channel is Email / Slack / SMS. Useful when you want both an email AND a Desk notification bell alert."
+		},
+		{
+			"key": "is_standard",
+			"label": "Standard (developer_mode / versioned)",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default 0 (site-local, DB-only). Setting 1 requires developer_mode, writes the Notification to an app's filesystem, and rejects enabled=1 outside developer_mode. Flip only when shipping the notification in an app."
+		},
+		{
+			"key": "sender",
+			"label": "Sender (Email Account)",
+			"type": "link",
+			"link_doctype": "Email Account",
+			"default": "",
+			"rationale": "Only meaningful for channel='Email'. Names an Email Account whose identity is used as the From. Empty uses the default outgoing Email Account."
+		},
+		{
+			"key": "datetime_changed",
+			"label": "Datetime field (for Minutes After / Before)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when event is 'Minutes After' or 'Minutes Before'. Names a Datetime field on the target DocType. Empty for other events."
+		},
+		{
+			"key": "minutes_offset",
+			"label": "Minutes offset (Minutes After / Before only)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Required when event is 'Minutes After' or 'Minutes Before'. Controller REJECTS values < 10 because the scheduler tick is coarser than a few minutes. Default 0 is invalid for those events - specialists must supply >= 10."
+		},
+		{
+			"key": "filters",
+			"label": "Filters JSON (when condition_type=Filters)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required when condition_type='Filters'. JSON list of Frappe filter triples. The Notification fires only for documents matching these filters (evaluate_filters on the live doc). Switching condition_type back to Python clears this field on save."
+		},
+		{
+			"key": "attach_print",
+			"label": "Attach rendered print format to email",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only meaningful for channel='Email'. When 1, the Notification attaches a PDF render of the target document using print_format. Default 0 (no attachment)."
+		},
+		{
+			"key": "print_format",
+			"label": "Print Format (when attach_print=1)",
+			"type": "link",
+			"link_doctype": "Print Format",
+			"default": "",
+			"rationale": "Required when attach_print=1. Names an existing Print Format for the target DocType. Empty uses Frappe's standard print format for that DocType."
+		},
+		{
+			"key": "attach_files",
+			"label": "Attach File DocType rows",
+			"type": "select",
+			"options": ["", "From Field", "All"],
+			"default": "",
+			"rationale": "Only meaningful for channel='Email'. 'All' attaches every File attached to the target document; 'From Field' attaches only the File named by from_attach_field. Empty for no attachments."
+		},
+		{
+			"key": "from_attach_field",
+			"label": "Field holding a File link (when attach_files='From Field')",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when attach_files='From Field'. Names an Attach / Link-to-File field on the target DocType. Empty for other attach_files modes."
+		},
+		{
+			"key": "send_to_all_assignees",
+			"label": "Send to all assignees of the document",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, recipients are resolved dynamically from the document's ToDo assignments (via _assign). Makes recipients optional (if send_to_all_assignees=1, empty recipients is accepted). Default 0."
+		},
+		{
+			"key": "set_property_after_alert",
+			"label": "Field to auto-update after sending",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional. Names a field on the target document to update AFTER the notification fires. Paired with property_value. Respects allow_on_submit - cannot update non-allow_on_submit fields on already-submitted documents."
+		},
+		{
+			"key": "property_value",
+			"label": "Value to set (paired with set_property_after_alert)",
+			"type": "data",
+			"default": "",
+			"rationale": "The new value for set_property_after_alert. Plain string; no Jinja. Empty pairs with empty set_property_after_alert (no post-alert update)."
 		}
 	]
 }

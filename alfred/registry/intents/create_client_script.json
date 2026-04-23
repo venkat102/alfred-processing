@@ -37,6 +37,14 @@
 			"type": "check",
 			"default": 1,
 			"rationale": "Default enabled. Disabled scripts are still stored and loaded into the bundle - the check is at execution time; rely on this for staging but not for security."
+		},
+		{
+			"key": "module",
+			"label": "Module (for standard / versioned scripts)",
+			"type": "link",
+			"link_doctype": "Module Def",
+			"default": "",
+			"rationale": "Optional. When set, the Client Script is associated with a Frappe module (useful for app-shipped scripts). Empty for site-local scripts (the common case)."
 		}
 	]
 }
