@@ -2,35 +2,71 @@
 	"module": "crm",
 	"display_name": "CRM",
 	"frappe_module_key": "CRM",
-	"backstory": "You are the Alfred ERPNext CRM domain authority. You know Lead / Opportunity / Contract / Appointment / Communication conventions. You know CRM sits pre-sale: the lifecycle runs Lead -> Opportunity -> Quotation (Selling) -> Sales Order (Selling), and each stage carries a status field rather than a docstatus submit/cancel. Leads are not submittable - their lifecycle runs through status transitions (Open -> Interested -> Converted -> Do Not Contact). Opportunities link back to their source Lead and forward to the Quotation they generated. You know Communication is the canonical log of touchpoints (email, call, meeting) linked back to Lead / Opportunity / Customer via reference_doctype + reference_name. You catch anti-patterns: Leads without a source or campaign tag, Opportunities missing expected_closing and probability, ad-hoc notes on the Lead description instead of Communication records, Contracts without a valid Customer or Supplier party, hardcoding stage probabilities rather than deriving from the Opportunity Stage DocType.",
+	"backstory": "You are the Alfred ERPNext CRM domain authority. You know Lead / Opportunity / Contract / Appointment / Communication / Campaign / Competitor / CRM Settings / Prospect conventions. You know the full pre-sale lifecycle introduced in ERPNext v15+: Prospect -> Prospect Lead -> Lead -> Opportunity -> Quotation (Selling) -> Sales Order (Selling). Prospect is a pre-Lead entity that aggregates targeting intent; Prospect Lead rows link a Prospect to individual Leads as the targeting converts. You know CRM runs on status fields, not docstatus submit/cancel - Leads / Opportunities are not submittable; their lifecycle is status transitions (Open -> Interested -> Converted -> Do Not Contact for Lead; Open -> Quotation -> Converted -> Lost -> Replied for Opportunity). You know Opportunity.opportunity_from is a Select with values 'Lead' / 'Customer' / 'Prospect'; when 'Lead', the lead Link must be set; when 'Customer', the customer Link must be set. You know Lead.converted_to_customer sets a customer Link when status='Converted'. You know Communication is the canonical touchpoint log (email / call / meeting / chat) linked to any CRM doc via reference_doctype + reference_name - prefer it over freetext notes. You know Campaign drives funnel attribution (Lead.campaign_name), and Email Campaign schedules nurture emails via Campaign Email Schedule rows. You know Competitor is a named competitor record linked to Opportunity.competitors child rows for lost-deal analysis. You know Sales Stage + Opportunity Type are the v14+ pipeline-stage containers that replace ad-hoc stage strings. You catch anti-patterns: Leads without a source or campaign tag; Opportunities missing expected_closing and probability; ad-hoc notes on Lead description instead of Communication; Contracts without a valid party; hardcoded stage probabilities instead of Opportunity Stage.",
 	"conventions": {
 		"permissions_add_roles": [
 			{"role": "Sales Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
 			{"role": "Sales User", "read": 1, "write": 1, "create": 1, "delete": 0},
 			{"role": "Sales Master Manager", "read": 1, "write": 1, "create": 1, "delete": 0}
 		],
-		"naming_patterns": ["format:CRM-.YYYY.-.#####"],
-		"typical_linked_doctypes": ["Lead", "Opportunity", "Customer", "Contact", "Campaign", "Communication"],
+		"naming_patterns": [
+			"format:CRM-LEAD-.YYYY.-.#####",
+			"format:CRM-OPP-.YYYY.-.#####",
+			"format:CRM-PRO-.YYYY.-.#####"
+		],
+		"typical_linked_doctypes": [
+			"Lead", "Opportunity", "Prospect", "Customer", "Contact", "Address",
+			"Campaign", "Communication", "Competitor",
+			"Sales Stage", "Opportunity Type", "Lead Source",
+			"Market Segment", "Industry Type",
+			"Appointment", "Contract"
+		],
 		"required_hooks_for_submittable": [],
 		"gotchas": [
-			"CRM runs on status fields, not docstatus submit/cancel. Submittable CRM DocTypes are rare and almost always an anti-pattern.",
-			"Every Lead should have a source (Campaign, Existing Customer, Walk In, Reference) - attribution drives funnel analytics.",
-			"Communication is the canonical touchpoint log - store emails / calls / meetings there linked via reference_doctype + reference_name, not as freetext notes on the Lead.",
-			"Contracts bind to either a Customer or a Supplier via party_type + party - both party fields are required for signed agreements."
+			"CRM runs on STATUS fields, not docstatus submit/cancel. Submittable CRM DocTypes are rare and almost always an anti-pattern.",
+			"Prospect lifecycle (v15+): Prospect -> Prospect Lead (1:N) -> Lead -> Opportunity -> Customer. Earlier versions started at Lead directly; new Alfred-backed customisations should respect the full chain.",
+			"Opportunity.opportunity_from='Lead' requires lead Link to be set; opportunity_from='Customer' requires customer Link; opportunity_from='Prospect' requires prospect Link. The controller validates consistency at save.",
+			"Lead.status='Converted' requires converted_to_customer (the customer Link). Setting status to Converted without that link is silently accepted but breaks funnel analytics.",
+			"Communication is the canonical touchpoint log - reference_doctype + reference_name link it to any CRM doc. Prefer it over freetext notes on the Lead description.",
+			"Contracts bind to either a Customer or a Supplier via party_type + party. Both fields required; contract.py validates at save.",
+			"Campaign email schedule: Campaign Email Schedule rows fire on the scheduled send_at datetime. Bulk sends respect the site's email queue throttle.",
+			"Opportunity Stage + Sales Stage are the pipeline-stage containers. Hard-coding string stages on Opportunity ('Qualification' / 'Proposal') breaks reporting - always link to Sales Stage.",
+			"Competitors: Opportunity.competitors is a child table of Competitor links; used for lost-deal analysis via Opportunity Lost Reason = 'Competitor'."
 		]
 	},
 	"validation_rules": [
 		{
+			"id": "crm_lead_converted_needs_customer",
+			"severity": "blocker",
+			"when": {"doctype": "Lead", "data.status": "Converted"},
+			"message": "Lead with status='Converted' MUST have converted_to_customer set (the customer Link). Without it, funnel analytics fail to trace the Lead -> Customer conversion.",
+			"fix": "Set data.converted_to_customer to the Customer record the Lead became, or revert status to 'Open' / 'Interested' until the Customer is created."
+		},
+		{
+			"id": "crm_opportunity_from_lead_needs_lead_link",
+			"severity": "blocker",
+			"when": {"doctype": "Opportunity", "data.opportunity_from": "Lead"},
+			"message": "Opportunity with opportunity_from='Lead' REQUIRES the lead Link. Without it, Opportunity traceability back to the source Lead breaks.",
+			"fix": "Set data.lead to the source Lead record, or change opportunity_from to 'Customer' / 'Prospect' with the appropriate Link set instead."
+		},
+		{
+			"id": "crm_opportunity_from_customer_needs_customer_link",
+			"severity": "blocker",
+			"when": {"doctype": "Opportunity", "data.opportunity_from": "Customer"},
+			"message": "Opportunity with opportunity_from='Customer' REQUIRES the customer Link.",
+			"fix": "Set data.customer or switch opportunity_from to the appropriate source type."
+		},
+		{
 			"id": "crm_submittable_is_unusual",
 			"severity": "warning",
-			"when": {"doctype": "DocType", "data.is_submittable": 1},
+			"when": {"doctype": "DocType", "data.is_submittable": 1, "data.module": "CRM"},
 			"message": "Submittable DocTypes in CRM are unusual - CRM runs on status fields (Open / Converted / Closed) rather than docstatus submit/cancel. Double-check the lifecycle need.",
-			"fix": "Consider modeling the lifecycle with a status field + Workflow on a non-submittable DocType unless there's a clear reason to use docstatus."
+			"fix": "Consider modelling the lifecycle with a status field + Workflow on a non-submittable DocType unless there's a clear reason to use docstatus."
 		},
 		{
 			"id": "crm_needs_sales_manager_perm",
 			"severity": "advisory",
-			"when": {"doctype": "DocType"},
+			"when": {"doctype": "DocType", "data.module": "CRM"},
 			"message": "CRM DocTypes share the Selling permission model (Sales Manager, Sales User, Sales Master Manager).",
 			"fix": "Add Sales Manager (full), Sales User (no delete), and Sales Master Manager (no delete) rows to permissions."
 		}
@@ -39,15 +75,24 @@
 		"target_doctype_matches": [
 			"Lead", "Lead Source",
 			"Opportunity", "Opportunity Item", "Opportunity Lost Reason",
+			"Prospect", "Prospect Lead", "Prospect Opportunity",
 			"Contract", "Contract Template", "Contract Fulfilment Checklist Item",
 			"Appointment", "Appointment Booking Settings",
-			"Communication", "Campaign", "Campaign Email Schedule"
+			"Communication", "Campaign", "Campaign Email Schedule",
+			"Competitor", "Competitor Detail",
+			"Sales Stage", "Opportunity Type",
+			"Market Segment", "Industry Type",
+			"CRM Settings", "Email Campaign", "Communication Medium"
 		],
 		"keyword_hints": [
-			"lead source", "sales funnel", "opportunity stage",
+			"lead", "lead source", "sales funnel", "opportunity stage",
 			"expected closing", "deal owner", "campaign email",
 			"contract template", "appointment booking",
-			"communication log", "touchpoint"
+			"communication log", "touchpoint",
+			"prospect", "prospect lead", "prospecting",
+			"competitor", "sales stage", "opportunity type",
+			"market segment", "industry type",
+			"crm settings", "email campaign"
 		]
 	}
 }

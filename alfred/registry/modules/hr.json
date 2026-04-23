@@ -2,51 +2,130 @@
 	"module": "hr",
 	"display_name": "HR",
 	"frappe_module_key": "HR",
-	"backstory": "You are the Alfred ERPNext HR domain authority. You know Employee / Department / Designation / Branch / Employee Grade / Leave Application / Leave Allocation / Attendance / Shift conventions. You know approval chains run through Workflow with explicit states and per-state roles (Employee, Leave Approver, HR User, HR Manager). You know HR DocTypes are rarely submittable in the Accounts sense - their lifecycle runs through Workflow state transitions, not docstatus. You know PII: personal details (gender, date of birth, marital status, national IDs) need restricted permissions. You catch anti-patterns: hardcoding leave balance without Leave Allocation records, bypassing Leave Approver roles, putting Employee link fields on arbitrary DocTypes without understanding reporting-to chains, mixing attendance ingestion with payroll computation.",
+	"backstory": "You are the Alfred HRMS (Human Resources) domain authority. Note: HR lives in the HRMS app (`hrms/hrms/hr/`), NOT in erpnext - some installations run HRMS standalone. You know Employee / Department / Designation / Branch / Employee Grade / Leave Application / Leave Allocation / Leave Ledger Entry / Attendance / Attendance Request / Employee Checkin / Shift Type / Shift Assignment / Holiday List / Appraisal / Training Event / Employee Onboarding / Employee Separation / Exit Interview conventions. You know approval chains run through Workflow with explicit states and per-state roles (Employee, Leave Approver, HR User, HR Manager, Shift Manager). You know HR has a few key submittable DocTypes (Leave Application, Leave Allocation, Attendance, Shift Assignment, Appraisal) - these DO use docstatus for approval, not plain status fields. You know Leave balances DERIVE from Leave Allocation + Leave Ledger Entry records: Leave Allocation adds to the balance, Leave Application consumes it. Leave Ledger Entry is the per-transaction ledger that calculates live balance via sum of credit - debit. Never hardcode a balance field on Employee. You know Attendance can be auto-created from Employee Checkin via the Shift Type + Shift Assignment - the scheduler job marks Attendance entries based on checkin/checkout pairs. You know Shift Assignment precedence: most-recent overlapping assignment wins when an Employee has multiple Shift Assignments for the same date range. You know Employee has a state machine (Active / Inactive / Left / Suspended); transitions affect downstream payroll (Left employees are excluded from new Salary Slips) and leave (Suspended employees cannot submit Leave Applications). You know reports_to builds an org-chart hierarchy used by Leave Approver defaults and by the Employee Grievance approval chain. You know PII fields (national_id, bank details, emergency contacts, dependents) use permlevel gating so only HR Manager can read/write them. Anti-patterns: hardcoding leave balance without Leave Allocation; bypassing Leave Approver roles; putting Employee link fields on arbitrary DocTypes without honouring reports_to; mixing attendance ingestion (Checkin) with payroll computation (Salary Slip).",
 	"conventions": {
 		"permissions_add_roles": [
 			{"role": "HR Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
 			{"role": "HR User", "read": 1, "write": 1, "create": 1, "delete": 0},
-			{"role": "Employee", "read": 1, "write": 0, "create": 0, "delete": 0}
+			{"role": "Employee", "read": 1, "write": 0, "create": 0, "delete": 0},
+			{"role": "Leave Approver", "read": 1, "write": 1, "create": 0, "delete": 0},
+			{"role": "Shift Manager", "read": 1, "write": 1, "create": 1, "delete": 0}
 		],
-		"naming_patterns": ["format:HR-.#####"],
-		"typical_linked_doctypes": ["Employee", "Department", "Designation", "Leave Type", "Holiday List"],
-		"required_hooks_for_submittable": [],
+		"naming_patterns": [
+			"format:HR-EMP-.#####",
+			"format:HR-LAP-.YYYY.-.#####",
+			"format:HR-LAL-.YYYY.-.#####",
+			"format:HR-ATT-.YYYY.-.#####",
+			"format:HR-SHF-.YYYY.-.#####",
+			"format:HR-APR-.YYYY.-.#####"
+		],
+		"typical_linked_doctypes": [
+			"Employee", "Department", "Designation", "Branch", "Employee Grade",
+			"Leave Type", "Leave Period", "Leave Policy", "Leave Allocation",
+			"Leave Application", "Leave Ledger Entry", "Leave Adjustment",
+			"Attendance", "Attendance Request", "Employee Checkin",
+			"Shift Type", "Shift Assignment", "Shift Request",
+			"Holiday List", "Holiday List Assignment",
+			"Appraisal", "Appraisal Template", "Appraisal KRA",
+			"Training Event", "Training Program", "Training Feedback", "Training Result",
+			"Employee Onboarding", "Employee Separation", "Employee Transfer",
+			"Employee Promotion", "Employee Referral", "Employee Grievance", "Exit Interview",
+			"Skill", "Skill Assessment", "Employee Skill", "Employee Skill Map",
+			"Daily Work Summary"
+		],
+		"required_hooks_for_submittable": [
+			"on_submit_create_leave_ledger_entry_for_Leave_Application",
+			"on_submit_create_leave_ledger_entry_for_Leave_Allocation",
+			"on_submit_update_employee_shift_state_for_Shift_Assignment",
+			"on_submit_compute_appraisal_score_for_Appraisal"
+		],
 		"gotchas": [
-			"HR approval chains belong in Workflow, not docstatus. A submittable HR DocType is the exception, not the rule.",
-			"Employee link fields should respect the reports_to hierarchy - don't let a subordinate approve their own manager.",
-			"PII fields (national IDs, bank details, emergency contact) need explicit permission gating, usually via permlevel.",
-			"Leave balances must derive from Leave Allocation + Leave Application records. Do not hardcode a balance field on Employee."
+			"Leave balance DERIVES from Leave Allocation + Leave Ledger Entry. Leave Allocation adds credit; Leave Application submission debits. The balance at any point = sum(Leave Ledger credit) - sum(Leave Ledger debit). NEVER hardcode a balance on Employee.",
+			"Attendance auto-create from Checkin: when Shift Type.enable_auto_attendance=1, a scheduler job (process_auto_attendance) creates Attendance rows from Employee Checkin pairs, honouring Shift Assignment precedence.",
+			"Shift Assignment precedence: when multiple Shift Assignments overlap a date range, the most-recently-inserted assignment wins. Stale Shift Assignments left un-cancelled break payroll and attendance.",
+			"Employee state machine: Active / Inactive / Left / Suspended. Left employees are excluded from new Salary Slip generation; Suspended employees cannot submit Leave Applications. State transitions should go through Workflow when the org has explicit approval chains.",
+			"Leave Application validation: period_from > period_to raises OverlapError at validate. Overlapping existing Leave Applications on the same employee also raise OverlapError.",
+			"Leave Application without Leave Approver set fails when the Leave Type carries require_approval=1. Approvers default from Employee.leave_approver (set manually) or reports_to (if leave_approver is empty).",
+			"Appraisal uses KRAs (Key Result Areas) from Appraisal Template; per-KRA scoring weights sum to 100. Score aggregation is weighted average.",
+			"PII fields (national_id, bank details, emergency contacts, dependents) use permlevel gating. HR Manager reads/writes permlevel 1; HR User and Employee see permlevel 0 only.",
+			"Training Event / Training Program / Training Feedback / Training Result form a training workflow: Event schedules, Program groups events, Feedback collects attendee input, Result records test/assessment outcomes.",
+			"Employee Onboarding + Employee Separation are checklist-driven Workflows (not submittable docs). Each generates Tasks that HR works through.",
+			"Daily Work Summary is the daily digest email Employees send to their manager; it's a Workflow-based DocType, not submittable.",
+			"Exit Interview is a one-to-one Employee + HR User record for departing staff; drives Employee.status='Left' transition."
 		]
 	},
 	"validation_rules": [
 		{
-			"id": "hr_submittable_is_unusual",
+			"id": "hr_leave_application_period_order",
+			"severity": "blocker",
+			"when": {"doctype": "Leave Application"},
+			"message": "Leave Application with from_date > to_date raises OverlapError at validate. The controller requires from_date <= to_date.",
+			"fix": "Swap from_date and to_date so from_date <= to_date, or verify the dates reflect a valid leave span."
+		},
+		{
+			"id": "hr_leave_application_needs_approver",
+			"severity": "blocker",
+			"when": {"doctype": "Leave Application"},
+			"message": "Leave Application on a Leave Type with require_approval=1 REQUIRES leave_approver to be set. Without it, the application cannot be submitted for review.",
+			"fix": "Set data.leave_approver to a User with Leave Approver role, or set Employee.leave_approver so it defaults on new applications."
+		},
+		{
+			"id": "hr_attendance_shift_mismatch",
+			"severity": "warning",
+			"when": {"doctype": "Attendance"},
+			"message": "Attendance without a Shift Assignment for the employee on the attendance_date fails timing validation (late_entry / early_exit) when the Employee's shift_type requires Shift Assignment.",
+			"fix": "Ensure a Shift Assignment covers the attendance_date OR set Employee.default_shift so fallback shift applies."
+		},
+		{
+			"id": "hr_employee_date_of_joining_after_transaction",
+			"severity": "blocker",
+			"when": {"doctype": "Attendance"},
+			"message": "Attendance.attendance_date before Employee.date_of_joining is invalid - the Employee was not employed on that date.",
+			"fix": "Verify attendance_date >= Employee.date_of_joining. Same rule applies to Salary Slip.start_date and Leave Application.from_date."
+		},
+		{
+			"id": "hr_submittable_is_usual_for_some",
 			"severity": "advisory",
-			"when": {"doctype": "DocType", "data.is_submittable": 1},
-			"message": "Submittable DocTypes in HR are unusual - HR lifecycles typically run through Workflow state transitions, not docstatus submit/cancel.",
-			"fix": "Consider modeling the lifecycle as a Workflow on a non-submittable DocType unless there's a clear reason to use docstatus."
+			"when": {"doctype": "DocType", "data.is_submittable": 1, "data.module": "HR"},
+			"message": "Some HR DocTypes (Leave Application, Leave Allocation, Attendance, Shift Assignment, Appraisal) ARE submittable by design. Most others (Employee Onboarding, Daily Work Summary, Exit Interview) run through Workflow without docstatus. Verify this DocType's lifecycle maps to submit/cancel rather than status transitions.",
+			"fix": "If the lifecycle is approval-driven (Draft -> Submitted -> Cancelled), keep is_submittable=1. If it's status-driven (Open / Closed / In Progress), set is_submittable=0 and attach a Workflow instead."
 		},
 		{
 			"id": "hr_needs_hr_manager_perm",
 			"severity": "advisory",
-			"when": {"doctype": "DocType"},
-			"message": "HR DocTypes typically include HR Manager and HR User permission rows.",
-			"fix": "Add {role: 'HR Manager', read: 1, write: 1, create: 1, delete: 1} and an HR User row with delete: 0 to permissions."
+			"when": {"doctype": "DocType", "data.module": "HR"},
+			"message": "HR DocTypes typically include HR Manager (full), HR User (no delete), Employee (read-only self-service), Leave Approver (for Leave-related DocTypes), and Shift Manager (for Shift-related DocTypes) permission rows.",
+			"fix": "Add the roles with their standard permission flags; include Leave Approver if the DocType relates to leave workflow, Shift Manager for shift-related DocTypes."
 		}
 	],
 	"detection_hints": {
 		"target_doctype_matches": [
 			"Employee", "Department", "Designation", "Branch", "Employee Grade",
-			"Leave Application", "Leave Allocation", "Leave Type", "Leave Period",
-			"Attendance", "Attendance Request", "Shift Type", "Shift Assignment",
-			"Holiday List", "Appraisal", "Employee Onboarding", "Employee Separation"
+			"Leave Type", "Leave Period", "Leave Policy", "Leave Policy Assignment",
+			"Leave Allocation", "Leave Application", "Leave Ledger Entry", "Leave Adjustment",
+			"Attendance", "Attendance Request", "Employee Checkin",
+			"Shift Type", "Shift Assignment", "Shift Request",
+			"Holiday List", "Holiday List Assignment",
+			"Appraisal", "Appraisal Template", "Appraisal KRA",
+			"Training Event", "Training Program", "Training Feedback", "Training Result",
+			"Employee Onboarding", "Employee Separation", "Employee Transfer",
+			"Employee Promotion", "Employee Referral", "Employee Grievance", "Grievance Type",
+			"Exit Interview", "Daily Work Summary",
+			"Skill", "Skill Assessment", "Employee Skill", "Employee Skill Map"
 		],
 		"keyword_hints": [
 			"employee", "leave application", "leave approval", "leave balance",
-			"attendance", "holiday list", "hr manager", "hr user",
-			"department", "designation", "appraisal", "onboarding", "separation",
-			"shift type", "shift assignment", "employee grade"
+			"leave allocation", "leave ledger", "leave policy",
+			"attendance", "attendance request", "employee checkin", "checkin",
+			"shift type", "shift assignment", "shift request",
+			"holiday list", "hr manager", "hr user", "leave approver",
+			"department", "designation", "branch", "employee grade",
+			"appraisal", "kra", "key result area",
+			"training event", "training program", "training feedback",
+			"onboarding", "separation", "exit interview",
+			"employee transfer", "employee promotion", "employee grievance",
+			"skill assessment", "employee skill",
+			"daily work summary"
 		]
 	}
 }
