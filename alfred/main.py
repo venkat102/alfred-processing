@@ -9,14 +9,27 @@ import os
 import sys
 from contextlib import asynccontextmanager
 
-# Configure application loggers to show in Docker logs
-logging.basicConfig(
-	level=logging.DEBUG,
-	format="%(asctime)s %(name)s %(levelname)s: %(message)s",
-	stream=sys.stdout,
-)
-# Set alfred loggers to DEBUG, reduce noise from libraries
-logging.getLogger("alfred").setLevel(logging.DEBUG)
+from alfred.obs.log_redaction import RedactingFormatter
+
+# Resolve log level from env before Settings is loaded, so import-time
+# log lines in other modules respect the level. Default INFO in
+# production; DEBUG leaks LLM prompts and site_config (potentially
+# including the client's LLM API key) into stdout.
+_LOG_LEVEL_NAME = os.environ.get("LOG_LEVEL", "INFO").upper()
+_LOG_LEVEL = getattr(logging, _LOG_LEVEL_NAME, logging.INFO)
+
+# Attach the redacting formatter to a single stdout handler and
+# install it as the root handler. basicConfig is a no-op if handlers
+# already exist, so we configure explicitly.
+_root_handler = logging.StreamHandler(stream=sys.stdout)
+_root_handler.setFormatter(RedactingFormatter(
+	fmt="%(asctime)s %(name)s %(levelname)s: %(message)s",
+))
+logging.root.handlers = [_root_handler]
+logging.root.setLevel(_LOG_LEVEL)
+
+# Alfred loggers follow the root level; library loggers stay quiet.
+logging.getLogger("alfred").setLevel(_LOG_LEVEL)
 logging.getLogger("websockets").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)  # Silence cost calculator spam for Ollama
@@ -40,6 +53,11 @@ async def lifespan(app: FastAPI):
 
 	# Startup: initialize Redis connection pool
 	logger.info("Alfred Processing App starting up (v%s)", __version__)
+
+	# TD-M6: graceful-shutdown state. Handlers check
+	# app.state.shutting_down before accepting new work.
+	app.state.shutting_down = False
+	app.state.active_pipelines = 0
 	try:
 		redis_pool = aioredis.ConnectionPool.from_url(
 			settings.REDIS_URL,
@@ -51,7 +69,7 @@ async def lifespan(app: FastAPI):
 		await redis_client.ping()
 		app.state.redis = redis_client
 		logger.info("Redis connected at %s", settings.REDIS_URL)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Redis unavailable at %s: %s", settings.REDIS_URL, e)
 		app.state.redis = None
 
@@ -74,8 +92,36 @@ async def lifespan(app: FastAPI):
 
 	yield
 
-	# Shutdown: close Redis connection pool
+	# ── Graceful shutdown (TD-M6) ──────────────────────────────
+	# 1. Flip the flag so WebSocket handlers stop accepting new
+	#    prompts. New arrivals get a SHUTTING_DOWN error frame.
+	# 2. Poll active_pipelines for up to GRACEFUL_SHUTDOWN_TIMEOUT
+	#    seconds. Each in-flight pipeline decrements the counter in
+	#    its own `finally`.
+	# 3. Close Redis last so tail-end pipeline writes still flush.
+	import asyncio as _asyncio
+
 	logger.info("Alfred Processing App shutting down...")
+	app.state.shutting_down = True
+
+	deadline = settings.GRACEFUL_SHUTDOWN_TIMEOUT
+	waited = 0
+	poll_interval = 0.5
+	while app.state.active_pipelines > 0 and waited < deadline:
+		logger.info(
+			"Waiting for %d in-flight pipeline(s) to finish "
+			"(%.1fs / %ds)...",
+			app.state.active_pipelines, waited, deadline,
+		)
+		await _asyncio.sleep(poll_interval)
+		waited += poll_interval
+	if app.state.active_pipelines > 0:
+		logger.warning(
+			"Shutdown deadline reached with %d pipeline(s) still in "
+			"flight; they will be cancelled by process exit.",
+			app.state.active_pipelines,
+		)
+
 	if app.state.redis:
 		await app.state.redis.aclose()
 		logger.info("Redis connection closed")
@@ -91,17 +137,91 @@ def create_app() -> FastAPI:
 		lifespan=lifespan,
 	)
 
-	# CORS middleware - configurable via ALLOWED_ORIGINS env var
-	# Default "*" for development, restrict to specific origins in production
 	settings = get_settings()
-	origins = settings.ALLOWED_ORIGINS.split(",") if settings.ALLOWED_ORIGINS != "*" else ["*"]
-	app.add_middleware(
-		CORSMiddleware,
-		allow_origins=origins,
-		allow_credentials=True,
-		allow_methods=["*"],
-		allow_headers=["*"],
-	)
+
+	# JWT_SIGNING_KEY — TD-C2. When set, must be a distinct 32+ byte
+	# secret; fails fast on misconfig (same-as-API key, or too short).
+	# When unset, the WebSocket path falls back to API_SECRET_KEY for
+	# backward compatibility; this is logged as a deprecation warning
+	# so legacy deployments are visible on every boot.
+	jwt_key = settings.JWT_SIGNING_KEY
+	if jwt_key:
+		if jwt_key == settings.API_SECRET_KEY:
+			raise ValueError(
+				"JWT_SIGNING_KEY must NOT equal API_SECRET_KEY. The whole "
+				"point of splitting the keys (TD-C2) is that a leak of one "
+				"cannot compromise the other. Generate a fresh key with: "
+				"python3 -c 'import secrets; print(secrets.token_urlsafe(32))'"
+			)
+		if len(jwt_key) < 32:
+			raise ValueError(
+				f"JWT_SIGNING_KEY is {len(jwt_key)} bytes; must be at least 32 "
+				"to resist brute-force against the HMAC. Regenerate with: "
+				"python3 -c 'import secrets; print(secrets.token_urlsafe(32))'"
+			)
+	else:
+		logger.warning(
+			"JWT_SIGNING_KEY is not set - falling back to API_SECRET_KEY for "
+			"JWT verification (legacy shared-key mode). A leak of either key "
+			"compromises both. Set JWT_SIGNING_KEY to a distinct 32+ byte "
+			"secret to enable full key separation. See TD-C2 in "
+			"docs/tech-debt-backlog.md for the rollout."
+		)
+
+	# CORS — production requires an explicit origin allow-list because
+	# combining `*` with allow_credentials=True is invalid per the CORS
+	# spec (browsers silently reject credentialed requests). In DEBUG mode
+	# we accept `*` as an explicit dev convenience: credentials are
+	# disabled to stay spec-compliant, and a loud warning is logged so
+	# the config is visible in every startup.
+	raw = settings.ALLOWED_ORIGINS.strip()
+	dev_wildcard = settings.DEBUG and raw == "*"
+
+	if dev_wildcard:
+		logger.warning(
+			"CORS: DEBUG=true + ALLOWED_ORIGINS=* - accepting any origin with "
+			"credentials DISABLED. This mode is for local development only; "
+			"production MUST set DEBUG=false and supply an explicit origin list."
+		)
+		app.add_middleware(
+			CORSMiddleware,
+			allow_origins=["*"],
+			allow_credentials=False,   # required to make `*` spec-valid
+			allow_methods=["*"],
+			allow_headers=["*"],
+		)
+	else:
+		if not raw or raw == "*":
+			raise ValueError(
+				"ALLOWED_ORIGINS must be an explicit comma-separated list of "
+				"origins (e.g. http://localhost:8001,https://app.example.com). "
+				"`*` and empty are rejected in non-DEBUG mode: combining "
+				"either with allow_credentials=True is invalid per the CORS "
+				"spec. For local dev, set DEBUG=true to accept `*` (credentials "
+				"will be disabled)."
+			)
+		origins = [o.strip() for o in raw.split(",") if o.strip()]
+		if not origins:
+			raise ValueError(
+				f"ALLOWED_ORIGINS parsed to an empty list: {settings.ALLOWED_ORIGINS!r}"
+			)
+		app.add_middleware(
+			CORSMiddleware,
+			allow_origins=origins,
+			allow_credentials=True,
+			# Explicit methods + headers. The previous `*` was overly
+			# permissive; PUT / DELETE / PATCH are not used by any current
+			# endpoint and should not be pre-approved for every origin.
+			allow_methods=["GET", "POST", "OPTIONS"],
+			allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+		)
+
+	# TD-M2: global handler that normalises every HTTPException body
+	# into the canonical ErrorResponse shape {error, code, details}.
+	# Must be installed before include_router so any HTTPException
+	# raised by route handlers flows through it.
+	from alfred.api.errors import install_error_handler
+	install_error_handler(app)
 
 	# Register routes
 	app.include_router(router)

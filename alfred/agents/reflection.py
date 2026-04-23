@@ -77,7 +77,8 @@ Return a single raw JSON object on one line:
 
 def _reflection_enabled() -> bool:
 	"""Feature flag check. Default off for cautious rollout."""
-	return os.environ.get("ALFRED_REFLECTION_ENABLED", "").lower() in {"1", "true", "yes"}
+	from alfred.config import get_settings
+	return get_settings().ALFRED_REFLECTION_ENABLED
 
 
 def _describe_item(item: dict) -> str:
@@ -235,6 +236,6 @@ async def reflect_minimality(
 			[(r["index"], r["reason"]) for r in removed],
 		)
 		return kept, removed
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Reflection step failed, changeset passes through: %s", e)
 		return changeset, []

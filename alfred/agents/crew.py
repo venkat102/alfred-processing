@@ -310,7 +310,7 @@ async def save_crew_state(store, site_id: str, conversation_id: str, state: Crew
 	try:
 		await store.set_task_state(site_id, key, state.to_dict())
 		logger.debug("Saved crew state for %s/%s", site_id, conversation_id)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.error("Failed to save crew state: %s (crew will continue but resume won't work)", e)
 
 
@@ -931,7 +931,8 @@ async def run_crew(
 
 
 def _per_intent_builders_enabled() -> bool:
-	return os.environ.get("ALFRED_PER_INTENT_BUILDERS") == "1"
+	from alfred.config import get_settings
+	return get_settings().ALFRED_PER_INTENT_BUILDERS
 
 
 def _get_specialist_developer_agent(

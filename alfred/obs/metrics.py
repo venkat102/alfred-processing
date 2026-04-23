@@ -89,6 +89,24 @@ crew_rescue_total = Counter(
 	labelnames=("outcome",),
 )
 
+rate_limit_block_total = Counter(
+	"alfred_rate_limit_block_total",
+	"Requests blocked by the per-user rate limit. source=rest|websocket "
+	"distinguishes the entry path; a spike on websocket with rest flat "
+	"usually means a compromised client is flooding prompts (LLM DoS / "
+	"cost exhaustion).",
+	labelnames=("source",),
+)
+
+ssrf_block_total = Counter(
+	"alfred_ssrf_block_total",
+	"Outbound LLM URLs rejected by the SSRF allow-list. reason=bad_scheme "
+	"|no_host|dns_fail|private_ip|host_not_allowed. A spike on private_ip "
+	"usually means a compromised client is probing for internal services "
+	"(cloud metadata, Redis, admin portals).",
+	labelnames=("reason",),
+)
+
 
 def reset_for_tests() -> None:
 	"""Reset all metric samples. Call from test setup only.
@@ -104,8 +122,10 @@ def reset_for_tests() -> None:
 		llm_errors_total,
 		crew_drift_total,
 		crew_rescue_total,
+		rate_limit_block_total,
+		ssrf_block_total,
 	):
 		try:
 			m._metrics.clear()  # type: ignore[attr-defined]
-		except Exception:
+		except Exception:  # noqa: BLE001
 			pass

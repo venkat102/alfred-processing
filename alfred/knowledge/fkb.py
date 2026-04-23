@@ -74,7 +74,8 @@ def _resolve_kb_dir() -> Path:
 	We walk up from this file to find `apps/alfred_client`; if that fails,
 	fall back to the env var so test harnesses can point elsewhere.
 	"""
-	override = os.environ.get("ALFRED_FKB_DIR")
+	from alfred.config import get_settings
+	override = get_settings().ALFRED_FKB_DIR
 	if override:
 		return Path(override)
 
@@ -151,7 +152,7 @@ def _load_entries() -> dict[str, Any]:
 			continue
 		try:
 			parsed = yaml.safe_load(path.read_text()) or {}
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.error("FKB: failed to parse %s: %s", filename, e)
 			continue
 		if not isinstance(parsed, dict):
@@ -286,7 +287,7 @@ def _get_model():
 	try:
 		_model = SentenceTransformer(_EMBEDDING_MODEL_NAME)
 		logger.info("FKB: loaded embedding model %s", _EMBEDDING_MODEL_NAME)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.error("FKB: failed to load model: %s", e)
 		_model_load_failed = True
 		return None
@@ -352,7 +353,7 @@ def _ensure_embeddings():
 		_embeddings_stale = False
 		logger.info("FKB: computed %d entry embeddings (%s)", len(ids), _embeddings.shape)
 		return True
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.error("FKB: embedding generation failed: %s", e)
 		_embeddings = None
 		_embedding_ids = []
@@ -392,7 +393,7 @@ def search_semantic(
 	try:
 		qvec = model.encode([query], normalize_embeddings=True, show_progress_bar=False)
 		qvec = np.asarray(qvec, dtype=np.float32)[0]
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("FKB: failed to embed query: %s", e)
 		return []
 

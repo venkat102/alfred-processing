@@ -105,7 +105,7 @@ async def handle_insights(
 			site_config=conn.site_config or {},
 			insights_tools=insights_tools,
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Failed to build insights crew: %s", e, exc_info=True)
 		return InsightsResult(reply=(
 			"I wasn't able to spin up the Insights agent just now. "
@@ -121,7 +121,7 @@ async def handle_insights(
 			conversation_id=conversation_id,
 			event_callback=event_callback,
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Insights crew run raised: %s", e, exc_info=True)
 		return InsightsResult(reply=(
 			"I hit an error while looking that up on your site. "
@@ -162,11 +162,12 @@ async def handle_insights(
 	# so pre-feature sites are unaffected. Extractor returns None when the
 	# prompt isn't report-shaped (scalar / metadata / no target DocType).
 	report_candidate = None
-	if os.environ.get("ALFRED_REPORT_HANDOFF") == "1":
+	from alfred.config import get_settings
+	if get_settings().ALFRED_REPORT_HANDOFF:
 		from alfred.handlers.insights_candidate import extract_report_candidate
 		try:
 			report_candidate = extract_report_candidate(prompt=prompt, reply=reply)
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning(
 				"report_candidate extraction failed: %s", e, exc_info=True,
 			)

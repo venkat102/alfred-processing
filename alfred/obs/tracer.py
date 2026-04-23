@@ -175,7 +175,7 @@ class Tracer:
 		for fn in self._exporters:
 			try:
 				fn(data)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning("Tracer exporter failed: %s", e)
 
 
@@ -235,21 +235,23 @@ def configure_from_env() -> None:
 	Safe to call multiple times - clears and re-registers exporters each
 	time so test fixtures can reset between runs.
 	"""
+	from alfred.config import get_settings
+	settings = get_settings()
 	tracer.clear_exporters()
-	if os.environ.get("ALFRED_TRACING_ENABLED", "").lower() not in {"1", "true", "yes"}:
+	if not settings.ALFRED_TRACING_ENABLED:
 		tracer.disable()
 		return
 	tracer.enable()
 
-	path = os.environ.get("ALFRED_TRACE_PATH") or "alfred_trace.jsonl"
+	path = settings.ALFRED_TRACE_PATH or "alfred_trace.jsonl"
 	tracer.register_exporter(jsonl_file_exporter(path))
 
-	if os.environ.get("ALFRED_TRACE_STDOUT", "").lower() in {"1", "true", "yes"}:
+	if settings.ALFRED_TRACE_STDOUT:
 		tracer.register_exporter(stdout_exporter)
 
 	logger.info(
 		"Tracing enabled: jsonl=%s stdout=%s",
-		path, "ALFRED_TRACE_STDOUT" in os.environ,
+		path, settings.ALFRED_TRACE_STDOUT,
 	)
 
 

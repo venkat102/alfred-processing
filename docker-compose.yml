@@ -27,11 +27,14 @@ services:
       - PORT=8000
       - WORKERS=${WORKERS:-2}
       - API_SECRET_KEY=${API_SECRET_KEY:?Set API_SECRET_KEY in .env}
+      # JWT_SIGNING_KEY empty = legacy shared-key mode with deprecation
+      # warning at boot. Set to a distinct 32+ byte secret (TD-C2).
+      - JWT_SIGNING_KEY=${JWT_SIGNING_KEY:-}
       - REDIS_URL=redis://redis:6379/0
       - FALLBACK_LLM_MODEL=${FALLBACK_LLM_MODEL:-}
       - FALLBACK_LLM_API_KEY=${FALLBACK_LLM_API_KEY:-}
       - FALLBACK_LLM_BASE_URL=${FALLBACK_LLM_BASE_URL:-}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:?Set ALLOWED_ORIGINS in .env — explicit origin list required (e.g. https://app.example.com). `*` is rejected at startup.}
       - ADMIN_PORTAL_URL=${ADMIN_PORTAL_URL:-}
       - ADMIN_SERVICE_KEY=${ADMIN_SERVICE_KEY:-}
       - DEBUG=${DEBUG:-false}
