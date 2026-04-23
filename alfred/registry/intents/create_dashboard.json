@@ -1,0 +1,55 @@
+{
+	"intent": "create_dashboard",
+	"display_name": "Create Dashboard",
+	"doctype": "Dashboard",
+	"fields": [
+		{
+			"key": "dashboard_name",
+			"label": "Dashboard name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "is_default",
+			"label": "Default dashboard",
+			"type": "check",
+			"default": 0,
+			"rationale": "Global singleton: setting is_default=1 on a new Dashboard automatically clears is_default on every OTHER Dashboard on the site (controller runs an UPDATE tabDashboard SET is_default=0). Enable only when this should be the new default for all users."
+		},
+		{
+			"key": "is_standard",
+			"label": "Standard",
+			"type": "check",
+			"default": 0,
+			"rationale": "0 = site-local. 1 requires developer_mode + module. A standard Dashboard can ONLY reference standard Dashboard Charts / Number Cards - mixing a standard Dashboard with a non-standard chart is rejected at validate()."
+		},
+		{
+			"key": "module",
+			"label": "Module (required if is_standard=1)",
+			"type": "link",
+			"link_doctype": "Module Def",
+			"default": "",
+			"rationale": "Required only when is_standard=1. Empty for site-local dashboards."
+		},
+		{
+			"key": "charts",
+			"label": "Charts (list of Dashboard Chart names)",
+			"type": "text",
+			"required": true
+		},
+		{
+			"key": "cards",
+			"label": "Number Cards (list of Number Card names)",
+			"type": "text",
+			"default": "",
+			"rationale": "Optional list of Number Card names to render alongside charts. Empty for chart-only dashboards. If the user named cards that don't exist yet, emit the Number Card changeset items BEFORE the Dashboard so link references resolve on apply."
+		},
+		{
+			"key": "chart_options",
+			"label": "Global chart options (JSON)",
+			"type": "text",
+			"default": "",
+			"rationale": "Optional JSON string of rendering defaults merged into every chart when the dashboard renders (e.g. '{\"height\": 300}'). Must parse as JSON - the controller rejects invalid JSON at save. Empty means each chart uses its own options."
+		}
+	]
+}

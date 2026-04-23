@@ -416,14 +416,55 @@ INSIGHTS_TASK_DESCRIPTION = (
 	"   have access to: lookup_doctype, lookup_pattern, get_site_info,\n"
 	"   get_doctypes, get_existing_customizations, get_user_context,\n"
 	"   check_permission, has_active_workflow, check_has_records,\n"
-	"   validate_name_available. Prefer `lookup_doctype` with `layer=\"site\"`\n"
-	"   or `layer=\"both\"` over `get_doctype_schema`.\n"
-	"3. Budget your tool calls - you have a hard cap of 5 calls per turn. If you\n"
+	"   get_list, run_query, validate_name_available. Prefer\n"
+	"   `lookup_doctype` with `layer=\"site\"` or `layer=\"both\"` over\n"
+	"   `get_doctype_schema`.\n"
+	"3. PICK THE RIGHT TOOL FOR THE QUESTION SHAPE:\n"
+	"   - 'explain the Customer doctype', 'what fields are on X' -> lookup_doctype.\n"
+	"   - 'list of active customers', 'recent projects', 'show me open\n"
+	"     invoices' -> get_list with the right filters. Example:\n"
+	"     get_list(\"Customer\", filters='{\"disabled\": 0}', fields='[\"name\",\n"
+	"     \"customer_name\"]', limit=50).\n"
+	"   - 'count of pending invoices' -> get_list(\"Sales Invoice\",\n"
+	"     filters='{\"status\": \"Unpaid\"}', limit=500) and report len(rows),\n"
+	"     noting truncated if true.\n"
+	"   - 'top N X by Y', 'average X per Y', 'count of X by Y', 'X joined\n"
+	"     with Y' -> run_query. The LLM-friendly JSON shape covers SUM /\n"
+	"     AVG / MIN / MAX / COUNT / COUNT_DISTINCT plus left/inner joins\n"
+	"     across doctypes. Example (top 5 customers by total sales this\n"
+	"     year):\n"
+	"       run_query('{\"from_doctype\": \"Sales Invoice\", \"select\":\n"
+	"       [{\"field\": \"customer\"}, {\"field\": \"grand_total\",\n"
+	"       \"agg\": \"sum\", \"alias\": \"total\"}], \"where\":\n"
+	"       [{\"field\": \"status\", \"op\": \"=\", \"value\": \"Paid\"}],\n"
+	"       \"group_by\": [\"customer\"], \"order_by\": [{\"field\":\n"
+	"       \"total\", \"dir\": \"desc\"}], \"limit\": 5}')\n"
+	"   - 'who has access to X' -> check_permission / get_user_context.\n"
+	"   DO NOT call lookup_doctype when the user asked for actual records.\n"
+	"   Reporting the schema when asked for a list is WRONG and the user will\n"
+	"   see through it immediately.\n"
+	"4. run_query's spec language cannot express window functions,\n"
+	"   recursive CTEs, subqueries in WHERE/HAVING, UNION, or raw\n"
+	"   expressions. If the question truly needs one of those, DO NOT\n"
+	"   fabricate an answer from schema and DO NOT pretend the spec can\n"
+	"   handle it. Reply with exactly this shape:\n"
+	"     'I can aggregate and join across doctypes but this needs\n"
+	"     [window function / recursive query / raw SQL expression] which\n"
+	"     isn't supported in Insights mode. You can either:\n"
+	"     - rephrase as a simpler aggregation or join, or\n"
+	"     - switch to Dev mode and I'll help you build a saved Report\n"
+	"       for this.'\n"
+	"   Substitute the specific operation you can't do.\n"
+	"5. Budget your tool calls - you have a hard cap of 5 calls per turn. If you\n"
 	"   cannot get the full answer in 5 calls, say what you found and what's\n"
 	"   missing.\n"
-	"4. Ground every factual claim in a tool response. If you cannot verify a\n"
+	"6. Ground every factual claim in a tool response. If you cannot verify a\n"
 	"   fact with a tool, say so explicitly - never guess about the user's site.\n"
-	"5. If the user's question cannot be answered with read-only tools (e.g.\n"
+	"7. If get_list returns rows=[] it may mean 'no matches' or 'no read\n"
+	"   access'. Say 'I found no records matching that criteria (which may\n"
+	"   also mean you don't have read access to this DocType).' - don't\n"
+	"   assume either.\n"
+	"8. If the user's question cannot be answered with read-only tools (e.g.\n"
 	"   they are asking you to build something), respond with a short note\n"
 	"   suggesting they rephrase as a build request.\n\n"
 	"OUTPUT FORMAT (STRICT):\n"
@@ -910,10 +951,18 @@ def _get_specialist_developer_agent(
 	if not intent or intent == "unknown":
 		return None
 
-	if intent == "create_doctype":
-		from alfred.agents.builders.doctype_builder import build_doctype_builder_agent
-		agent = build_doctype_builder_agent(
-			site_config=site_config, custom_tools=custom_tools
+	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS, build_schema_agent
+	from alfred.agents.builders.reports_builder import REPORTS_INTENTS, build_reports_agent
+	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS, build_automation_agent
+	from alfred.agents.builders.presentation_builder import (
+		PRESENTATION_INTENTS, build_presentation_agent,
+	)
+
+	if intent in SCHEMA_INTENTS:
+		agent = build_schema_agent(
+			intent=intent,
+			site_config=site_config,
+			custom_tools=custom_tools,
 		)
 		logger.info(
 			"Builder specialist selected: intent=%s agent_role=%r",
@@ -921,10 +970,35 @@ def _get_specialist_developer_agent(
 		)
 		return agent
 
-	if intent == "create_report":
-		from alfred.agents.builders.report_builder import build_report_builder_agent
-		agent = build_report_builder_agent(
-			site_config=site_config, custom_tools=custom_tools
+	if intent in REPORTS_INTENTS:
+		agent = build_reports_agent(
+			intent=intent,
+			site_config=site_config,
+			custom_tools=custom_tools,
+		)
+		logger.info(
+			"Builder specialist selected: intent=%s agent_role=%r",
+			intent, agent.role,
+		)
+		return agent
+
+	if intent in AUTOMATION_INTENTS:
+		agent = build_automation_agent(
+			intent=intent,
+			site_config=site_config,
+			custom_tools=custom_tools,
+		)
+		logger.info(
+			"Builder specialist selected: intent=%s agent_role=%r",
+			intent, agent.role,
+		)
+		return agent
+
+	if intent in PRESENTATION_INTENTS:
+		agent = build_presentation_agent(
+			intent=intent,
+			site_config=site_config,
+			custom_tools=custom_tools,
 		)
 		logger.info(
 			"Builder specialist selected: intent=%s agent_role=%r",
@@ -955,16 +1029,41 @@ def _enhance_task_description(
 	if not intent or intent == "unknown":
 		return base_description
 
-	if intent == "create_doctype":
-		from alfred.agents.builders.doctype_builder import enhance_generate_changeset_description
-		return enhance_generate_changeset_description(
-			base_description, module_context=module_context,
+	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS
+	from alfred.agents.builders.schema_builder import (
+		enhance_generate_changeset_description as enhance_schema,
+	)
+	from alfred.agents.builders.reports_builder import REPORTS_INTENTS
+	from alfred.agents.builders.reports_builder import (
+		enhance_generate_changeset_description as enhance_reports,
+	)
+	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS
+	from alfred.agents.builders.automation_builder import (
+		enhance_generate_changeset_description as enhance_automation,
+	)
+	from alfred.agents.builders.presentation_builder import PRESENTATION_INTENTS
+	from alfred.agents.builders.presentation_builder import (
+		enhance_generate_changeset_description as enhance_presentation,
+	)
+
+	if intent in SCHEMA_INTENTS:
+		return enhance_schema(
+			base_description, intent=intent, module_context=module_context,
 		)
 
-	if intent == "create_report":
-		from alfred.agents.builders.report_builder import enhance_generate_changeset_description
-		return enhance_generate_changeset_description(
-			base_description, module_context=module_context,
+	if intent in REPORTS_INTENTS:
+		return enhance_reports(
+			base_description, intent=intent, module_context=module_context,
+		)
+
+	if intent in AUTOMATION_INTENTS:
+		return enhance_automation(
+			base_description, intent=intent, module_context=module_context,
+		)
+
+	if intent in PRESENTATION_INTENTS:
+		return enhance_presentation(
+			base_description, intent=intent, module_context=module_context,
 		)
 
 	return base_description

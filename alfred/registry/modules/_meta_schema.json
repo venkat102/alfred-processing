@@ -8,6 +8,7 @@
 		"module": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
 		"display_name": {"type": "string", "minLength": 1},
 		"frappe_module_key": {"type": "string", "minLength": 1},
+		"family": {"type": "string", "enum": ["transactions", "operations", "people", "engagement"]},
 		"backstory": {"type": "string", "minLength": 50},
 		"conventions": {
 			"type": "object",

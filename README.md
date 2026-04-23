@@ -55,10 +55,25 @@ workflows against a live customer site over MCP.
   injects module-specific conventions (roles, naming patterns, gotchas) as
   a prompt addendum. `validate_output` runs after the crew emits its
   changeset and returns domain-correctness notes (deterministic rules +
-  LLM pass, deduped). Shipped as data: 11 module KBs at
-  `alfred/registry/modules/*.json` - Accounts, Custom, HR, Stock, Selling,
-  Buying, Manufacturing, Projects, Assets, CRM, Payroll. Provide-context
-  calls are cached in Redis (falls back to in-memory) with a 5-minute TTL.
+  LLM pass, deduped). Shipped as data: 13 module KBs at
+  `alfred/registry/modules/*.json` - Accounts, Assets, Buying, CRM, Custom,
+  HR, Maintenance, Manufacturing, Payroll, Projects, Selling, Stock,
+  Support. Provide-context calls are cached in Redis (falls back to
+  in-memory) with a 5-minute TTL.
+- **Module family layer** (`alfred/registry/modules/_families/`, activated
+  whenever `ALFRED_MODULE_SPECIALISTS=1`) - 4 family KBs sit above the 13
+  module KBs and carry cross-module invariants shared by their member
+  modules: **Transactions** (accounts + selling + buying), **Operations**
+  (stock + manufacturing + assets), **People** (hr + payroll),
+  **Engagement** (crm + support + projects + maintenance). `custom` is
+  intentionally familyless. Before the Developer runs, the specialist
+  fetches a FAMILY CONTEXT snippet (15-minute Redis cache) and prepends it
+  above the MODULE CONTEXT snippet, so the intent specialist sees
+  `PRIMARY FAMILY (X)` + `PRIMARY MODULE (Y)` + `SECONDARY MODULE CONTEXT
+  (Z)` sections. Frappe family builders' backstories acknowledge both
+  layers as authoritative with a family-invariant-wins precedence rule -
+  this is how Frappe agents communicate with ERPNext agents for domain
+  knowledge, validation, and verification.
 - **Multi-module classification** (feature-flagged via `ALFRED_MULTI_MODULE`,
   layers on top of module specialists) - heuristic classifier detects a
   primary module plus up to 2 secondaries for cross-domain prompts (e.g.
@@ -66,7 +81,9 @@ workflows against a live customer site over MCP.
   secondaries=[projects]). Primary module's validation notes keep full
   severity; secondary modules' blockers are capped to warning so only
   primary-module concerns can gate deploy. Primary wins the naming pattern;
-  permissions are merged deduped across all detected modules.
+  permissions are merged deduped across all detected modules. Secondary
+  modules in the SAME family as the primary reuse the primary's FAMILY
+  section (no duplicate family header).
 - **Insights → Report handoff** (feature-flagged via `ALFRED_REPORT_HANDOFF`)
   - when an Insights reply represents a report-shaped query (tabular,
   aggregation-ready), the handler attaches a structured `ReportCandidate`

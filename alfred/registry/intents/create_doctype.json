@@ -15,38 +15,133 @@
 			"label": "Submittable?",
 			"type": "check",
 			"default": 0,
-			"rationale": "Most DocTypes are not submittable. Enable only for documents with a draft / submitted / cancelled lifecycle."
-		},
-		{
-			"key": "autoname",
-			"label": "Naming rule",
-			"type": "select",
-			"options": ["autoincrement", "field:title", "format:PREFIX-.####", "prompt", "hash"],
-			"default": "autoincrement",
-			"rationale": "Autoincrement is safe when naming intent is unclear. Change if users should see meaningful IDs."
+			"rationale": "Most DocTypes are not submittable. Submittable documents have a draft/submitted/cancelled lifecycle and gate submit/cancel/amend perms. Incompatible with istable=1."
 		},
 		{
 			"key": "istable",
 			"label": "Child table?",
 			"type": "check",
 			"default": 0,
-			"rationale": "Child tables only exist inside a parent DocType. Enable only for repeating rows."
+			"rationale": "Child tables only exist inside a parent DocType. Incompatible with is_submittable, is_tree, quick_entry, track_changes. Cannot be standalone."
 		},
 		{
 			"key": "issingle",
 			"label": "Singleton?",
 			"type": "check",
 			"default": 0,
-			"rationale": "Single DocTypes store exactly one record (e.g. settings). Enable for config-style documents."
+			"rationale": "Single DocTypes store exactly one record (settings-style). set_only_once on creation - cannot be toggled after save."
+		},
+		{
+			"key": "is_tree",
+			"label": "Tree structure?",
+			"type": "check",
+			"default": 0,
+			"rationale": "Tree DocTypes use the Nested Set Model. Incompatible with istable=1. Requires a nsm_parent_field."
+		},
+		{
+			"key": "naming_rule",
+			"label": "Naming rule",
+			"type": "select",
+			"options": [
+				"Set by user",
+				"Autoincrement",
+				"By fieldname",
+				"By \"Naming Series\" field",
+				"Expression",
+				"Expression (old style)",
+				"Random",
+				"UUID",
+				"By script"
+			],
+			"default": "Autoincrement",
+			"rationale": "Autoincrement is safe when naming intent is unclear. Changing naming_rule to Autoincrement AFTER records exist fails - the name column type changes from VARCHAR to INT. Pick carefully up front."
+		},
+		{
+			"key": "autoname",
+			"label": "Autoname expression",
+			"type": "data",
+			"default": "autoincrement",
+			"rationale": "Concrete autoname: 'autoincrement' for Autoincrement rule; 'field:<fieldname>' for By fieldname (the field becomes unique=1); 'naming_series:<fieldname>' for By Naming Series (the field must exist AND carry options='Naming Series'); 'format:<pattern>' for Expression (pattern like 'INV-.####'); 'hash' for Random; 'prompt' for Set by user."
+		},
+		{
+			"key": "track_changes",
+			"label": "Track changes",
+			"type": "check",
+			"default": 0,
+			"rationale": "Records per-field diffs in Version DocType on every save. Enable for audit-sensitive data. Incompatible with istable=1."
+		},
+		{
+			"key": "title_field",
+			"label": "Title field (fieldname)",
+			"type": "data",
+			"default": "",
+			"rationale": "Field displayed in link suggestions and list views. Must name a real Data / Link / Small Text field on this DocType - Frappe does NOT validate the fieldtype, so pointing at a Table field fails silently at render time. Empty defaults to the document name."
+		},
+		{
+			"key": "search_fields",
+			"label": "Search fields (comma-separated)",
+			"type": "data",
+			"default": "",
+			"rationale": "Fields included in global search. Each must be a real fieldname on this DocType. Empty means only the name is searchable."
+		},
+		{
+			"key": "sort_field",
+			"label": "Default sort field",
+			"type": "data",
+			"default": "creation",
+			"rationale": "Default order_by for list views. 'creation' is the Frappe standard and works for every DocType without a custom sort field."
+		},
+		{
+			"key": "sort_order",
+			"label": "Default sort order",
+			"type": "select",
+			"options": ["ASC", "DESC"],
+			"default": "DESC",
+			"rationale": "DESC (newest first) matches Desk UX for most transactional DocTypes. ASC for reference masters (Account, Cost Center)."
+		},
+		{
+			"key": "allow_rename",
+			"label": "Allow rename",
+			"type": "check",
+			"default": 1,
+			"rationale": "Users with write access can rename records. Default 1 is the Frappe standard; set 0 for DocTypes where the name is an immutable identifier referenced by other records."
+		},
+		{
+			"key": "allow_import",
+			"label": "Allow bulk import",
+			"type": "check",
+			"default": 0,
+			"rationale": "Required 1 if any DocPerm row on the DocType sets `import=1`. Default 0; enable only for DocTypes that should accept CSV / XLSX imports via the Desk Import tool."
+		},
+		{
+			"key": "image_field",
+			"label": "Image field (fieldname)",
+			"type": "data",
+			"default": "",
+			"rationale": "Names an Attach Image field on this DocType; when set, that image renders as the document thumbnail in list and link-preview contexts. Must name a real Attach Image field - Frappe does NOT validate the fieldtype, so pointing at a Data field renders broken thumbnails."
+		},
+		{
+			"key": "timeline_field",
+			"label": "Timeline field (fieldname)",
+			"type": "data",
+			"default": "",
+			"rationale": "Names a Link field on this DocType whose target's timeline (comments + communications) should be merged into this DocType's timeline. Common for transactional docs that reference a master (Sales Invoice -> Customer)."
+		},
+		{
+			"key": "default_print_format",
+			"label": "Default print format",
+			"type": "data",
+			"default": "",
+			"rationale": "Names an existing Print Format for this DocType that should be the default in the Print dialog. Empty means Frappe's built-in standard print format. Validated at render time, not save."
 		},
 		{
 			"key": "permissions",
 			"label": "Permissions",
 			"type": "table",
 			"default": [
-				{"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1}
+				{"role": "System Manager", "read": 1, "write": 1, "create": 1, "delete": 1, "print": 1, "email": 1, "export": 1, "report": 1, "share": 1}
 			],
-			"rationale": "System Manager full access is the minimum usable default. Add role rows for end users."
+			"rationale": "At least one permission row at permlevel=0 is required - the controller rejects DocTypes without a level-0 perm. System Manager full access is the minimum usable default. Add role rows for end users."
 		}
 	]
 }

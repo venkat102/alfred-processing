@@ -366,6 +366,94 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		return _mcp_call(mcp_client, "check_has_records", {"doctype": doctype})
 
 	@tool
+	def get_list(
+		doctype: str,
+		filters: str = "",
+		fields: str = "",
+		limit: int = 50,
+		order_by: str = "",
+	) -> str:
+		"""Read actual records from a DocType, respecting the session user's permissions.
+
+		Use this for Insights-mode data questions like:
+		  - "list of active customers": get_list("Customer", filters='{"disabled": 0}')
+		  - "recent projects": get_list("Project", order_by="modified desc", limit=10)
+		  - "count of pending invoices": get_list("Sales Invoice", filters='{"status": "Unpaid"}', limit=500) then report len(rows) with the truncated flag
+
+		`filters` and `fields` are JSON strings:
+		  - filters: dict '{"disabled": 0}' or list-of-triples '[["modified", ">=", "2026-01-01"]]'. Raw SQL is rejected.
+		  - fields: list '["name", "customer_name"]'. Unknown fields are silently dropped and returned in dropped_fields.
+		`limit` is clamped to [1, 500] server-side. `order_by` is a Frappe order-by string like "modified desc".
+
+		Returns: {"doctype": ..., "rows": [...], "count": N, "truncated": bool, "fields": [...], "dropped_fields": [...]}.
+		An empty rows list may mean "no matches" OR "user has no read access" - Frappe applies permissions automatically.
+
+		YOU CANNOT use this for aggregations (SUM, AVG, GROUP BY), joins across DocTypes, or derived computations.
+		If the user asks for those, refuse politely and suggest either rephrasing as a simple list or switching to Dev mode to build a Report.
+		"""
+		args: dict[str, Any] = {"doctype": doctype, "limit": limit}
+		if filters:
+			try:
+				args["filters"] = json.loads(filters) if isinstance(filters, str) else filters
+			except (ValueError, TypeError):
+				return json.dumps({
+					"error": "invalid_filters",
+					"message": "filters must be a JSON object or list of triples",
+				})
+		if fields:
+			try:
+				parsed_fields = json.loads(fields) if isinstance(fields, str) else fields
+				if not isinstance(parsed_fields, list):
+					return json.dumps({
+						"error": "invalid_argument",
+						"message": "fields must be a JSON list of strings",
+					})
+				args["fields"] = parsed_fields
+			except (ValueError, TypeError):
+				return json.dumps({
+					"error": "invalid_argument",
+					"message": "fields must be a JSON list of strings",
+				})
+		if order_by:
+			args["order_by"] = order_by
+		return _mcp_call(mcp_client, "get_list", args)
+
+	@tool
+	def run_query(spec: str) -> str:
+		"""Run a structured aggregation/join query against the live site.
+
+		Use this when the user asks for SUMs, AVGs, counts grouped by a
+		field, or joins across two or three doctypes. For simple listings
+		prefer get_list; this tool is heavier.
+
+		`spec` is a JSON string. Minimal shape:
+		  {"from_doctype": "Sales Invoice",
+		   "select": [{"field": "customer"},
+		              {"field": "grand_total", "agg": "sum", "alias": "total"}],
+		   "where": [{"field": "status", "op": "=", "value": "Paid"}],
+		   "group_by": ["customer"],
+		   "order_by": [{"field": "total", "dir": "desc"}],
+		   "limit": 10}
+
+		Full shape supports joins, having, in/not_in, like. Aggregations:
+		count | sum | avg | min | max | count_distinct. Ops: = != < <= > >=
+		like not_like in not_in is is_not. Join types: left, inner.
+
+		Example (top 5 customers by total sales):
+		  run_query('{"from_doctype": "Sales Invoice", "select": [{"field": "customer"}, {"field": "grand_total", "agg": "sum", "alias": "total"}], "where": [{"field": "status", "op": "=", "value": "Paid"}], "group_by": ["customer"], "order_by": [{"field": "total", "dir": "desc"}], "limit": 5}')
+
+		Returns: {"rows": [...], "count": N, "truncated": bool, "doctypes": [...]}
+		or a structured error (invalid_spec, blocked_doctype,
+		permission_denied, query_failed). An empty rows list may mean
+		"no matches" OR "you can't read one of the referenced doctypes".
+
+		YOU CANNOT use this for window functions, CTEs, subqueries, or
+		raw expressions. If the question truly needs those, refuse and
+		suggest Dev mode (see the refusal script in your task description).
+		"""
+		return _mcp_call(mcp_client, "run_query", {"spec": spec})
+
+	@tool
 	def dry_run_changeset(changes: str) -> str:
 		"""Dry-run a changeset against the LIVE site using savepoint rollback. Returns {valid, issues, validated}. Does NOT commit. Validates mandatory fields, link targets, naming conflicts, Python/JS syntax, and Jinja templates. Use before presenting the final changeset.
 
@@ -490,6 +578,8 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		check_permission,            # "can I do X?"
 		has_active_workflow,         # workflow presence check
 		check_has_records,           # does this DocType have data
+		get_list,                    # read actual records, permission-scoped
+		run_query,                   # aggregations + joins, permission-scoped
 		validate_name_available,     # name availability probe
 	]
 

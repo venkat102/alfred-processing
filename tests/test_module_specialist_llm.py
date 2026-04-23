@@ -6,6 +6,7 @@ import pytest
 from alfred.agents.specialists.module_specialist import (
 	_context_cache_clear,
 	provide_context,
+	provide_family_context,
 	validate_output,
 )
 
@@ -106,12 +107,12 @@ async def test_validate_output_merges_rule_notes_and_llm_notes():
 			intent="create_doctype",
 			changes=[{
 				"op": "create", "doctype": "DocType",
-				"data": {"name": "Voucher", "is_submittable": 1},
+				"data": {"name": "Voucher", "is_submittable": 1, "module": "Accounts"},
 			}],
 			site_config={},
 		)
 	sources = {n.source for n in notes}
-	assert "module_rule:accounts_submittable_needs_gl" in sources
+	assert "module_rule:accounts_submittable_non_posting_doctype" in sources
 	assert "module_rule:accounts_needs_accounts_manager_perm" in sources
 	assert any(s.startswith("module_specialist:") for s in sources)
 
@@ -127,25 +128,28 @@ async def test_validate_output_llm_malformed_json_falls_back_to_rules_only():
 			intent="create_doctype",
 			changes=[{
 				"op": "create", "doctype": "DocType",
-				"data": {"name": "Voucher", "is_submittable": 1},
+				"data": {"name": "Voucher", "is_submittable": 1, "module": "Accounts"},
 			}],
 			site_config={},
 		)
 	sources = {n.source for n in notes}
-	assert "module_rule:accounts_submittable_needs_gl" in sources
+	assert "module_rule:accounts_submittable_non_posting_doctype" in sources
 	assert not any(s.startswith("module_specialist:") for s in sources)
 
 
 @pytest.mark.asyncio
 async def test_validate_output_dedups_llm_note_that_matches_rule_note():
-	# Rule runner will produce "Submittable Accounts DocTypes conventionally..."
-	# The LLM returns the SAME message verbatim - should be deduped.
+	# The rule runner will produce the canonical submittable-non-posting
+	# advisory message. The LLM returns the SAME message verbatim - it
+	# should be deduped so the user only sees one note.
 	rule_message = (
-		"Submittable Accounts DocTypes conventionally post GL entries on "
-		"submit. No on_submit hook detected in the changeset."
+		"New submittable Accounts DocType detected. Only Sales Invoice, "
+		"Purchase Invoice, Journal Entry, and Payment Entry post to GL on "
+		"submit in standard ERPNext. If this DocType is meant to post GL "
+		"entries, add an explicit Server Script with doctype_event='on_submit'."
 	)
 	llm_reply = json.dumps([
-		{"severity": "warning", "issue": rule_message},
+		{"severity": "advisory", "issue": rule_message},
 	])
 	with patch(
 		"alfred.agents.specialists.module_specialist._ollama_chat",
@@ -156,12 +160,12 @@ async def test_validate_output_dedups_llm_note_that_matches_rule_note():
 			intent="create_doctype",
 			changes=[{
 				"op": "create", "doctype": "DocType",
-				"data": {"name": "Voucher", "is_submittable": 1},
+				"data": {"name": "Voucher", "is_submittable": 1, "module": "Accounts"},
 			}],
 			site_config={},
 		)
 	# Only ONE note with that message - the rule's copy, not the LLM's.
-	matching = [n for n in notes if "post GL entries on submit" in n.issue]
+	matching = [n for n in notes if "submit in standard ERPNext" in n.issue]
 	assert len(matching) == 1
 	assert matching[0].source.startswith("module_rule:")
 
@@ -325,3 +329,71 @@ async def test_provide_context_without_redis_uses_inmem_cache():
 			target_doctype="Sales Invoice", site_config={},
 		)
 		assert llm.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_provide_family_context_unknown_family_returns_empty():
+	out = await provide_family_context(
+		family="not_a_real_family",
+		intent="create_doctype",
+		site_config={},
+	)
+	assert out == ""
+
+
+@pytest.mark.asyncio
+async def test_provide_family_context_fetches_and_caches():
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(return_value="family summary"),
+	) as llm:
+		first = await provide_family_context(
+			family="transactions", intent="create_doctype", site_config={},
+		)
+		second = await provide_family_context(
+			family="transactions", intent="create_doctype", site_config={},
+		)
+	assert first == second == "family summary"
+	# Second call should hit cache, not LLM
+	assert llm.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_provide_family_context_cache_key_is_family_plus_intent():
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(side_effect=["first", "second", "third"]),
+	) as llm:
+		await provide_family_context(
+			family="transactions", intent="create_doctype", site_config={},
+		)
+		# Different intent -> cache miss
+		await provide_family_context(
+			family="transactions", intent="create_server_script", site_config={},
+		)
+		# Different family -> cache miss
+		await provide_family_context(
+			family="operations", intent="create_doctype", site_config={},
+		)
+	assert llm.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_provide_family_context_does_not_reuse_module_cache():
+	"""Family cache and module cache are keyed differently. Calling
+	provide_context('accounts', ...) and provide_family_context('transactions', ...)
+	both make LLM calls - one doesn't satisfy the other."""
+	with patch(
+		"alfred.agents.specialists.module_specialist._ollama_chat",
+		new=AsyncMock(side_effect=["module", "family"]),
+	) as llm:
+		m = await provide_context(
+			module="accounts", intent="create_doctype",
+			target_doctype="Sales Invoice", site_config={},
+		)
+		f = await provide_family_context(
+			family="transactions", intent="create_doctype", site_config={},
+		)
+	assert m == "module"
+	assert f == "family"
+	assert llm.await_count == 2

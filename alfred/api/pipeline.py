@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import os as _os_for_flag
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
@@ -47,6 +48,30 @@ if TYPE_CHECKING:
 	from alfred.state.conversation_memory import ConversationMemory
 
 logger = logging.getLogger("alfred.pipeline")
+
+
+# ── Warmup probe resilience ─────────────────────────────────────────
+#
+# Ollama reloads a model into VRAM on first request after an idle gap
+# or when the tier roster changes. During that reload (a few seconds),
+# a probe sees a 500 or a timeout even though Ollama is perfectly
+# healthy a moment later. Per-prompt fail-fast on a single probe would
+# abort the entire pipeline for what is a transient local warmup.
+#
+# Two levers to absorb that:
+#   - `_WARMUP_CACHE` stamps `(model, base_url) -> monotonic-time` on
+#     any successful probe within the last TTL, so follow-up prompts
+#     don't re-probe a model we just talked to.
+#   - `_PROBE_ATTEMPTS` gives each probe a small retry with backoff,
+#     which covers the case where Ollama is mid-reload.
+#
+# Cache is process-local and cleared on failure of that tuple, so a
+# truly sick Ollama still surfaces an error - we just stop paying the
+# transient-reload tax on every prompt.
+_WARMUP_CACHE: dict[tuple[str, str], float] = {}
+_WARMUP_CACHE_TTL = 120.0
+_PROBE_ATTEMPTS = 2
+_PROBE_RETRY_BACKOFF_S = 3.0
 
 
 # ── Drift detection (training-data bleed) ─────────────────────────────
@@ -726,17 +751,44 @@ class AgentPipeline:
 			_resolve_ollama_config_for_tier,
 		)
 
-		models_to_probe: set[tuple[str, str]] = set()
+		all_models: set[tuple[str, str]] = set()
 		for tier in (TIER_TRIAGE, TIER_REASONING, TIER_AGENT):
 			model, base_url, _ = _resolve_ollama_config_for_tier(site_config, tier)
 			if model.startswith("ollama/"):
-				models_to_probe.add((model.removeprefix("ollama/"), base_url))
+				all_models.add((model.removeprefix("ollama/"), base_url))
 
-		if not models_to_probe:
+		if not all_models:
 			# Cloud-only configuration - nothing to probe.
 			return
 
-		async def _probe_one(ollama_model: str, base_url: str):
+		# Skip probes for any (model, url) we talked to successfully within
+		# TTL. Transient Ollama reloads commonly clear within a few seconds,
+		# so re-probing on every prompt is pure overhead once we've seen it
+		# respond once.
+		now = time.monotonic()
+		cache_hits: list[tuple[str, str]] = []
+		models_to_probe: set[tuple[str, str]] = set()
+		for m, u in all_models:
+			last_ok = _WARMUP_CACHE.get((m, u))
+			if last_ok is not None and (now - last_ok) < _WARMUP_CACHE_TTL:
+				cache_hits.append((m, u))
+			else:
+				models_to_probe.add((m, u))
+
+		if cache_hits and not models_to_probe:
+			logger.info(
+				"Warmup cache hit for all %d model(s): %s",
+				len(cache_hits), ", ".join(m for m, _ in cache_hits),
+			)
+			return
+		if cache_hits:
+			logger.info(
+				"Warmup cache hit for %d of %d model(s): %s",
+				len(cache_hits), len(all_models),
+				", ".join(m for m, _ in cache_hits),
+			)
+
+		async def _do_probe(ollama_model: str, base_url: str):
 			payload = json.dumps({
 				"model": ollama_model,
 				"prompt": "hi",
@@ -754,6 +806,40 @@ class AgentPipeline:
 				None, lambda: _urllib_request.urlopen(req, timeout=30)
 			)
 
+		async def _probe_one(ollama_model: str, base_url: str):
+			"""Retry-with-backoff wrapper around a single probe.
+
+			Two attempts with a short sleep between absorbs the 3-8s
+			window Ollama takes to swap a model back into VRAM after an
+			idle gap. Truly-dead Ollama still fails the second attempt
+			and surfaces the underlying exception.
+			"""
+			last_exc: Exception | None = None
+			for attempt in range(_PROBE_ATTEMPTS):
+				try:
+					await _do_probe(ollama_model, base_url)
+					return
+				except Exception as exc:  # noqa: BLE001 - rewrapped below
+					last_exc = exc
+					if attempt + 1 < _PROBE_ATTEMPTS:
+						logger.info(
+							"Warmup probe attempt %d/%d failed for %s: %s. "
+							"Retrying in %.1fs.",
+							attempt + 1, _PROBE_ATTEMPTS,
+							ollama_model, _summarise_probe_error(exc),
+							_PROBE_RETRY_BACKOFF_S,
+						)
+						try:
+							from alfred.obs.metrics import llm_errors_total
+							llm_errors_total.labels(
+								tier="warmup", error_type="probe_retry",
+							).inc()
+						except Exception:
+							pass
+						await asyncio.sleep(_PROBE_RETRY_BACKOFF_S)
+			assert last_exc is not None
+			raise last_exc
+
 		tasks = [
 			asyncio.create_task(_probe_one(m, u))
 			for m, u in models_to_probe
@@ -766,12 +852,17 @@ class AgentPipeline:
 			if isinstance(result, Exception):
 				reason = _summarise_probe_error(result)
 				logger.warning(
-					"Ollama health probe failed for %s at %s: %s",
-					model, base_url, reason,
+					"Ollama health probe failed for %s at %s after %d "
+					"attempt(s): %s",
+					model, base_url, _PROBE_ATTEMPTS, reason,
 				)
 				failures.append((model, base_url, reason))
+				# Evict so the next prompt re-probes instead of trusting a
+				# stale ok stamp. Safe if the tuple was never in the cache.
+				_WARMUP_CACHE.pop((model, base_url), None)
 			else:
 				warmed.append(model)
+				_WARMUP_CACHE[(model, base_url)] = time.monotonic()
 
 		if failures:
 			from alfred.obs.metrics import llm_errors_total
@@ -782,15 +873,17 @@ class AgentPipeline:
 				llm_errors_total.labels(
 					tier="warmup", error_type="OLLAMA_UNHEALTHY",
 				).inc()
-			first_model, first_url, first_reason = failures[0]
-			count = len(failures)
-			plural = "s" if count > 1 else ""
+			failure_list = ", ".join(
+				f"{m} ({r})" for m, _, r in failures
+			)
 			ctx.stop(
 				error=(
-					f"Processing service is unavailable: {count} Ollama "
-					f"model{plural} failed health check. First failure: "
-					f"{first_model} at {first_url} ({first_reason}). "
-					"Contact your admin."
+					f"Processing service is unavailable: Ollama did not "
+					f"respond after {_PROBE_ATTEMPTS} probe attempts "
+					f"({_PROBE_RETRY_BACKOFF_S:g}s apart). Failed "
+					f"model(s): {failure_list}. Check that Ollama is "
+					f"running (`ollama ps`) and that all tier models are "
+					"loaded. Contact your admin if the issue persists."
 				),
 				code="OLLAMA_UNHEALTHY",
 				failed_models=[
@@ -1340,7 +1433,10 @@ class AgentPipeline:
 		if not ctx.module:
 			return
 
-		from alfred.agents.specialists.module_specialist import provide_context
+		from alfred.agents.specialists.module_specialist import (
+			provide_context,
+			provide_family_context,
+		)
 		from alfred.registry.module_loader import ModuleRegistry
 
 		# Surface the Redis client (if configured) to the specialist so
@@ -1358,6 +1454,12 @@ class AgentPipeline:
 			except Exception:
 				return m
 
+		def _family_display(f: str) -> str:
+			try:
+				return registry.get_family(f).get("display_name", f)
+			except Exception:
+				return f
+
 		# Primary context call (same as V2 path)
 		try:
 			primary_ctx = await provide_context(
@@ -1373,6 +1475,28 @@ class AgentPipeline:
 				ctx.conversation_id, ctx.module, e,
 			)
 			primary_ctx = ""
+
+		# Primary family context. Families group related modules (e.g.
+		# accounts+selling+buying under Transactions) and carry
+		# cross-module invariants that apply to every member. We fetch
+		# the family snippet once per conversation and prepend it above
+		# the PRIMARY MODULE section. ``custom`` is familyless by
+		# design - skip silently.
+		primary_family = registry.family_for_module(ctx.module) if ctx.module else None
+		primary_family_ctx = ""
+		if primary_family:
+			try:
+				primary_family_ctx = await provide_family_context(
+					family=primary_family,
+					intent=ctx.intent or "unknown",
+					site_config=ctx.conn.site_config or {},
+					redis=redis,
+				)
+			except Exception as e:
+				logger.warning(
+					"provide_family_context failed for conversation=%s family=%s: %s",
+					ctx.conversation_id, primary_family, e,
+				)
 
 		# V3: secondary context calls (silent failure each)
 		secondary_ctxs: dict[str, str] = {}
@@ -1394,21 +1518,39 @@ class AgentPipeline:
 					)
 
 		# V2 path: bare primary snippet, no header wrapper. V3 path:
-		# labeled PRIMARY / SECONDARY sections so the LLM can distinguish
-		# the target domain from advisory context. Header wrapping only
-		# applies when V3 flag is on - V2-only runs keep their existing
-		# prompt shape.
+		# labeled PRIMARY FAMILY / PRIMARY MODULE / SECONDARY MODULE
+		# sections so the LLM can distinguish cross-module invariants
+		# from module-specific conventions from advisory context.
+		# Header wrapping only applies when V3 flag is on - V2-only
+		# runs keep their existing prompt shape.
 		if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
 			parts: list[str] = []
+			if primary_family and primary_family_ctx:
+				parts.append(
+					f"PRIMARY FAMILY ({_family_display(primary_family)}):\n{primary_family_ctx}"
+				)
 			if primary_ctx:
 				parts.append(f"PRIMARY MODULE ({_display(ctx.module)}):\n{primary_ctx}")
 			elif ctx.secondary_modules:
 				parts.append(f"PRIMARY MODULE ({_display(ctx.module)}): (no context)")
+			# Family dedupe: a secondary module in the SAME family as the
+			# primary doesn't re-emit a family section - the family-level
+			# invariants were already surfaced above. We just label the
+			# module snippet as SECONDARY MODULE.
 			for m, s in secondary_ctxs.items():
 				parts.append(f"SECONDARY MODULE CONTEXT ({_display(m)}):\n{s}")
 			ctx.module_context = "\n\n".join(parts) if parts else primary_ctx
 		else:
-			ctx.module_context = primary_ctx
+			# V2 fallback: prepend family snippet when available so V2-only
+			# callers also benefit from cross-module invariants. Keeps the
+			# bare-snippet shape for modules that have no family (custom).
+			if primary_family and primary_family_ctx and primary_ctx:
+				ctx.module_context = (
+					f"FAMILY CONTEXT ({_family_display(primary_family)}): "
+					f"{primary_family_ctx}\n\n{primary_ctx}"
+				)
+			else:
+				ctx.module_context = primary_ctx
 		ctx.module_secondary_contexts = secondary_ctxs
 
 	async def _phase_enhance(self) -> None:

@@ -1,0 +1,67 @@
+{
+	"intent": "create_workflow",
+	"display_name": "Create Workflow",
+	"doctype": "Workflow",
+	"fields": [
+		{
+			"key": "workflow_name",
+			"label": "Workflow name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "document_type",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "is_active",
+			"label": "Active",
+			"type": "check",
+			"default": 1,
+			"rationale": "Setting is_active=1 runs `UPDATE tabWorkflow SET is_active=0 WHERE document_type=<target> AND name != <new>` - only ONE active workflow per DocType can exist, and activating a new one automatically deactivates every other workflow on the same DocType. Default 1 so the workflow takes effect on deploy."
+		},
+		{
+			"key": "workflow_state_field",
+			"label": "Workflow state fieldname",
+			"type": "data",
+			"default": "workflow_state",
+			"rationale": "Names the field on the target DocType that stores the current workflow state. Default 'workflow_state' is the Frappe convention. On first save, Frappe's on_update hook AUTO-CREATES a hidden Custom Field with this fieldname on the target DocType (Link to 'Workflow State', hidden=1, allow_on_submit=1, no_copy=1) - do NOT emit a separate Custom Field item for workflow_state in the changeset. Only customise this fieldname if a field with the default name already exists for another purpose."
+		},
+		{
+			"key": "override_status",
+			"label": "Override status field",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, the workflow state replaces Frappe's native status field in list / form header. Default 0 runs workflow alongside native status."
+		},
+		{
+			"key": "send_email_alert",
+			"label": "Send email alert on state change (parent flag)",
+			"type": "check",
+			"default": 0,
+			"rationale": "Parent-level toggle for Frappe's built-in email-on-transition. Default 0; prefer a dedicated Notification for richer templating. Individual states can override via send_email flag per state row."
+		},
+		{
+			"key": "states",
+			"label": "States (list of Workflow Document State rows)",
+			"type": "text",
+			"required": true
+		},
+		{
+			"key": "transitions",
+			"label": "Transitions (list of {state, action, next_state, allowed, condition?})",
+			"type": "text",
+			"required": true
+		},
+		{
+			"key": "enable_action_confirmation",
+			"label": "Prompt for confirmation on every transition",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, every transition action pops a confirmation dialog before the state change. Useful for destructive transitions (reject / cancel) where accidental clicks would cost. Default 0 (fast-path)."
+		}
+	]
+}

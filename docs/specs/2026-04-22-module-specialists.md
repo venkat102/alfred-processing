@@ -406,3 +406,102 @@ No new CSS classes beyond the existing `alfred-banner--*` family.
 - **Should module-specialist context be visible to the user?** The context snippet fed into the LLM is a reasoning trace Alfred can keep private, or it can be shown as "Alfred consulted Accounts conventions" in the UI. Suggest: private by default, add a "why?" expander later if users ask. Out of scope for V2.
 - **Cache TTL for provide_context.** Proposed 5 minutes. If Accounts KB changes, stale caches show old context for 5 minutes. Acceptable for V2 since KB edits require a code deploy anyway. Reconsider if KB becomes site-editable in V3.
 - **What happens to `ctx.module_validation_notes` on `blocker` severity?** Proposal: blockers disable the Deploy button in the UI (same mechanism as required-empty fields from V1), but do NOT short-circuit the pipeline. User sees the full changeset + the blocker reason + must edit the prompt to proceed. Decide during implementation.
+
+## Addendum: Family layer (2026-04-23)
+
+This addendum documents the family layer added after the V2 + V3 + canonical-KB-overhaul work shipped. It extends the spec without changing any of the existing behaviour described above.
+
+**Motivation.** The Frappe side (V1) groups 22 intent registries under 4 family builders (`schema_builder`, `reports_builder`, `automation_builder`, `presentation_builder`) with shared base context. The ERPNext side (V2) shipped as a flat list of 13 module KBs - no shared context between related modules. Three problems followed:
+1. Facts repeated across several KBs (party + currency + GL posting in accounts + selling + buying; Item + Warehouse in stock + manufacturing + assets) drifted.
+2. Cross-module invariants (e.g. "Stock Ledger posts before General Ledger"; "Salary Slip.on_submit does NOT post GL, Payroll Entry does") had no shared home.
+3. Frappe intent specialists couldn't consume ERPNext cross-module domain knowledge - the plumbing only surfaced per-module snippets.
+
+**Design.** Add a *family layer above* the 13 module KBs. Families are a labeled context layer that flows through the same plumbing as the module layer, not a restructuring of modules. Four families cover the 12 non-custom modules:
+
+| Family | Member modules | Shared concerns |
+|---|---|---|
+| `transactions` | accounts, selling, buying | GL posting, party + currency, tax templates, 3-stage SO/DN/SI and PO/PR/PI coupling, Payment Schedule, return_against |
+| `operations` | stock, manufacturing, assets | Item identity (serial / batch / stock), Warehouse tree, Bin / SLE append-only, BOM + Routing + Work Order, Asset lifecycle |
+| `people` | hr, payroll | Employee state machine, Leave Ledger derivation, Salary Slip vs Payroll Entry GL split, date_of_joining as universal lower bound |
+| `engagement` | crm, support, projects, maintenance | Customer-touch lifecycle, SLA / Schedule / Visit cadence, status-field vs docstatus lifecycle, Customer portal role |
+
+`custom` is intentionally familyless - it's the catch-all KB for user-defined DocTypes outside canonical ERPNext modules.
+
+**Schema changes.**
+- `modules/_meta_schema.json`: add optional `family` field (enum of the 4 family names). `additionalProperties=false` still holds - every other module field is explicit.
+- `modules/_families/_meta_schema.json` (new): schema for family KBs. Required: `name`, `display_name`, `member_modules`, `backstory`, `cross_module_invariants`. Optional: `shared_validation_rules` (not used yet).
+
+**File layout.**
+```
+alfred/registry/modules/
+├── _meta_schema.json                   # module schema + family enum
+├── _families/
+│   ├── _meta_schema.json               # family schema
+│   ├── transactions.json
+│   ├── operations.json
+│   ├── people.json
+│   └── engagement.json
+├── accounts.json                       # family: "transactions"
+├── selling.json                        # family: "transactions"
+├── buying.json                         # family: "transactions"
+├── stock.json                          # family: "operations"
+├── manufacturing.json                  # family: "operations"
+├── assets.json                         # family: "operations"
+├── hr.json                             # family: "people"
+├── payroll.json                        # family: "people"
+├── crm.json                            # family: "engagement"
+├── support.json                        # family: "engagement"
+├── projects.json                       # family: "engagement"
+├── maintenance.json                    # family: "engagement"
+└── custom.json                         # no family field (catch-all)
+```
+
+**Loader.** `ModuleRegistry.load()` now also globs `_families/*.json` and indexes by name. New APIs:
+- `families() -> list[str]` - sorted list of family names.
+- `get_family(name) -> dict` - returns the family KB; raises `UnknownFamilyError` on miss.
+- `family_for_module(module) -> str | None` - returns the family name for a module; `None` for `custom` or unknown.
+
+Existing APIs (`modules`, `get`, `detect`, `detect_all`, `for_doctype`) unchanged.
+
+**Specialist.** `alfred/agents/specialists/module_specialist.py` gained `provide_family_context(family, intent, site_config, redis=None) -> str`:
+- Same Redis + in-memory cache shape as `provide_context`, keyed `alfred:family_ctx:<family>:<intent>` with a **15-minute TTL** (longer than the 5-minute module TTL - families change less).
+- Summarises the family KB's `cross_module_invariants` via a triage LLM call using the family backstory as system prompt.
+- Returns empty string on unknown family or LLM failure (silent fallback).
+
+The family cache uses a separate in-memory dict (`_family_context_cache`) and Redis namespace from the module cache; calling `provide_context('accounts', ...)` and `provide_family_context('transactions', ...)` are two independent LLM calls that don't cache-hit each other.
+
+**Pipeline.** `_phase_provide_module_context` in `alfred/api/pipeline.py` now assembles a layered string:
+- V3 path (`ALFRED_MULTI_MODULE=1`):
+  ```
+  PRIMARY FAMILY (Transactions):
+  <family snippet>
+
+  PRIMARY MODULE (Accounts):
+  <module snippet>
+
+  SECONDARY MODULE CONTEXT (Stock):
+  <stock snippet>
+  ```
+- V2 fallback (`ALFRED_MULTI_MODULE=0`): inline prefix `FAMILY CONTEXT (Transactions): <family snippet>\n\n<module snippet>` so single-module callers also see cross-module invariants.
+- Familyless modules (`custom`): no family section emitted; existing behaviour preserved.
+- Family dedupe: secondary modules in the SAME family as the primary do NOT re-emit a family section - the primary's family header already covers them.
+
+**Frappe builder communication.** All 4 family builders' `_wrap_module_context()` marker now documents the layered sections:
+> MODULE CONTEXT (ERPNext domain knowledge - respect these alongside the shape-defining fields above):
+> The snippet may contain layered sections labeled PRIMARY FAMILY (cross-module invariants shared across a family like Transactions or Operations), PRIMARY MODULE (the specific ERPNext module's conventions), and SECONDARY MODULE CONTEXT (advisory context from related modules). Treat every labeled section as authoritative. If a FAMILY-level invariant conflicts with a shape-defining default above, the FAMILY invariant wins - families encode real controller-enforced rules.
+
+This is how Frappe intent specialists "communicate" with ERPNext module specialists: labeled sections both sides trust, plus an explicit precedence rule. No CrewAI wiring or tool changes.
+
+**Tests.**
+- `tests/test_family_registry.py` (new, 9 tests): family schema self-check, family JSON validation, registry load, grouping assertions, `get_family` / `family_for_module` / member-modules consistency.
+- `tests/test_module_specialist_llm.py` (extended, +4 tests): `provide_family_context` cache shape, key structure, unknown-family handling, cache independence from module cache.
+- `tests/test_pipeline_multi_module.py` (extended, +3 tests): PRIMARY FAMILY -> PRIMARY MODULE -> SECONDARY MODULE ordering, familyless `custom` skips family section, V2-fallback FAMILY CONTEXT prefix.
+- Net: 169 module/family/pipeline/backfill tests + 91 family builder tests all pass.
+
+**Feature-flag story.** No new flags. Families are active whenever `ALFRED_MODULE_SPECIALISTS=1`. The layered section format only kicks in when `ALFRED_MULTI_MODULE=1`; V2-only runs get the inline FAMILY CONTEXT prefix for the primary module's family. Flag-off (`ALFRED_MODULE_SPECIALISTS=0`): specialist is never called, no families loaded, no regression.
+
+**Rollout.** Shipped atomically across 4 commits:
+1. Schema + 4 family KBs.
+2. `family` field added to 12 module JSONs + loader extension.
+3. `provide_family_context` + pipeline layering.
+4. Frappe builder backstory updates + tests.

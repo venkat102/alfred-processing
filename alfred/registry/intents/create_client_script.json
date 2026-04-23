@@ -1,0 +1,50 @@
+{
+	"intent": "create_client_script",
+	"display_name": "Create Client Script",
+	"doctype": "Client Script",
+	"fields": [
+		{
+			"key": "name",
+			"label": "Descriptive name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "dt",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "view",
+			"label": "View",
+			"type": "select",
+			"options": ["Form", "List"],
+			"default": "Form",
+			"rationale": "Form is the canonical place for field handlers, custom buttons, show/hide logic. List applies to the list view. set_only_once - cannot be toggled after save. istable=1 DocTypes (child tables) require a separate Client Script each."
+		},
+		{
+			"key": "script",
+			"label": "Script body (JavaScript)",
+			"type": "text",
+			"default": "",
+			"rationale": "Browser-sandboxed JS. Use frappe.ui.form.on('<DocType>', { handler_name: function(frm) { ... } }) for Form scripts; frappe.listview_settings['<DocType>'] = { ... } for List scripts. Common handlers: refresh (runs on every form load), <fieldname> (runs on field-change), validate (runs before save), after_save, before_submit. Read via frm.doc.<field>; mutate via frm.set_value; add buttons via frm.add_custom_button. NEVER use jQuery selectors against Desk chrome - Desk markup is not a stable contract and breaks between versions."
+		},
+		{
+			"key": "enabled",
+			"label": "Enabled",
+			"type": "check",
+			"default": 1,
+			"rationale": "Default enabled. Disabled scripts are still stored and loaded into the bundle - the check is at execution time; rely on this for staging but not for security."
+		},
+		{
+			"key": "module",
+			"label": "Module (for standard / versioned scripts)",
+			"type": "link",
+			"link_doctype": "Module Def",
+			"default": "",
+			"rationale": "Optional. When set, the Client Script is associated with a Frappe module (useful for app-shipped scripts). Empty for site-local scripts (the common case)."
+		}
+	]
+}

@@ -1,45 +1,98 @@
 {
 	"module": "projects",
+	"family": "engagement",
 	"display_name": "Projects",
 	"frappe_module_key": "Projects",
-	"backstory": "You are the Alfred ERPNext Projects domain authority. You know Project / Task / Timesheet / Activity Type / Activity Cost / Project Template / Project Type conventions. You know Timesheets are submittable and, when marked billable, post billing entries that flow into Sales Invoice (Accounts) via the project + task linkage. You know Tasks have parent-child hierarchies and depends_on chains - closing a parent without closing its subtree is a convention violation. You know Projects bind to a Customer (for external, billable engagements) or stand alone (for internal work), and the distinction drives whether timesheet hours are billable. You catch anti-patterns: Tasks without a Project link, Timesheet entries with hours but no activity_type, billable timesheets without a rate source (Activity Cost / Employee rate), closing tasks that have open dependencies, hardcoding project_cost rather than deriving from timesheets + expense claims.",
+	"backstory": "You are the Alfred ERPNext Projects domain authority. You know Project / Task / Timesheet / Activity Type / Activity Cost / Project Template / Project Type / Dependent Task / Projects Settings conventions. You know Timesheets are submittable and, when marked billable, post billing entries that flow into Sales Invoice (Accounts) via the project + task linkage. You know Task has a parent-child tree (is_group=1 for parent tasks that roll up children) AND a cross-branch dependency graph (depends_on child rows). Both trees are validated: the controller raises CircularReferenceError (task.py:17-21) when depends_on creates a cycle, and blocks is_group parent tasks from transitioning to Completed until all children complete. You know Task.is_milestone=1 is a UX flag for Gantt rendering - milestones without an exp_end_date silently break Gantt because the milestone has no date axis to pin to. You know Timesheet carries billing_rate (the customer-facing rate) AND cost_rate (the internal employee rate) - two separate values that both flow through. For billable timesheets, billing_rate defaults from Activity Cost (per employee + activity_type) if not set explicitly. You know Project Template is a reusable Project definition with its tasks; apply_template on a new Project clones the template's task tree. You know Projects bind to a Customer (for external, billable engagements) or stand alone (for internal work), and the distinction drives whether timesheet hours are billable. You know Dependent Task is a flag field on Task indicating the Task's depends_on rows must all be completed before this task can start (is_dependent_task derives from depends_on being non-empty). Anti-patterns: Tasks without a Project link; Timesheet entries with hours but no activity_type; billable timesheets without a rate source; closing tasks with open dependencies; hardcoding project_cost instead of deriving from timesheets + expense claims; circular depends_on.",
 	"conventions": {
 		"permissions_add_roles": [
 			{"role": "Projects Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
 			{"role": "Projects User", "read": 1, "write": 1, "create": 1, "delete": 0},
 			{"role": "Employee", "read": 1, "write": 1, "create": 1, "delete": 0}
 		],
-		"naming_patterns": ["format:PRJ-.YYYY.-.#####"],
-		"typical_linked_doctypes": ["Project", "Task", "Timesheet", "Activity Type", "Activity Cost", "Employee", "Customer"],
-		"required_hooks_for_submittable": [],
+		"naming_patterns": [
+			"format:PROJ-.####",
+			"format:TASK-.YYYY.-.#####",
+			"format:TS-.YYYY.-.#####"
+		],
+		"typical_linked_doctypes": [
+			"Project", "Project Template", "Project Type", "Project Update", "Project User",
+			"Task", "Task Depends On", "Task Type", "Dependent Task",
+			"Timesheet", "Timesheet Detail",
+			"Activity Type", "Activity Cost",
+			"Employee", "Customer",
+			"Projects Settings"
+		],
+		"required_hooks_for_submittable": [
+			"on_submit_update_timesheet_billing_for_Timesheet",
+			"on_submit_update_task_status_from_completion_for_Task"
+		],
 		"gotchas": [
 			"Timesheets are submittable - billable hours flow through to Sales Invoice via project + task linkage. Bypassing submission means nothing gets billed.",
-			"Task dependency chains (depends_on) should be honoured. Closing a task whose dependencies are open leaves the project graph inconsistent.",
-			"Project cost derives from timesheet hours * activity rate + linked Expense Claims. Do not maintain a separate project_cost field - it drifts.",
-			"External (billable) projects need a Customer link; internal projects should explicitly flag is_internal or similar so billing logic can skip them."
+			"Task has TWO tree relationships: parent-child via is_group + parent_task (roll-up hierarchy), and cross-branch dependency via depends_on child rows. Both are validated; depends_on cycles raise CircularReferenceError (task.py:17-21).",
+			"Task.is_group=1 parent tasks cannot transition to Completed until ALL children are completed. The controller blocks the state change at validate.",
+			"Task.is_milestone=1 without exp_end_date silently breaks Gantt rendering - milestones need a date axis to pin to. The validation rule surfaces this as a warning.",
+			"Timesheet carries billing_rate (customer-facing) AND cost_rate (internal). Both flow independently. For billable timesheets, billing_rate defaults from Activity Cost (per Employee + Activity Type) when not set explicitly.",
+			"Project.is_internal vs customer-linked: external (billable) projects need a Customer; internal projects stand alone. is_internal skips the billing-to-Sales-Invoice flow.",
+			"Project cost derives from timesheet hours * activity rate + linked Expense Claims - do NOT maintain a separate project_cost field, it drifts.",
+			"Project Template carries its task tree; apply_template on a new Project clones the template's tasks (with relative dates offset from the Project's expected_start_date). Useful for repeated project types.",
+			"Dependent Task: is_dependent_task derives from Task.depends_on being non-empty. Tasks with dependencies cannot start until all depends_on rows are completed; the controller enforces this at save.",
+			"Projects Settings controls site-wide defaults: timesheet billing rules, project naming, update frequency for Project Update."
 		]
 	},
 	"validation_rules": [
 		{
+			"id": "projects_task_depends_on_no_cycle",
+			"severity": "blocker",
+			"when": {"doctype": "Task"},
+			"message": "Task.depends_on rows creating a cycle through parent / child / other depends_on relationships raise CircularReferenceError (task.py:17-21). The controller rejects the save.",
+			"fix": "Verify depends_on rows don't close a loop with parent_task chains or other depends_on references. A -> B -> C -> A is invalid."
+		},
+		{
+			"id": "projects_task_milestone_needs_end_date",
+			"severity": "warning",
+			"when": {"doctype": "Task", "data.is_milestone": 1},
+			"message": "Task with is_milestone=1 needs exp_end_date to render correctly on the Gantt. Without it, the milestone has no date axis to pin to and Gantt silently breaks.",
+			"fix": "Set data.exp_end_date to the milestone date, or unset is_milestone if this is a regular task."
+		},
+		{
+			"id": "projects_task_group_completed_needs_children_done",
+			"severity": "advisory",
+			"when": {"doctype": "Task", "data.is_group": 1, "data.status": "Completed"},
+			"message": "Task.is_group=1 parent tasks cannot transition to Completed while children are still Open / Working. The controller blocks the save.",
+			"fix": "Complete all child Tasks before marking the parent Task as Completed, or change this Task to is_group=0."
+		},
+		{
+			"id": "projects_timesheet_billable_needs_rate",
+			"severity": "blocker",
+			"when": {"doctype": "Timesheet Detail", "data.is_billable": 1},
+			"message": "Timesheet Detail with is_billable=1 requires a billing_rate. Without it, billing_hours * billing_rate produces zero billable amount and the downstream Sales Invoice billing path silently skips this row.",
+			"fix": "Set data.billing_rate explicitly, or ensure Activity Cost exists for the Employee + Activity Type combo so the rate is auto-fetched."
+		},
+		{
 			"id": "projects_needs_projects_manager_perm",
 			"severity": "advisory",
-			"when": {"doctype": "DocType"},
-			"message": "Projects DocTypes typically include Projects Manager, Projects User, and Employee (self-service) permission rows.",
-			"fix": "Add Projects Manager (full), Projects User (no delete), and Employee (self-service, no delete) rows to permissions."
+			"when": {"doctype": "DocType", "data.module": "Projects"},
+			"message": "Projects DocTypes typically include Projects Manager (full), Projects User (no delete), and Employee (self-service, no delete) permission rows.",
+			"fix": "Add the three roles with their standard permission flags."
 		}
 	],
 	"detection_hints": {
 		"target_doctype_matches": [
-			"Project", "Project Template", "Project Type", "Project Update",
-			"Task", "Task Depends On", "Task Type",
+			"Project", "Project Template", "Project Type", "Project Update", "Project User",
+			"Task", "Task Depends On", "Task Type", "Dependent Task",
 			"Timesheet", "Timesheet Detail",
-			"Activity Type", "Activity Cost"
+			"Activity Type", "Activity Cost",
+			"Projects Settings"
 		],
 		"keyword_hints": [
-			"project task", "project template", "project update",
-			"timesheet", "activity type", "activity cost",
+			"project", "project task", "project template", "project update",
+			"timesheet", "timesheet detail", "activity type", "activity cost",
 			"projects manager", "projects user",
-			"billable hours", "task dependency", "depends on"
+			"billable hours", "billing rate", "cost rate",
+			"task dependency", "depends on", "circular reference",
+			"is_milestone", "is_group parent task",
+			"gantt", "project tree"
 		]
 	}
 }

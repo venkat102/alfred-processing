@@ -1,54 +1,122 @@
 {
 	"module": "manufacturing",
+	"family": "operations",
 	"display_name": "Manufacturing",
 	"frappe_module_key": "Manufacturing",
-	"backstory": "You are the Alfred ERPNext Manufacturing domain authority. You know BOM / Work Order / Job Card / Routing / Operation / Workstation / Production Plan conventions. You know the lifecycle runs Production Plan -> Work Order (per finished good) -> Job Card (per operation), consuming raw materials and producing finished goods via Stock Entry postings to the Stock Ledger. You know BOMs are versioned and recursive - a BOM item can be a sub-assembly with its own BOM, and replace-all-with-new-version is a one-way operation. You know Work Orders bind to a specific BOM version at submit and carry required_items / required_qty that reserve inventory. You know Workstations carry capacity (hour rate, holiday list) that throttles Job Card scheduling. You catch anti-patterns: BOM with zero-quantity line items, Work Order without a BOM reference, Job Card without a routing operation, skipping Stock Entry when consuming raw materials, mixing subcontracted and in-house operations on the same Work Order without supplier validation.",
+	"backstory": "You are the Alfred ERPNext Manufacturing domain authority. You know BOM / Work Order / Job Card / Routing / Operation / Workstation / Production Plan / Master Production Schedule / Blanket Order conventions. You know the lifecycle runs Production Plan -> Work Order (per finished good) -> Job Card (per operation), consuming raw materials and producing finished goods via Stock Entry postings to the Stock Ledger. You know BOM is the recipe (item components + operations), Routing is the operations sequence across workstations - a BOM with operations REQUIRES a Routing link. You know BOMs are versioned: swapping an active BOM for a new version via BOM Update Tool cascades into Work Orders only prospectively, not retrospectively. You know Work Order status lifecycle: Draft -> Submitted -> Not Started -> In Process -> Completed / Stopped. Stock reservation happens at Submitted; material transfer happens on the Material Transfer Stock Entry; consumption happens on each Job Card submit (or Backflush at Manufacture Stock Entry). You know Backflush vs Explicit Material Transfer: Work Order.skip_transfer=0 with a wip_warehouse creates Stock Entries for every material movement; skip_transfer=1 backflushes raw material consumption at Manufacture time without tracking the WIP stage (work_order.py:189 mandatory_depends_on). You know Overproduction Tolerance is a site-wide setting - Work Order allows +qty beyond BOM's required qty up to the tolerance. You know Subcontracting has two paths: in-house (Job Card with a subcontracted operation + Supplier) and outsourced (Subcontracting Order + Subcontracting BOM + Subcontracting Receipt, which live in erpnext/subcontracting/ but are part of the Manufacturing domain). You know BOM Creator is the visual BOM building tool. You know Plant Floor is the v15+ shop-floor dashboard view. Anti-patterns: BOM with zero-quantity line items, Work Order without a BOM reference, Job Card without a routing operation, skipping Stock Entry when consuming raw materials, mixing subcontracted and in-house operations on the same Work Order without supplier validation, overlapping Job Card time_log ranges per operation.",
 	"conventions": {
 		"permissions_add_roles": [
 			{"role": "Manufacturing Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
 			{"role": "Manufacturing User", "read": 1, "write": 1, "create": 1, "delete": 0},
-			{"role": "Stock User", "read": 1, "write": 0, "create": 0, "delete": 0}
+			{"role": "Stock User", "read": 1, "write": 0, "create": 0, "delete": 0},
+			{"role": "Quality Manager", "read": 1, "write": 0, "create": 0, "delete": 0}
 		],
-		"naming_patterns": ["format:MFG-.YYYY.-.#####"],
-		"typical_linked_doctypes": ["BOM", "Work Order", "Job Card", "Workstation", "Operation", "Routing", "Item"],
-		"required_hooks_for_submittable": ["on_submit_stock_ledger_posting"],
+		"naming_patterns": [
+			"format:MFG-WO-.YYYY.-.#####",
+			"format:MFG-JC-.YYYY.-.#####",
+			"format:BOM-.####",
+			"format:MFG-PP-.YYYY.-.#####",
+			"format:MFG-BLR-.YYYY.-.#####"
+		],
+		"typical_linked_doctypes": [
+			"BOM", "BOM Item", "BOM Operation", "BOM Scrap Item",
+			"Work Order", "Work Order Item", "Work Order Operation",
+			"Job Card", "Job Card Item", "Job Card Time Log",
+			"Workstation", "Workstation Type", "Workstation Cost",
+			"Operation", "Routing", "Routing Operation",
+			"Production Plan", "Material Request Plan Item",
+			"Blanket Order", "Master Production Schedule",
+			"Plant Floor", "Sub Operation", "Downtime Entry",
+			"Subcontracting Order", "Subcontracting Receipt", "Subcontracting BOM",
+			"Item", "Warehouse", "Cost Center"
+		],
+		"required_hooks_for_submittable": [
+			"on_submit_reserve_materials_for_Work_Order",
+			"on_submit_update_stock_ledger_for_Stock_Entry_from_Job_Card",
+			"on_submit_update_work_order_status_for_Job_Card"
+		],
 		"gotchas": [
-			"Submittable Manufacturing DocTypes (Work Order, Stock Entry from a Job Card) post to Stock Ledger Entry - consumed raw materials and produced finished goods both flow through stock.",
-			"BOMs bind to a Work Order at submit - changing the BOM after that does NOT retroactively update the Work Order's required_items.",
-			"Workstation capacity (hour_rate, working_hours, holiday_list) throttles Job Card scheduling. Assigning Job Cards without checking Workstation availability produces impossible schedules.",
-			"Subcontracting operations require a valid Supplier on the Job Card and a separate Purchase Order for the conversion service - not a single document."
+			"Work Order.skip_transfer=0 REQUIRES wip_warehouse (work_order.py:189 mandatory_depends_on). Missing wip_warehouse with skip_transfer=0 fails at validate.",
+			"Backflush vs Explicit: skip_transfer=0 creates explicit Material Transfer Stock Entries to the wip_warehouse before Manufacture; skip_transfer=1 backflushes consumption at Manufacture time. The valuation impact is the same; the traceability differs.",
+			"BOM.is_active=0 blocks Work Order creation. An inactive BOM is archival-only; replace-with-new-version via BOM Update Tool to swap the active default.",
+			"BOM with operations (BOM.with_operations=1) REQUIRES a Routing link. Without it, Job Card generation fails at Work Order submit.",
+			"BOMs are recursive: a BOM item can be a sub-assembly with its own BOM (item_wise_bom). Exploding a nested BOM happens at Work Order creation, not at BOM save.",
+			"Work Order status lifecycle: Draft -> Submitted -> Not Started -> In Process -> Completed / Stopped. Stock reservation fires at Submitted; Material Transfer Stock Entry moves the draft state to Not Started; Job Card submissions progress to In Process; the final Manufacture Stock Entry closes to Completed.",
+			"Overproduction Tolerance is a site-wide Manufacturing Settings field. Work Order allows +qty up to the tolerance beyond BOM's required qty - typical value 5%. Producing beyond that fails at the Manufacture Stock Entry submit.",
+			"Job Card time_log entries MUST NOT overlap per operation - overlapping ranges produce impossible labour durations and break Workstation capacity reports.",
+			"Subcontracting (outsourced): creates Subcontracting Order (reserves raw materials in PO.supplied_items) -> Subcontracting Receipt (receives converted goods). Purchase Invoice can only be raised AFTER Subcontracting Receipt. Subcontracting BOM specifies the conversion recipe. Lives in erpnext/subcontracting/ but the workflow is Manufacturing.",
+			"Subcontracting (in-house): a Job Card with a subcontracted operation + a Supplier link. This is a single-document flow, distinct from the outsourced Subcontracting Order path.",
+			"Plant Floor is the v15+ shop-floor dashboard - a real-time view of Job Card / Workstation / Operation state. It's read-only; Job Cards update the view but Plant Floor itself isn't edited.",
+			"BOM Creator is the visual BOM builder; it emits BOM rows + operations + scrap items. Using BOM Creator vs directly editing BOM is a UX choice, not a data-model difference."
 		]
 	},
 	"validation_rules": [
 		{
-			"id": "manufacturing_submittable_needs_stock_ledger",
+			"id": "manufacturing_work_order_skip_transfer_needs_wip",
+			"severity": "blocker",
+			"when": {"doctype": "Work Order", "data.skip_transfer": 0},
+			"message": "Work Order with skip_transfer=0 REQUIRES wip_warehouse. work_order.py:189 mandatory_depends_on rejects saves without it.",
+			"fix": "Set data.wip_warehouse to the Work-In-Progress warehouse, or set skip_transfer=1 for backflush-mode consumption."
+		},
+		{
+			"id": "manufacturing_work_order_needs_active_bom",
+			"severity": "blocker",
+			"when": {"doctype": "Work Order"},
+			"message": "Work Order requires a BOM with is_active=1. An inactive BOM blocks Work Order creation - archival BOMs should be replaced via BOM Update Tool before being referenced.",
+			"fix": "Set data.bom_no to a BOM with is_active=1, or activate the chosen BOM (and deactivate any old default for the same production_item)."
+		},
+		{
+			"id": "manufacturing_bom_with_operations_needs_routing",
+			"severity": "blocker",
+			"when": {"doctype": "BOM", "data.with_operations": 1},
+			"message": "BOM with with_operations=1 REQUIRES a routing link. Without it, Work Order submission fails when generating Job Cards from the operations list.",
+			"fix": "Set data.routing to an existing Routing or populate data.operations explicitly with the operation / workstation rows."
+		},
+		{
+			"id": "manufacturing_job_card_time_log_overlap",
 			"severity": "warning",
-			"when": {"doctype": "DocType", "data.is_submittable": 1},
-			"message": "Submittable Manufacturing DocTypes typically post to Stock Ledger Entry on submit - raw material consumption and finished goods production both flow through stock.",
-			"fix": "Add a Server Script with doctype_event='on_submit' that inserts Stock Ledger Entry rows for consumed and produced items, or confirm this DocType is exempt (e.g. pure planning without inventory impact)."
+			"when": {"doctype": "Job Card"},
+			"message": "Job Card time_log entries MUST NOT overlap per operation. Overlapping ranges produce impossible labour durations and break Workstation capacity reports.",
+			"fix": "Ensure each time_log row's from_time / to_time does not overlap any other row's range on the same operation."
+		},
+		{
+			"id": "manufacturing_work_order_overproduction_tolerance",
+			"severity": "advisory",
+			"when": {"doctype": "Work Order"},
+			"message": "Work Order qty exceeds BOM's required qty. ERPNext enforces a site-wide Overproduction Tolerance (typically 5%); producing beyond that fails at the Manufacture Stock Entry submit.",
+			"fix": "Verify data.qty is within Manufacturing Settings.overproduction_percentage_for_work_order of the BOM's quantity. If intentional over-production, raise the site tolerance."
 		},
 		{
 			"id": "manufacturing_needs_manufacturing_manager_perm",
 			"severity": "advisory",
-			"when": {"doctype": "DocType"},
-			"message": "Manufacturing DocTypes typically include Manufacturing Manager, Manufacturing User, and read-only Stock User permission rows.",
-			"fix": "Add Manufacturing Manager (full), Manufacturing User (no delete), and Stock User (read-only) rows to permissions."
+			"when": {"doctype": "DocType", "data.module": "Manufacturing"},
+			"message": "Manufacturing DocTypes typically include Manufacturing Manager (full), Manufacturing User (no delete), read-only Stock User, and read-only Quality Manager permission rows.",
+			"fix": "Add the four roles with their standard permission flags."
 		}
 	],
 	"detection_hints": {
 		"target_doctype_matches": [
 			"BOM", "BOM Item", "BOM Operation", "BOM Scrap Item",
+			"BOM Update Log", "BOM Update Tool", "BOM Creator",
 			"Work Order", "Work Order Item", "Work Order Operation",
 			"Job Card", "Job Card Item", "Job Card Time Log",
-			"Workstation", "Workstation Type", "Operation",
-			"Routing", "Routing Operation",
-			"Production Plan", "Manufacturing Settings"
+			"Workstation", "Workstation Type", "Workstation Cost",
+			"Operation", "Routing", "Routing Operation", "Sub Operation",
+			"Production Plan", "Production Plan Item", "Material Request Plan Item",
+			"Blanket Order", "Master Production Schedule",
+			"Plant Floor", "Downtime Entry",
+			"Manufacturing Settings",
+			"Subcontracting Order", "Subcontracting Receipt", "Subcontracting BOM"
 		],
 		"keyword_hints": [
-			"bill of materials", "work order", "job card",
+			"bill of materials", "bom", "work order", "job card",
 			"production plan", "workstation", "routing operation",
 			"manufacturing manager", "manufacturing user",
-			"subcontracting", "finished good", "raw material consumption"
+			"subcontracting", "subcontracted", "finished good", "raw material consumption",
+			"backflush", "skip transfer", "wip warehouse",
+			"blanket order", "master production schedule", "mps",
+			"plant floor", "bom creator", "downtime",
+			"overproduction tolerance"
 		]
 	}
 }

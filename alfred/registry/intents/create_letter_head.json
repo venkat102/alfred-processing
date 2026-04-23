@@ -1,0 +1,129 @@
+{
+	"intent": "create_letter_head",
+	"display_name": "Create Letter Head",
+	"doctype": "Letter Head",
+	"fields": [
+		{
+			"key": "letter_head_name",
+			"label": "Letter head name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "source",
+			"label": "Header source",
+			"type": "select",
+			"options": ["HTML", "Image"],
+			"default": "HTML",
+			"rationale": "HTML lets the header adapt to page layout and supports Jinja. Image uses an uploaded image file (flat, no templating). If source='Image' and the image field is set, set_image() auto-converts the attachment into <img> HTML and stores it in the content field at validate time - the conversion is one-way."
+		},
+		{
+			"key": "footer_source",
+			"label": "Footer source",
+			"type": "select",
+			"options": ["HTML", "Image"],
+			"default": "HTML",
+			"rationale": "Same HTML vs Image choice as header, but scoped to the footer. Footer visibility in non-PDF renders is unreliable; design for the PDF path."
+		},
+		{
+			"key": "content",
+			"label": "Header HTML (when source='HTML')",
+			"type": "text",
+			"default": "",
+			"rationale": "HTML for the document header (logo, company name, address, contact block). Jinja-templated; `doc` context is available when rendered inside a Print Format. Empty means no header body."
+		},
+		{
+			"key": "footer",
+			"label": "Footer HTML (when footer_source='HTML')",
+			"type": "text",
+			"default": "",
+			"rationale": "HTML for the document footer (page number, legal disclaimer, bank details). Jinja-templated; footer only renders reliably in PDF output - preview pages may show it differently."
+		},
+		{
+			"key": "image",
+			"label": "Header image (when source='Image')",
+			"type": "data",
+			"default": "",
+			"rationale": "Attach Image file path. When source='Image' and this field is set at save time, set_image() auto-generates an <img> HTML snippet into the content field with dimensions from image_height / image_width if provided."
+		},
+		{
+			"key": "align",
+			"label": "Header alignment",
+			"type": "select",
+			"options": ["Left", "Center", "Right"],
+			"default": "Left",
+			"rationale": "Default Left. Center / Right shift the HTML-wrapped content within the page margin."
+		},
+		{
+			"key": "is_default",
+			"label": "Default letter head",
+			"type": "check",
+			"default": 0,
+			"rationale": "Site-wide singleton: setting is_default=1 auto-clears is_default on every other Letter Head. If the current default is deleted, the next Letter Head saved auto-becomes the default (on_update forces is_default=1 when no other default exists). A Letter Head cannot be both disabled=1 AND is_default=1 - the controller rejects that combo."
+		},
+		{
+			"key": "disabled",
+			"label": "Disabled",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default enabled. Disabled letter heads are hidden from Print Format dropdowns. Cannot be combined with is_default=1."
+		},
+		{
+			"key": "image_height",
+			"label": "Header image height (px, when source=Image)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Only meaningful when source=Image. Constrains the image's height; leaving 0 preserves native dimensions. Used together with image_width to scale the image proportionally - set ONE (not both) to avoid distortion; the controller scales the other dimension to maintain aspect ratio."
+		},
+		{
+			"key": "image_width",
+			"label": "Header image width (px, when source=Image)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Only meaningful when source=Image. Constrains the image's width. Set either image_height OR image_width (not both) to scale proportionally. 0 preserves native width."
+		},
+		{
+			"key": "footer_image",
+			"label": "Footer image (when footer_source=Image)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when footer_source=Image. Attach Image file path. Auto-converted to <img> HTML in the footer field at validate time, same as the header image path."
+		},
+		{
+			"key": "footer_image_height",
+			"label": "Footer image height (px)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Only meaningful when footer_source=Image. 0 preserves native height; set either height or width to scale proportionally."
+		},
+		{
+			"key": "footer_image_width",
+			"label": "Footer image width (px)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Only meaningful when footer_source=Image. 0 preserves native width."
+		},
+		{
+			"key": "footer_align",
+			"label": "Footer alignment",
+			"type": "select",
+			"options": ["Left", "Center", "Right"],
+			"default": "Left",
+			"rationale": "Independent of header align. Default Left matches legal / bank-detail footer conventions; Center for 'page N of M' style centred footers."
+		},
+		{
+			"key": "header_script",
+			"label": "Header script (advanced JS)",
+			"type": "text",
+			"default": "",
+			"rationale": "Advanced: JavaScript executed during print render to mutate the header at print time (date / page number injection). Only for users who know the print-render lifecycle. Empty for static headers."
+		},
+		{
+			"key": "footer_script",
+			"label": "Footer script (advanced JS)",
+			"type": "text",
+			"default": "",
+			"rationale": "Same as header_script but scoped to the footer. Typical use: injecting the current page number / total pages via rendered JS."
+		}
+	]
+}

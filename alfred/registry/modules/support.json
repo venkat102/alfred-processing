@@ -1,0 +1,91 @@
+{
+	"module": "support",
+	"family": "engagement",
+	"display_name": "Support",
+	"frappe_module_key": "Support",
+	"backstory": "You are the Alfred ERPNext Support domain authority. You know Issue / Service Level Agreement / Service Level / Service Day / Issue Priority / Warranty Claim / Support Settings / Pause SLA On Status conventions. You know Issue is the canonical support ticket DocType - it carries a status lifecycle (Open -> Replied -> Hold -> Resolved -> Closed) via a status field, NOT docstatus. You know Service Level Agreement (SLA) binds a Customer (or wildcard) to response + resolution time commitments per Issue Priority. Every Issue with an SLA tracks TWO separate clocks: reply SLA (time to first response) and resolution SLA (time to final resolution) - both have independent response_by_variance / resolution_by_variance thresholds. You know SLA calculation honours Service Day + Holiday List: support hours outside the configured service window don't count against the SLA clock. You know Pause SLA On Status defines which Issue statuses pause the SLA clock (typically 'Hold' and 'Replied' where the ball is in the customer's court). You know Warranty Claim is DISTINCT from Issue: Issue is generic customer problem reporting; Warranty Claim is asset-specific (references an Item + Serial No + warranty_period from the original sale). You know Service Level Agreement priority ordering: customer-specific SLAs override the generic default SLA; multiple SLAs for the same customer + priority combination raise a blocker at save. You know Issue has a 'status' flow that a Workflow can drive (Open / Replied / Hold / Resolved / Closed with per-state transition rules). Anti-patterns: Issue without an SLA bound (no response-time enforcement); Warranty Claim on a non-serialised Item (the warranty clock has no serial anchor); SLA Agreement with overlapping priority + customer (ambiguous routing); forgetting to configure Pause SLA On Status so the clock ticks during customer-side waits.",
+	"conventions": {
+		"permissions_add_roles": [
+			{"role": "Support Team Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "Support Team", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Customer", "read": 1, "write": 0, "create": 0, "delete": 0}
+		],
+		"naming_patterns": [
+			"format:ISS-.YYYY.-.#####",
+			"format:WTY-.YYYY.-.#####"
+		],
+		"typical_linked_doctypes": [
+			"Issue", "Issue Priority", "Issue Type",
+			"Service Level Agreement", "Service Level",
+			"Service Day", "Pause SLA On Status",
+			"Warranty Claim",
+			"Customer", "Contact", "Address",
+			"Item", "Serial No",
+			"Support Search Source", "Support Settings",
+			"Communication"
+		],
+		"required_hooks_for_submittable": [
+			"on_status_change_pause_or_resume_sla_clocks_for_Issue"
+		],
+		"gotchas": [
+			"Issue lifecycle: Open -> Replied -> Hold -> Resolved -> Closed via status field, NOT docstatus. The SLA clock interaction with status transitions is the headline complexity.",
+			"Every Issue with an SLA tracks TWO separate clocks: reply SLA (time to first response) and resolution SLA (time to final resolution). response_by_variance and resolution_by_variance are independent - breaching one doesn't automatically breach the other.",
+			"SLA clock honours Service Day + Holiday List. Support hours outside the service window don't count. A ticket opened Friday evening in a Mon-Fri 9-5 service window doesn't start the clock until Monday 9am.",
+			"Pause SLA On Status defines which Issue statuses PAUSE the SLA clock. Typical: 'Hold' (customer sitting on it), 'Replied' (waiting for customer response). Without configuring this, the clock ticks during customer-side waits and breaches SLAs unfairly.",
+			"Service Level Agreement priority ordering: customer-specific SLAs override the generic default. When a Customer + Priority matches multiple SLAs, the customer-specific one wins. Multiple SLAs for the same (customer, priority) tuple are blocked at save.",
+			"Warranty Claim vs Issue: Issue is generic problem reporting (any customer, any topic); Warranty Claim is asset-specific (references an Item + Serial No + warranty_period from the original sale). Warranty Claim on an Item with has_serial_no=1 REQUIRES a valid serial_no.",
+			"Support Settings controls site-wide defaults: auto-assignment rules, default SLA, e-mail-to-Issue ingestion template, rating behaviour.",
+			"Support Search Source lists knowledge-base URLs searchable from the Issue portal (internal docs, public FAQ)."
+		]
+	},
+	"validation_rules": [
+		{
+			"id": "support_warranty_claim_needs_serial_on_serialised_item",
+			"severity": "blocker",
+			"when": {"doctype": "Warranty Claim"},
+			"message": "Warranty Claim on an Item with has_serial_no=1 REQUIRES a serial_no. Without it, the warranty clock has no anchor and the claim cannot validate warranty_period against the original sale.",
+			"fix": "Set data.serial_no to the Serial No from the original sale, or verify the Item actually has has_serial_no=0 (in which case serial_no stays empty)."
+		},
+		{
+			"id": "support_sla_overlap",
+			"severity": "blocker",
+			"when": {"doctype": "Service Level Agreement"},
+			"message": "Service Level Agreement with overlapping (Customer + Priority) combinations raises a blocker at save - duplicate SLAs produce ambiguous routing.",
+			"fix": "Ensure the (Customer + Priority) combination is unique across active SLAs. Disable the older SLA or narrow the new SLA's scope (e.g. by Customer Group instead of individual Customer)."
+		},
+		{
+			"id": "support_issue_closed_needs_resolution",
+			"severity": "advisory",
+			"when": {"doctype": "Issue", "data.status": "Closed"},
+			"message": "Issue.status='Closed' without resolution_by being set (or resolution_by_variance computed) prevents SLA reporting from classifying the Issue as resolved-in-time vs breached.",
+			"fix": "Ensure the Issue's resolution_by timestamp is captured when status transitions to Closed - typically via the SLA's on_status_change hook that stamps resolution_by = now()."
+		},
+		{
+			"id": "support_needs_support_team_perm",
+			"severity": "advisory",
+			"when": {"doctype": "DocType", "data.module": "Support"},
+			"message": "Support DocTypes conventionally include Support Team Manager (full), Support Team (no delete), and Customer (read-only, portal access) permission rows.",
+			"fix": "Add the three roles with their standard permission flags. Customer role enables portal-side read access for ticket status visibility."
+		}
+	],
+	"detection_hints": {
+		"target_doctype_matches": [
+			"Issue", "Issue Priority", "Issue Type",
+			"Service Level Agreement", "Service Level",
+			"Service Day", "Pause SLA On Status",
+			"Warranty Claim",
+			"Support Search Source", "Support Settings",
+			"SLA Fulfilled On Status"
+		],
+		"keyword_hints": [
+			"issue", "support ticket", "customer support",
+			"helpdesk", "ticket",
+			"sla", "service level", "service level agreement",
+			"warranty claim", "warranty",
+			"response time", "resolution time",
+			"support team", "support manager",
+			"pause sla", "service day",
+			"breach", "sla breach", "reply sla", "resolution sla"
+		]
+	}
+}

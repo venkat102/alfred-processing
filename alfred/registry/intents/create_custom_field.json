@@ -1,0 +1,214 @@
+{
+	"intent": "create_custom_field",
+	"display_name": "Add Custom Field",
+	"doctype": "Custom Field",
+	"fields": [
+		{
+			"key": "dt",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "fieldname",
+			"label": "Fieldname (snake_case)",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "label",
+			"label": "Label",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "fieldtype",
+			"label": "Fieldtype",
+			"type": "select",
+			"options": [
+				"Data",
+				"Select",
+				"Link",
+				"Dynamic Link",
+				"Int",
+				"Float",
+				"Check",
+				"Date",
+				"Datetime",
+				"Time",
+				"Small Text",
+				"Text",
+				"Long Text",
+				"Text Editor",
+				"Currency",
+				"Duration",
+				"JSON",
+				"Code",
+				"Attach",
+				"Attach Image",
+				"Password",
+				"Read Only",
+				"Color",
+				"Table",
+				"Table MultiSelect"
+			],
+			"required": true
+		},
+		{
+			"key": "options",
+			"label": "Options (Select newline-list / Link target DocType / Table child DocType / Dynamic Link source field)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required whenever fieldtype needs one: Select (newline-separated value list), Link (name of target DocType - not validated at save, fails at render if typo), Table / Table MultiSelect (name of child DocType), Dynamic Link (name of the Link field that holds the target DocType). Empty for other fieldtypes."
+		},
+		{
+			"key": "insert_after",
+			"label": "Insert after fieldname (or 'append')",
+			"type": "data",
+			"default": "append",
+			"rationale": "Names an existing field on the target DocType; the new field lands immediately after it. Typos silently insert at the end of the form (no error) which confuses users. Verify the target fieldname via lookup_doctype first. Use 'append' only when the placement is genuinely irrelevant."
+		},
+		{
+			"key": "reqd",
+			"label": "Required",
+			"type": "check",
+			"default": 0,
+			"rationale": "Required fields on a populated DocType break every existing record and every existing flow (bulk insert, API, imports) unless you also ship a backfill. Default 0; enable with eyes open."
+		},
+		{
+			"key": "read_only",
+			"label": "Read only",
+			"type": "check",
+			"default": 0,
+			"rationale": "The field is populated by scripts, hooks, or fetch_from, not the user. Enable when the value is derived."
+		},
+		{
+			"key": "hidden",
+			"label": "Hidden",
+			"type": "check",
+			"default": 0,
+			"rationale": "Hidden fields cannot be reqd=1 unless they carry a default (Frappe raises HiddenAndMandatoryWithoutDefaultError). For runtime-only storage, pair hidden=1 + default=''."
+		},
+		{
+			"key": "default",
+			"label": "Default value",
+			"type": "data",
+			"default": "",
+			"rationale": "Plain-text default for new records. Not type-validated against fieldtype; setting default='yes' on a Check field silently coerces at render. Empty means no default."
+		},
+		{
+			"key": "unique",
+			"label": "Unique",
+			"type": "check",
+			"default": 0,
+			"rationale": "Unique constraint added to the database column. Only honoured for Data, Link, Read Only, Int fieldtypes - the DocType controller silently drops unique=1 on Text / Long Text / etc. Enable only on fresh fields or after confirming no duplicates in existing data."
+		},
+		{
+			"key": "in_list_view",
+			"label": "Show in list view",
+			"type": "check",
+			"default": 0,
+			"rationale": "Adds a column to list view. Cheap but clutters; enable only when users scan or filter on this value."
+		},
+		{
+			"key": "in_standard_filter",
+			"label": "Filterable in list view",
+			"type": "check",
+			"default": 0,
+			"rationale": "Exposes a filter control at the top of list view. Pair with in_list_view for discoverability."
+		},
+		{
+			"key": "fetch_from",
+			"label": "Fetch from (e.g. 'customer.territory')",
+			"type": "data",
+			"default": "",
+			"rationale": "Auto-fetches the value from a linked doc's field. Format: '<link_fieldname>.<target_fieldname>'. Only Link fieldtypes resolve the source; Dynamic Link needs custom handling. Empty means no fetch."
+		},
+		{
+			"key": "fetch_if_empty",
+			"label": "Fetch only when empty",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, fetch_from only fires if this field is blank - preserves user overrides. When 0 (default), fetch_from re-fetches on every save, overwriting user input."
+		},
+		{
+			"key": "depends_on",
+			"label": "Visibility expression (JS)",
+			"type": "text",
+			"default": "",
+			"rationale": "Client-side JS expression (evaluated against the form doc); when it returns falsy, the field is hidden. Example: eval:doc.customer_type == \"Company\". Empty means always visible."
+		},
+		{
+			"key": "mandatory_depends_on",
+			"label": "Mandatory expression (JS)",
+			"type": "text",
+			"default": "",
+			"rationale": "Conditional mandatory: when the expression evaluates truthy, the field is required. Example: eval:doc.status == \"Approved\". Empty means reqd follows the reqd flag above."
+		},
+		{
+			"key": "read_only_depends_on",
+			"label": "Read-only expression (JS)",
+			"type": "text",
+			"default": "",
+			"rationale": "Conditional read-only: when the expression evaluates truthy, the field becomes read-only. Empty means read_only follows the read_only flag above."
+		},
+		{
+			"key": "translatable",
+			"label": "Translatable",
+			"type": "check",
+			"default": 0,
+			"rationale": "Marks the value for Translation lookup. Silently coerced to 0 by the controller unless fieldtype is Data / Select / Text / Small Text / Text Editor."
+		},
+		{
+			"key": "permlevel",
+			"label": "Permission level (0-9)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Permission level for this field. permlevel > 0 requires at least one DocPerm row at the matching level on the parent DocType, otherwise the field is invisible to everyone. Default 0 is safe."
+		},
+		{
+			"key": "allow_on_submit",
+			"label": "Editable after submit",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1 AND the target DocType is is_submittable=1, the field can be edited even after the document is submitted (docstatus=1). Used for fields that legitimately change post-approval (internal notes, tracking IDs, scheduled delivery date). Silently ignored on non-submittable DocTypes."
+		},
+		{
+			"key": "print_hide",
+			"label": "Hide in print",
+			"type": "check",
+			"default": 0,
+			"rationale": "Excludes the field from print / PDF renders regardless of whether it has a value. Default 0 (visible in print)."
+		},
+		{
+			"key": "no_copy",
+			"label": "Exclude from document copy",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, the field is NOT carried when a user duplicates the document via Copy. Use for fields that must be unique per record (reference numbers, serial IDs) or sensitive data that shouldn't silently propagate."
+		},
+		{
+			"key": "non_negative",
+			"label": "Non-negative only",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only meaningful for Int / Float / Currency fieldtypes. When 1, values below zero are rejected at save. Default 0 (any number). Silently ignored on non-numeric fieldtypes."
+		},
+		{
+			"key": "precision",
+			"label": "Decimal precision (0-9)",
+			"type": "select",
+			"options": ["", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+			"default": "",
+			"rationale": "Only meaningful for Float / Currency / Percent fieldtypes. Overrides the site-wide default precision (usually 2). Empty means inherit the site default."
+		},
+		{
+			"key": "is_virtual",
+			"label": "Virtual (not stored)",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, the field is COMPUTED on read and not stored in the DB - requires a controller hook or a fetch_from to produce the value. Virtual fields cannot be Link or Table fieldtypes, and fieldtype cannot be changed to virtual on a field with existing data. Advanced use; default 0."
+		}
+	]
+}
