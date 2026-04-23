@@ -131,14 +131,28 @@ def _parse_llm_note_list(raw: str) -> list[dict] | None:
 
 _CONTEXT_CACHE_TTL_SECONDS = 300  # 5 minutes, per spec
 
+# Families change far less frequently than per-module conventions, so
+# we cache the family-level snippet for longer. 15 minutes keeps the LLM
+# call rate low without making iterations on family KBs painful.
+_FAMILY_CONTEXT_CACHE_TTL_SECONDS = 900
+
 # Process-local fallback cache. Used when the pipeline cannot supply a
 # Redis client (local dev without Redis, Redis reachability loss mid-run).
 # Redis is the primary backend and lets multiple workers share a hit.
 _context_cache: dict[tuple[str, str, str], tuple[float, str]] = {}
 
+# Family cache keyed on (family_name, intent). Family snippets don't
+# vary by target_doctype - they're cross-module invariants that apply
+# to the whole family regardless of the specific DocType in play.
+_family_context_cache: dict[tuple[str, str], tuple[float, str]] = {}
+
 
 def _cache_key_str(module: str, intent: str, target_doctype: str | None) -> str:
 	return f"alfred:module_ctx:{module}:{intent}:{target_doctype or ''}"
+
+
+def _family_cache_key_str(family: str, intent: str) -> str:
+	return f"alfred:family_ctx:{family}:{intent}"
 
 
 def _context_cache_get_inmem(key: tuple[str, str, str]) -> str | None:
@@ -172,12 +186,129 @@ async def _context_cache_set_redis(redis, key_str: str, value: str) -> None:
 
 
 def _context_cache_clear() -> None:
-	"""Test helper - clears the in-memory cache.
+	"""Test helper - clears the in-memory caches (module + family).
 
 	Redis cache is not cleared here because tests that use Redis mock it
 	explicitly. For real Redis-connected runs, entries expire via TTL.
 	"""
 	_context_cache.clear()
+	_family_context_cache.clear()
+
+
+def _family_cache_get_inmem(key: tuple[str, str]) -> str | None:
+	entry = _family_context_cache.get(key)
+	if entry is None:
+		return None
+	expires_at, value = entry
+	if time.time() > expires_at:
+		_family_context_cache.pop(key, None)
+		return None
+	return value
+
+
+def _family_cache_set_inmem(key: tuple[str, str], value: str) -> None:
+	_family_context_cache[key] = (
+		time.time() + _FAMILY_CONTEXT_CACHE_TTL_SECONDS, value,
+	)
+
+
+async def _family_cache_get_redis(redis, key_str: str) -> str | None:
+	try:
+		return await redis.get(key_str)
+	except Exception as e:
+		logger.debug("Family context cache Redis read failed: %s", e)
+		return None
+
+
+async def _family_cache_set_redis(redis, key_str: str, value: str) -> None:
+	try:
+		await redis.setex(key_str, _FAMILY_CONTEXT_CACHE_TTL_SECONDS, value)
+	except Exception as e:
+		logger.debug("Family context cache Redis write failed: %s", e)
+
+
+async def provide_family_context(
+	*,
+	family: str,
+	intent: str,
+	site_config: dict,
+	redis=None,
+) -> str:
+	"""Family pre-pass. Returns a prompt snippet for the family-level context.
+
+	Summarises the cross_module_invariants + backstory of a family KB
+	(one of transactions / operations / people / engagement) relevant
+	to the current intent. The snippet is prepended to the per-module
+	snippet in the pipeline so intent specialists see both layers.
+
+	Cache: same Redis + in-memory shape as ``provide_context`` but
+	keyed on (family, intent) and with a 15-minute TTL. Family KBs
+	change much less than module KBs.
+	"""
+	try:
+		kb = ModuleRegistry.load().get_family(family)
+	except KeyError:
+		return ""
+
+	inmem_key = (family, intent)
+	redis_key = _family_cache_key_str(family, intent)
+
+	if redis is not None:
+		cached = await _family_cache_get_redis(redis, redis_key)
+		if cached is not None:
+			logger.info(
+				"Family context provided: family=%s intent=%s cached=redis chars=%d",
+				family, intent, len(cached),
+			)
+			return cached
+	cached = _family_cache_get_inmem(inmem_key)
+	if cached is not None:
+		logger.info(
+			"Family context provided: family=%s intent=%s cached=inmem chars=%d",
+			family, intent, len(cached),
+		)
+		return cached
+
+	invariants = kb.get("cross_module_invariants", [])
+	invariants_block = "\n".join(f"- {inv}" for inv in invariants)
+	user_msg = (
+		f"Intent: {intent}\n"
+		f"Family cross-module invariants:\n{invariants_block}\n\n"
+		"Summarise the subset of these family-level invariants that matter "
+		"for this intent. 3-5 sentences, concrete, no prose intro, no JSON, "
+		"no markdown headers. These are cross-module rules shared by every "
+		"member module of the family."
+	)
+
+	try:
+		reply = await _ollama_chat(
+			messages=[
+				{"role": "system", "content": kb["backstory"]},
+				{"role": "user", "content": user_msg},
+			],
+			site_config=site_config,
+			tier=site_config.get("llm_tier", "triage"),
+			max_tokens=350,
+			temperature=0.2,
+		)
+		result = (reply or "").strip()
+		if result:
+			if redis is not None:
+				await _family_cache_set_redis(redis, redis_key, result)
+			_family_cache_set_inmem(inmem_key, result)
+			logger.info(
+				"Family context provided: family=%s intent=%s cached=miss chars=%d",
+				family, intent, len(result),
+			)
+		else:
+			logger.info(
+				"Family context provided: family=%s intent=%s cached=miss chars=0 (empty reply)",
+				family, intent,
+			)
+		return result
+	except Exception as e:
+		logger.warning("Family specialist provide_family_context failed (%s): %s", family, e)
+		return ""
 
 
 async def provide_context(

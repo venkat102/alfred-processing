@@ -106,12 +106,12 @@ async def test_validate_output_merges_rule_notes_and_llm_notes():
 			intent="create_doctype",
 			changes=[{
 				"op": "create", "doctype": "DocType",
-				"data": {"name": "Voucher", "is_submittable": 1},
+				"data": {"name": "Voucher", "is_submittable": 1, "module": "Accounts"},
 			}],
 			site_config={},
 		)
 	sources = {n.source for n in notes}
-	assert "module_rule:accounts_submittable_needs_gl" in sources
+	assert "module_rule:accounts_submittable_non_posting_doctype" in sources
 	assert "module_rule:accounts_needs_accounts_manager_perm" in sources
 	assert any(s.startswith("module_specialist:") for s in sources)
 
@@ -127,25 +127,28 @@ async def test_validate_output_llm_malformed_json_falls_back_to_rules_only():
 			intent="create_doctype",
 			changes=[{
 				"op": "create", "doctype": "DocType",
-				"data": {"name": "Voucher", "is_submittable": 1},
+				"data": {"name": "Voucher", "is_submittable": 1, "module": "Accounts"},
 			}],
 			site_config={},
 		)
 	sources = {n.source for n in notes}
-	assert "module_rule:accounts_submittable_needs_gl" in sources
+	assert "module_rule:accounts_submittable_non_posting_doctype" in sources
 	assert not any(s.startswith("module_specialist:") for s in sources)
 
 
 @pytest.mark.asyncio
 async def test_validate_output_dedups_llm_note_that_matches_rule_note():
-	# Rule runner will produce "Submittable Accounts DocTypes conventionally..."
-	# The LLM returns the SAME message verbatim - should be deduped.
+	# The rule runner will produce the canonical submittable-non-posting
+	# advisory message. The LLM returns the SAME message verbatim - it
+	# should be deduped so the user only sees one note.
 	rule_message = (
-		"Submittable Accounts DocTypes conventionally post GL entries on "
-		"submit. No on_submit hook detected in the changeset."
+		"New submittable Accounts DocType detected. Only Sales Invoice, "
+		"Purchase Invoice, Journal Entry, and Payment Entry post to GL on "
+		"submit in standard ERPNext. If this DocType is meant to post GL "
+		"entries, add an explicit Server Script with doctype_event='on_submit'."
 	)
 	llm_reply = json.dumps([
-		{"severity": "warning", "issue": rule_message},
+		{"severity": "advisory", "issue": rule_message},
 	])
 	with patch(
 		"alfred.agents.specialists.module_specialist._ollama_chat",
@@ -156,12 +159,12 @@ async def test_validate_output_dedups_llm_note_that_matches_rule_note():
 			intent="create_doctype",
 			changes=[{
 				"op": "create", "doctype": "DocType",
-				"data": {"name": "Voucher", "is_submittable": 1},
+				"data": {"name": "Voucher", "is_submittable": 1, "module": "Accounts"},
 			}],
 			site_config={},
 		)
 	# Only ONE note with that message - the rule's copy, not the LLM's.
-	matching = [n for n in notes if "post GL entries on submit" in n.issue]
+	matching = [n for n in notes if "submit in standard ERPNext" in n.issue]
 	assert len(matching) == 1
 	assert matching[0].source.startswith("module_rule:")
 

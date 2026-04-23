@@ -2,20 +2,20 @@ from alfred.agents.specialists.module_specialist import run_rule_validation
 from alfred.models.agent_outputs import ValidationNote
 
 
-def test_submittable_doctype_without_gl_hook_triggers_warning():
+def test_submittable_doctype_without_gl_hook_triggers_advisory():
 	changes = [
 		{
 			"op": "create",
 			"doctype": "DocType",
-			"data": {"name": "Accounts Voucher", "is_submittable": 1},
+			"data": {"name": "Accounts Voucher", "is_submittable": 1, "module": "Accounts"},
 		},
 	]
 	notes = run_rule_validation(module="accounts", changes=changes)
-	assert any(n.source == "module_rule:accounts_submittable_needs_gl" for n in notes)
+	assert any(n.source == "module_rule:accounts_submittable_non_posting_doctype" for n in notes)
 	submittable_note = next(
-		n for n in notes if n.source == "module_rule:accounts_submittable_needs_gl"
+		n for n in notes if n.source == "module_rule:accounts_submittable_non_posting_doctype"
 	)
-	assert submittable_note.severity == "warning"
+	assert submittable_note.severity == "advisory"
 	assert submittable_note.changeset_index == 0
 
 
@@ -24,11 +24,11 @@ def test_non_submittable_doctype_does_not_trigger_gl_warning():
 		{
 			"op": "create",
 			"doctype": "DocType",
-			"data": {"name": "Ledger Note", "is_submittable": 0},
+			"data": {"name": "Ledger Note", "is_submittable": 0, "module": "Accounts"},
 		},
 	]
 	notes = run_rule_validation(module="accounts", changes=changes)
-	assert not any(n.source == "module_rule:accounts_submittable_needs_gl" for n in notes)
+	assert not any(n.source == "module_rule:accounts_submittable_non_posting_doctype" for n in notes)
 
 
 def test_doctype_without_accounts_manager_triggers_advisory():
@@ -36,7 +36,7 @@ def test_doctype_without_accounts_manager_triggers_advisory():
 		{
 			"op": "create",
 			"doctype": "DocType",
-			"data": {"name": "Accounts Voucher"},
+			"data": {"name": "Accounts Voucher", "module": "Accounts"},
 		},
 	]
 	notes = run_rule_validation(module="accounts", changes=changes)

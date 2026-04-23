@@ -1403,7 +1403,10 @@ class AgentPipeline:
 		if not ctx.module:
 			return
 
-		from alfred.agents.specialists.module_specialist import provide_context
+		from alfred.agents.specialists.module_specialist import (
+			provide_context,
+			provide_family_context,
+		)
 		from alfred.registry.module_loader import ModuleRegistry
 
 		# Surface the Redis client (if configured) to the specialist so
@@ -1421,6 +1424,12 @@ class AgentPipeline:
 			except Exception:
 				return m
 
+		def _family_display(f: str) -> str:
+			try:
+				return registry.get_family(f).get("display_name", f)
+			except Exception:
+				return f
+
 		# Primary context call (same as V2 path)
 		try:
 			primary_ctx = await provide_context(
@@ -1436,6 +1445,28 @@ class AgentPipeline:
 				ctx.conversation_id, ctx.module, e,
 			)
 			primary_ctx = ""
+
+		# Primary family context. Families group related modules (e.g.
+		# accounts+selling+buying under Transactions) and carry
+		# cross-module invariants that apply to every member. We fetch
+		# the family snippet once per conversation and prepend it above
+		# the PRIMARY MODULE section. ``custom`` is familyless by
+		# design - skip silently.
+		primary_family = registry.family_for_module(ctx.module) if ctx.module else None
+		primary_family_ctx = ""
+		if primary_family:
+			try:
+				primary_family_ctx = await provide_family_context(
+					family=primary_family,
+					intent=ctx.intent or "unknown",
+					site_config=ctx.conn.site_config or {},
+					redis=redis,
+				)
+			except Exception as e:
+				logger.warning(
+					"provide_family_context failed for conversation=%s family=%s: %s",
+					ctx.conversation_id, primary_family, e,
+				)
 
 		# V3: secondary context calls (silent failure each)
 		secondary_ctxs: dict[str, str] = {}
@@ -1457,21 +1488,39 @@ class AgentPipeline:
 					)
 
 		# V2 path: bare primary snippet, no header wrapper. V3 path:
-		# labeled PRIMARY / SECONDARY sections so the LLM can distinguish
-		# the target domain from advisory context. Header wrapping only
-		# applies when V3 flag is on - V2-only runs keep their existing
-		# prompt shape.
+		# labeled PRIMARY FAMILY / PRIMARY MODULE / SECONDARY MODULE
+		# sections so the LLM can distinguish cross-module invariants
+		# from module-specific conventions from advisory context.
+		# Header wrapping only applies when V3 flag is on - V2-only
+		# runs keep their existing prompt shape.
 		if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
 			parts: list[str] = []
+			if primary_family and primary_family_ctx:
+				parts.append(
+					f"PRIMARY FAMILY ({_family_display(primary_family)}):\n{primary_family_ctx}"
+				)
 			if primary_ctx:
 				parts.append(f"PRIMARY MODULE ({_display(ctx.module)}):\n{primary_ctx}")
 			elif ctx.secondary_modules:
 				parts.append(f"PRIMARY MODULE ({_display(ctx.module)}): (no context)")
+			# Family dedupe: a secondary module in the SAME family as the
+			# primary doesn't re-emit a family section - the family-level
+			# invariants were already surfaced above. We just label the
+			# module snippet as SECONDARY MODULE.
 			for m, s in secondary_ctxs.items():
 				parts.append(f"SECONDARY MODULE CONTEXT ({_display(m)}):\n{s}")
 			ctx.module_context = "\n\n".join(parts) if parts else primary_ctx
 		else:
-			ctx.module_context = primary_ctx
+			# V2 fallback: prepend family snippet when available so V2-only
+			# callers also benefit from cross-module invariants. Keeps the
+			# bare-snippet shape for modules that have no family (custom).
+			if primary_family and primary_family_ctx and primary_ctx:
+				ctx.module_context = (
+					f"FAMILY CONTEXT ({_family_display(primary_family)}): "
+					f"{primary_family_ctx}\n\n{primary_ctx}"
+				)
+			else:
+				ctx.module_context = primary_ctx
 		ctx.module_secondary_contexts = secondary_ctxs
 
 	async def _phase_enhance(self) -> None:
