@@ -1,0 +1,83 @@
+{
+	"module": "maintenance",
+	"display_name": "Maintenance",
+	"frappe_module_key": "Maintenance",
+	"backstory": "You are the Alfred ERPNext Maintenance domain authority. You know Maintenance Schedule / Maintenance Schedule Item / Maintenance Schedule Detail / Maintenance Visit / Maintenance Visit Purpose / Maintenance Team / Maintenance Team Member conventions. You know Maintenance is distinct from HR (no Employee-specific semantics) and distinct from Projects (no billing dimension) - it lives at the intersection of Customer service and Asset upkeep. You know Maintenance Schedule is submittable and generates Maintenance Schedule Detail rows (one per visit) at submit from the periodic_frequency + start/end dates on each Maintenance Schedule Item. You know Maintenance Visit records actual service delivery (scheduled or unscheduled); a Scheduled visit references a Maintenance Schedule Detail row, Unscheduled visits are standalone breakdowns. You know two distinct scope models: Asset-linked (Maintenance Schedule.item_code + serial_no anchors to specific equipment) vs Customer-linked (service contract per Customer, covering many Items). Asset-linked is the more common shape for internal plant maintenance; Customer-linked is standard for field-service contracts. You know Maintenance Team and Maintenance Team Member group service personnel into assignable teams (Asset Maintenance Team in the Assets module is a related but distinct DocType for per-Asset dedicated teams). You know breakdown-driven service is visit-first (Maintenance Visit with no Schedule reference, purpose='Breakdown'), preventive is schedule-first (Maintenance Schedule defines the cadence; Visits execute against it). Anti-patterns: Maintenance Schedule without Maintenance Schedule Item rows (empty schedule); Maintenance Visit without Customer AND without linked equipment (orphan visit); mixing Scheduled and Unscheduled visits in the same Schedule tracking chain; scheduling Visits before the Schedule is submitted (the Schedule Detail rows are generated at submit).",
+	"conventions": {
+		"permissions_add_roles": [
+			{"role": "Maintenance Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "Maintenance User", "read": 1, "write": 1, "create": 1, "delete": 0}
+		],
+		"naming_patterns": [
+			"format:MNT-MSH-.YYYY.-.#####",
+			"format:MNT-MVS-.YYYY.-.#####"
+		],
+		"typical_linked_doctypes": [
+			"Maintenance Schedule", "Maintenance Schedule Item", "Maintenance Schedule Detail",
+			"Maintenance Visit", "Maintenance Visit Purpose",
+			"Maintenance Team", "Maintenance Team Member",
+			"Customer", "Item", "Serial No",
+			"Asset", "Sales Order",
+			"Item Group", "Cost Center"
+		],
+		"required_hooks_for_submittable": [
+			"on_submit_generate_Maintenance_Schedule_Detail_rows_for_Maintenance_Schedule"
+		],
+		"gotchas": [
+			"Maintenance Schedule is submittable. Schedule Detail rows (one per planned visit) are generated at submit from the periodic_frequency + start/end dates configured per Maintenance Schedule Item. Scheduling a Maintenance Visit before the Schedule is submitted fails - the Detail rows don't exist yet.",
+			"Scheduled vs Unscheduled Visits: Scheduled visits reference a Maintenance Schedule Detail row (ties the execution back to the plan); Unscheduled visits carry purpose='Breakdown' (or similar) and have no Schedule linkage.",
+			"Asset-linked vs Customer-linked scope: Maintenance Schedule.item_code + serial_no anchors to specific equipment (internal plant maintenance); schedule.customer + item references service contracts (field service). Both shapes are supported; pick one per Schedule.",
+			"Maintenance Team (in the Maintenance module) vs Asset Maintenance Team (in the Assets module): the former groups service personnel for general team assignment; the latter is a dedicated per-Asset team (tied to a specific Asset's maintenance plan).",
+			"Preventive vs breakdown-driven: Preventive is schedule-first (Maintenance Schedule defines cadence, Visits execute). Breakdown-driven is visit-first (Maintenance Visit with no Schedule, purpose='Breakdown'). Customers doing a mix of both maintain TWO distinct tracking chains.",
+			"Maintenance Schedule Detail rows represent planned visits; each row carries scheduled_date + status (Pending / Completed / Cancelled). The summary Maintenance Schedule reflects the aggregated completion rate.",
+			"periodic_frequency drives the Detail row spacing: Daily, Weekly, Monthly, Half Yearly, Quarterly, Yearly, Random (user-defined dates). Random requires explicit Maintenance Schedule Detail rows to be hand-entered instead of generated.",
+			"Maintenance Visit with purpose='Unscheduled' bypasses schedule tracking. Intended for breakdown response; don't use it to circumvent a missing Schedule - create the Schedule first or accept the visit is untracked."
+		]
+	},
+	"validation_rules": [
+		{
+			"id": "maintenance_schedule_needs_items",
+			"severity": "blocker",
+			"when": {"doctype": "Maintenance Schedule"},
+			"message": "Maintenance Schedule REQUIRES at least one Maintenance Schedule Item row. An empty Schedule submits with no Detail rows generated - which leaves nothing for Maintenance Visit to reference.",
+			"fix": "Populate data.items with at least one Maintenance Schedule Item row carrying item_code + periodicity + start_date + end_date (or no_of_visits)."
+		},
+		{
+			"id": "maintenance_visit_before_schedule_submit",
+			"severity": "warning",
+			"when": {"doctype": "Maintenance Visit", "data.maintenance_schedule": "!empty"},
+			"message": "Maintenance Visit referencing a Maintenance Schedule that isn't submitted yet cannot bind to a Schedule Detail row (the Detail rows are generated at Schedule submit). The Visit saves but tracking is broken.",
+			"fix": "Submit the Maintenance Schedule first so Detail rows exist, then create the Maintenance Visit referencing the appropriate scheduled_date."
+		},
+		{
+			"id": "maintenance_visit_unscheduled_is_orphan",
+			"severity": "advisory",
+			"when": {"doctype": "Maintenance Visit", "data.purpose": "Unscheduled"},
+			"message": "Maintenance Visit with purpose='Unscheduled' bypasses Schedule tracking. Fine for breakdown response, but a sustained pattern of Unscheduled visits on an Item that HAS an active Maintenance Schedule usually indicates the Schedule cadence is wrong (too infrequent).",
+			"fix": "Verify this breakdown visit is genuinely unscheduled. If the Item is covered by a periodic Schedule, consider whether the frequency needs tightening."
+		},
+		{
+			"id": "maintenance_needs_maintenance_manager_perm",
+			"severity": "advisory",
+			"when": {"doctype": "DocType", "data.module": "Maintenance"},
+			"message": "Maintenance DocTypes conventionally include Maintenance Manager (full) + Maintenance User (no delete) permission rows.",
+			"fix": "Add Maintenance Manager and Maintenance User with standard permission flags."
+		}
+	],
+	"detection_hints": {
+		"target_doctype_matches": [
+			"Maintenance Schedule", "Maintenance Schedule Item", "Maintenance Schedule Detail",
+			"Maintenance Visit", "Maintenance Visit Purpose",
+			"Maintenance Team", "Maintenance Team Member"
+		],
+		"keyword_hints": [
+			"maintenance schedule", "maintenance visit",
+			"preventive maintenance", "preventative maintenance",
+			"scheduled maintenance", "unscheduled maintenance",
+			"breakdown", "service visit", "service due",
+			"maintenance team", "maintenance manager",
+			"periodic service", "field service contract",
+			"equipment maintenance", "plant maintenance"
+		]
+	}
+}
