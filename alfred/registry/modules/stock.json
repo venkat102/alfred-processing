@@ -2,52 +2,122 @@
 	"module": "stock",
 	"display_name": "Stock",
 	"frappe_module_key": "Stock",
-	"backstory": "You are the Alfred ERPNext Stock domain authority. You know Item / Warehouse / Stock Entry / Stock Reconciliation / Delivery Note / Purchase Receipt / Material Request conventions. You know submittable Stock DocTypes post to the Stock Ledger Entry via on_submit - this is to Stock what GL posting is to Accounts; bypassing it corrupts valuation. You know batch / serial tracking is per-Item: enabling it on an Item forces all stock movements for that Item to carry batch_no / serial_no, and retrofitting onto an Item with existing stock is a one-way door. You know warehouses have permission subtrees: a user with Warehouse perm doesn't automatically have perm on parent or child warehouses. You catch anti-patterns: direct stock posting without a Stock Entry document, skipping valuation recalculation, mixing serialized and non-serialized stock for the same Item, forgetting to set warehouse on a stock-affecting DocType.",
+	"backstory": "You are the Alfred ERPNext Stock domain authority. You know Item / Warehouse / Stock Entry / Stock Reconciliation / Delivery Note / Purchase Receipt / Material Request / Pick List / Packing Slip / Serial and Batch Bundle conventions. You know submittable Stock DocTypes post to Stock Ledger Entry via update_stock_ledger() on on_submit, and where perpetual inventory is on they ALSO post to the stock account in the GL via make_gl_entries() (stock_entry.py:390,398). You know Stock has THREE distinct valuation methods chosen per Item: FIFO (costs in the order they came in), Moving Average (running cost average across receipts), and Standard Rate (fixed cost regardless of receipts). Switching valuation method on an Item with existing stock requires Repost Item Valuation. You know Stock Reconciliation has two modes: is_opening=1 bypasses GL posting (opening-balance load); is_opening=0 posts a GL adjustment. You know multi-UOM: Item.stock_uom is the canonical unit; every receipt / issue line carries uom + conversion_factor so mixed-UOM docs reconcile to stock_uom. You know Serial No has a state machine (Active -> Inactive -> Delivered -> ...); Batch has expiry + per-batch valuation. You know Bin is the summary table joining Item + Warehouse + qty + valuation; never write to Bin directly (Stock Ledger does it). You know Stock Reservation Entry reserves stock against a Sales Order without moving it. You know Serial and Batch Bundle is the v15+ unified tracking path that replaces the legacy serial_no / batch_no fields on transaction rows - use it for new work, the old fields still work for backward compatibility. Anti-patterns: direct stock posting without a Stock Entry; skipping valuation recalculation; mixing serialized and non-serialized stock for the same Item; writing to Bin directly; setting allow_negative_stock on individual rows (it's site-wide).",
 	"conventions": {
 		"permissions_add_roles": [
 			{"role": "Stock Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
-			{"role": "Stock User", "read": 1, "write": 1, "create": 1, "delete": 0}
+			{"role": "Stock User", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Item Manager", "read": 1, "write": 1, "create": 1, "delete": 0}
 		],
-		"naming_patterns": ["format:STO-.YYYY.-.#####"],
-		"typical_linked_doctypes": ["Item", "Warehouse", "Batch", "Serial No", "UOM", "Item Group"],
-		"required_hooks_for_submittable": ["on_submit_stock_ledger_posting"],
+		"naming_patterns": [
+			"format:MAT-STE-.YYYY.-.#####",
+			"format:MAT-STR-.YYYY.-.#####",
+			"format:MAT-PRE-.YYYY.-.#####",
+			"format:MAT-DN-.YYYY.-.#####",
+			"format:MAT-MR-.YYYY.-.#####"
+		],
+		"typical_linked_doctypes": [
+			"Item", "Item Default", "Item Price", "Item Attribute", "Item Variant Settings",
+			"Item Group", "Item Tax Template", "Item Alternative",
+			"Warehouse", "Warehouse Type", "Bin",
+			"Batch", "Serial No", "Serial and Batch Bundle",
+			"UOM", "UOM Conversion Factor",
+			"Price List", "Cost Center", "Stock Reservation Entry"
+		],
+		"required_hooks_for_submittable": [
+			"on_submit_update_stock_ledger",
+			"on_submit_make_gl_entries_when_perpetual_inventory",
+			"on_submit_repost_future_sle_and_gle"
+		],
 		"gotchas": [
-			"Submittable Stock DocTypes must post to Stock Ledger Entry on submit. Bypassing this corrupts item valuation.",
-			"Batch / serial tracking is per-Item. Enabling has_batch_no or has_serial_no forces every future movement of that Item to carry batch_no / serial_no.",
-			"Warehouse permissions don't cascade - set perm per warehouse or use Warehouse Type where possible.",
-			"Always record the source warehouse and target warehouse for stock-moving DocTypes; a missing warehouse is a silent data-corruption bug."
+			"Stock Entry.on_submit calls update_stock_ledger() (stock_entry.py:390), make_gl_entries() (398), and repost_future_sle_and_gle() (400). Perpetual inventory drives the GL side; without it, Stock Entry posts only to Stock Ledger.",
+			"Valuation method is PER-ITEM (Item.valuation_method): FIFO / Moving Average / Standard Rate. Switching an Item with existing stock requires Repost Item Valuation; otherwise the Stock Ledger goes inconsistent.",
+			"Stock Reconciliation has TWO modes: is_opening=1 bypasses GL posting (opening-balance load); is_opening=0 posts a GL adjustment. A Stock Reconciliation on a populated site with is_opening=1 silently skips the GL side - corrupts financials.",
+			"Multi-UOM: Item.stock_uom is canonical. Every line carries uom + conversion_factor. Purchase Receipt with uom='Box', conversion_factor=12 means 1 Box receives 12 units of stock_uom. Missing conversion_factor defaults to 1 - almost always wrong for multi-UOM items.",
+			"Serial No has a state machine (Active / Inactive / Delivered / Expired). Re-using a Delivered serial_no for a new inbound transaction requires moving it back to Active first.",
+			"Batch tracking: has_batch_no=1 on an Item forces every transaction row to carry batch_no. has_batch_no + has_serial_no together produces per-unit + per-batch tracking (acceptable; serial_nos inherit the batch).",
+			"Bin is the Item+Warehouse running total. Never write to Bin directly - Stock Ledger does it. Querying Bin gives you current qty + valuation; querying Stock Ledger gives you the history.",
+			"Warehouse permissions don't cascade between parent and child. Set permissions per warehouse or use Warehouse Type where possible. A user with perm on 'Stores - TestCo' has no perm on 'Stores - TestCo - Receiving - TestCo' unless explicitly granted.",
+			"Stock Entry.stock_entry_type='Material Transfer' REQUIRES both from_warehouse AND to_warehouse on every item row (enforced by the JSON schema + controller). 'Material Receipt' only needs to_warehouse; 'Material Issue' only needs from_warehouse.",
+			"Stock Reservation Entry reserves stock against a Sales Order (or similar) without moving it. The Stock Ledger does NOT reflect the reservation; only actual transfers do. A 'reserved qty' report reads from Stock Reservation Entry.",
+			"Serial and Batch Bundle is the v15+ unified tracking path. Use it on new Work: Purchase Receipt Item / Delivery Note Item etc. reference a Serial and Batch Bundle instead of setting serial_no / batch_no inline. The old inline fields still work for backward compatibility.",
+			"Landed Cost Voucher allocates post-receipt freight / customs / insurance to an existing Purchase Receipt's item valuation. It mutates the PR's item valuation after the fact - runs via Repost Item Valuation for downstream consistency.",
+			"Negative qty is rejected unless allow_negative_stock is globally on (stock_entry.py:611-616). This is a site-wide setting, not per-document.",
+			"Item.is_stock_item=1 requires a default warehouse via Item Default (per-Company). Without it, transactions fail at submit when Frappe tries to resolve the default warehouse.",
+			"Pick List generates from Sales Orders; it tracks what to pick and from where, but doesn't itself post to the Stock Ledger. Packing Slip is the physical-packing counterpart - both pre-Delivery Note."
 		]
 	},
 	"validation_rules": [
 		{
+			"id": "stock_material_transfer_needs_both_warehouses",
+			"severity": "blocker",
+			"when": {"doctype": "Stock Entry", "data.stock_entry_type": "Material Transfer"},
+			"message": "Stock Entry with stock_entry_type='Material Transfer' REQUIRES both from_warehouse AND to_warehouse on every item row. Missing either breaks update_stock_ledger on submit.",
+			"fix": "Set from_warehouse + to_warehouse on every row; or change stock_entry_type to 'Material Receipt' (only to_warehouse) or 'Material Issue' (only from_warehouse)."
+		},
+		{
+			"id": "stock_item_stock_needs_default_warehouse",
+			"severity": "warning",
+			"when": {"doctype": "Item", "data.is_stock_item": 1},
+			"message": "Item with is_stock_item=1 should have a default warehouse configured via Item Default (per Company). Without it, transactions fail at submit when Frappe tries to resolve the default.",
+			"fix": "Populate item_defaults with at least one row: {company: '<Company>', default_warehouse: '<Warehouse>'}."
+		},
+		{
+			"id": "stock_serial_item_qty_must_be_one",
+			"severity": "blocker",
+			"when": {"doctype": "Stock Entry Detail", "data.has_serial_no": 1},
+			"message": "Serial-tracked items require qty=1 per transaction row (each serial is a distinct unit). Serial Nos list length must equal qty.",
+			"fix": "Split the row into one-per-serial: N rows of qty=1 each, each with its serial_no (or a Serial and Batch Bundle referencing N serials)."
+		},
+		{
+			"id": "stock_reconciliation_opening_skips_gl",
+			"severity": "advisory",
+			"when": {"doctype": "Stock Reconciliation", "data.is_opening": 1},
+			"message": "Stock Reconciliation with is_opening=1 BYPASSES GL posting - intended for opening-balance loads on fresh sites. On a populated site this silently breaks financials.",
+			"fix": "If the reconciliation is a mid-life correction, set is_opening=0 so the GL adjustment posts. Only use is_opening=1 on fresh-site initial loads."
+		},
+		{
 			"id": "stock_submittable_needs_ledger_posting",
 			"severity": "warning",
-			"when": {"doctype": "DocType", "data.is_submittable": 1},
-			"message": "Submittable Stock DocTypes conventionally post to Stock Ledger Entry on submit. No on_submit hook detected.",
-			"fix": "Add a Server Script with doctype_event='on_submit' and reference_doctype=<this DocType> that inserts a Stock Ledger Entry."
+			"when": {"doctype": "DocType", "data.is_submittable": 1, "data.module": "Stock"},
+			"message": "Submittable Stock DocTypes conventionally post to Stock Ledger Entry on submit via update_stock_ledger. If this DocType is meant to move stock, add the appropriate hook.",
+			"fix": "Add a Server Script with doctype_event='on_submit' that calls frappe.model.document.Document's update_stock_ledger() via the doc, or inherits from the StockController base controller."
 		},
 		{
 			"id": "stock_needs_stock_manager_perm",
 			"severity": "advisory",
-			"when": {"doctype": "DocType"},
-			"message": "Stock DocTypes typically include Stock Manager and Stock User permission rows.",
-			"fix": "Add Stock Manager (full) and Stock User (no delete) rows to permissions."
+			"when": {"doctype": "DocType", "data.module": "Stock"},
+			"message": "Stock DocTypes typically include Stock Manager (full), Stock User (no delete), and Item Manager (for Item-related DocTypes) permission rows.",
+			"fix": "Add the three roles with their standard permission flags."
 		}
 	],
 	"detection_hints": {
 		"target_doctype_matches": [
-			"Item", "Item Group", "Item Attribute", "Item Variant Settings",
-			"Warehouse", "Warehouse Type",
-			"Stock Entry", "Stock Entry Type", "Stock Reconciliation",
-			"Stock Ledger Entry", "Batch", "Serial No",
-			"Delivery Note", "Purchase Receipt", "Material Request",
-			"UOM", "UOM Conversion Factor"
+			"Item", "Item Default", "Item Price", "Item Attribute", "Item Variant Settings",
+			"Item Group", "Item Tax Template", "Item Alternative", "Item Lead Time",
+			"Warehouse", "Warehouse Type", "Bin",
+			"Stock Entry", "Stock Entry Detail", "Stock Entry Type",
+			"Stock Reconciliation", "Stock Ledger Entry",
+			"Batch", "Serial No", "Serial and Batch Bundle", "Serial and Batch Entry",
+			"Delivery Note", "Delivery Note Item",
+			"Purchase Receipt", "Purchase Receipt Item",
+			"Material Request", "Material Request Item",
+			"UOM", "UOM Conversion Factor", "UOM Conversion Detail",
+			"Pick List", "Pick List Item", "Packing Slip", "Packing Slip Item",
+			"Landed Cost Voucher", "Landed Cost Item",
+			"Stock Reservation Entry", "Repost Item Valuation",
+			"Inventory Dimension", "Stock Settings", "Price List"
 		],
 		"keyword_hints": [
 			"stock entry", "stock ledger", "stock reconciliation",
 			"warehouse", "item group", "material request",
 			"delivery note", "purchase receipt", "serial no", "batch no",
-			"stock manager", "stock user", "inventory", "uom"
+			"stock manager", "stock user", "inventory", "uom",
+			"item price", "price list", "landed cost", "landed cost voucher",
+			"pick list", "packing slip", "serial and batch bundle",
+			"inventory dimension", "stock reservation",
+			"fifo", "moving average", "valuation method",
+			"repost item valuation", "opening stock"
 		]
 	}
 }

@@ -2,37 +2,95 @@
 	"module": "assets",
 	"display_name": "Assets",
 	"frappe_module_key": "Assets",
-	"backstory": "You are the Alfred ERPNext Assets domain authority. You know Asset / Asset Category / Asset Movement / Asset Value Adjustment / Asset Repair / Asset Maintenance / Depreciation Schedule conventions. You know Assets are deeply tied to Accounts: acquisition posts to a fixed-asset GL account, depreciation schedules post periodic GL entries, disposals post gain/loss entries. You know Asset Categories carry the default depreciation method (Straight Line vs Written Down Value), useful life, and the GL accounts that every child Asset inherits. You know that once an Asset's Depreciation Schedule is generated, changing useful life or method requires an Asset Value Adjustment document rather than editing the Asset directly. You catch anti-patterns: direct value edits bypassing Asset Value Adjustment, missing Depreciation Schedule on a capitalised Asset, Asset Movement without both source and target Location, disposal without a disposal_date + disposal_amount, mixing asset_quantity > 1 with serialised tracking.",
+	"backstory": "You are the Alfred ERPNext Assets domain authority. You know Asset / Asset Category / Asset Movement / Asset Value Adjustment / Asset Repair / Asset Maintenance / Asset Depreciation Schedule / Asset Finance Book / Asset Capitalization conventions. Assets are a DISTINCT module with its own Assets Manager + Assets User primary roles - NOT Accounts roles (earlier KB versions misattributed these). Quality Manager is read-only on Asset (for maintenance visibility), not a primary role. You know Assets are deeply tied to Accounts: acquisition posts to a fixed-asset GL account, depreciation schedules post periodic GL entries, disposals post gain/loss entries. Asset Categories carry default depreciation method + useful life + the GL accounts (asset_category_account child table) that every child Asset inherits. You know THREE depreciation methods: Straight Line (equal amount per period), Double Declining Balance (accelerated, % on book value), and Manual (user-defined schedule rows). You know Asset Finance Book is the multi-book depreciation container - one Asset can carry multiple Finance Book rows for tax-book vs accounting-book schedules; each Finance Book row produces its own Depreciation Schedule. You know calculate_depreciation=0 SKIPS Depreciation Schedule creation on submit (asset.py on_submit gates the schedule generation); useful for opening-balance fixed assets where the schedule already lives externally. You know Depreciation Schedule is READ-ONLY after Asset submit - the only way to alter it is via Asset Value Adjustment (not by editing the Asset directly). You know Asset Capitalization is the v14+ bulk-creation-from-stock path: an Asset Capitalization Stock Item consumes N Items from stock and emits 1 Asset. You know Asset Shift Allocation / Asset Shift Factor drive shift-based depreciation (single-shift vs double-shift production affects depreciation rate). Anti-patterns: direct value edits bypassing Asset Value Adjustment; missing Depreciation Schedule on a capitalised Asset; Asset Movement without both source and target Location; disposal without disposal_date + disposal_amount; mixing asset_quantity > 1 with has_serial_no=1.",
 	"conventions": {
 		"permissions_add_roles": [
-			{"role": "Accounts Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
-			{"role": "Accounts User", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Assets Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "Assets User", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Accounts Manager", "read": 1, "write": 0, "create": 0, "delete": 0},
 			{"role": "Quality Manager", "read": 1, "write": 0, "create": 0, "delete": 0}
 		],
-		"naming_patterns": ["format:AST-.YYYY.-.#####"],
-		"typical_linked_doctypes": ["Asset", "Asset Category", "Location", "Cost Center", "Account", "Item"],
-		"required_hooks_for_submittable": ["on_submit_gl_posting", "on_submit_depreciation_schedule"],
+		"naming_patterns": [
+			"format:ACC-ASS-.YYYY.-.#####",
+			"format:ACC-ASR-.YYYY.-.#####",
+			"format:ACC-ASM-.YYYY.-.#####",
+			"format:ACC-ASV-.YYYY.-.#####"
+		],
+		"typical_linked_doctypes": [
+			"Asset", "Asset Category", "Asset Category Account",
+			"Location", "Linked Location",
+			"Cost Center", "Account", "Finance Book",
+			"Item", "Serial No",
+			"Depreciation Schedule", "Asset Finance Book",
+			"Asset Movement", "Asset Value Adjustment",
+			"Asset Repair", "Asset Maintenance", "Asset Maintenance Log", "Asset Maintenance Team",
+			"Asset Capitalization", "Asset Capitalization Stock Item",
+			"Asset Shift Allocation", "Asset Shift Factor"
+		],
+		"required_hooks_for_submittable": [
+			"on_submit_gl_posting_for_Asset_acquisition",
+			"on_submit_generate_Depreciation_Schedule_when_calculate_depreciation",
+			"on_submit_gl_posting_for_Asset_Value_Adjustment",
+			"on_submit_gl_posting_for_Asset_Repair"
+		],
 		"gotchas": [
-			"Assets hit General Ledger on acquisition, depreciation, repair, and disposal - Asset DocTypes must post GL entries or they corrupt the balance sheet.",
-			"Depreciation Schedule is generated at Asset submit and should be regenerated only via Asset Value Adjustment, not edited directly.",
-			"Asset Movement needs both source and target Location - missing either breaks location-based reporting.",
-			"asset_quantity > 1 conflicts with per-unit serialisation. If you need per-unit tracking, split into multiple Asset records."
+			"Primary roles are Assets Manager + Assets User - NOT Accounts roles. Earlier KB versions had this wrong. Accounts Manager is a READ-ONLY observer on Asset (finance review); Quality Manager is read-only (maintenance oversight).",
+			"THREE depreciation methods: Straight Line, Double Declining Balance, Manual. Asset Category carries the default; child Asset can override. Manual requires user-supplied Depreciation Schedule rows (no auto-generation).",
+			"Asset Finance Book is the multi-book path: one Asset + N Asset Finance Book rows = N Depreciation Schedules (tax-book vs accounting-book). Multi-book Assets produce one GL posting per book per period; requires matching Finance Book rows for every book.",
+			"Asset.calculate_depreciation=0 SKIPS Depreciation Schedule creation on submit - intended for opening-balance fixed assets where the schedule already exists externally. calculate_depreciation=1 is the normal path.",
+			"Depreciation Schedule is READ-ONLY after Asset submit. The only way to alter it is via Asset Value Adjustment (which posts a GL entry AND regenerates the schedule from the adjustment point forward).",
+			"Asset Categories drive default GL account inheritance via asset_category_account (per-Company rows for Fixed Asset Account, Depreciation Expense Account, Accumulated Depreciation Account). A new Asset inherits these if the child doesn't override.",
+			"Asset Capitalization is the v14+ bulk-creation-from-stock path. An Asset Capitalization Stock Item consumes stock Items and emits one Asset record. Used for in-house asset manufacture (e.g. building a machine from components).",
+			"Asset Shift Allocation + Asset Shift Factor drive shift-based depreciation. Single-shift production has one factor; double-shift raises the depreciation rate. Asset Shift Factor lives per Asset Category.",
+			"asset_quantity > 1 with has_serial_no=1 is invalid - per-unit serialisation requires one Asset per unit. Split into multiple Asset records.",
+			"Asset Movement needs both source_location and target_location - missing either breaks location-based reporting. An Asset Movement with target_location=null is interpreted as a disposal at some older ERPNext versions.",
+			"Disposal: an Asset is disposed via Asset Movement with disposal_date + disposal_amount set, which posts a gain/loss GL entry based on the book value at the disposal date.",
+			"Asset Repair posts GL entries for the repair cost; it does NOT alter the Depreciation Schedule (repair is an expense, not a capital adjustment). For capital-improvement repairs, use Asset Value Adjustment.",
+			"Asset Maintenance Team lives as a Link-to-HR-Team reference; Asset Maintenance rows schedule periodic or breakdown maintenance; Asset Maintenance Log records the execution."
 		]
 	},
 	"validation_rules": [
 		{
-			"id": "assets_submittable_needs_gl_and_schedule",
-			"severity": "warning",
-			"when": {"doctype": "DocType", "data.is_submittable": 1},
-			"message": "Submittable Assets DocTypes typically post both a GL entry and (for capitalised assets) trigger a Depreciation Schedule update on submit.",
-			"fix": "Add a Server Script with doctype_event='on_submit' that posts GL Entry and, where applicable, regenerates the Depreciation Schedule."
+			"id": "assets_calculate_depreciation_zero_skips_schedule",
+			"severity": "advisory",
+			"when": {"doctype": "Asset", "data.calculate_depreciation": 0},
+			"message": "Asset with calculate_depreciation=0 SKIPS Depreciation Schedule generation on submit. Intended for opening-balance fixed assets where the schedule already exists externally.",
+			"fix": "If this Asset should auto-generate a depreciation schedule, set calculate_depreciation=1 and populate depreciation_method + total_number_of_depreciations + frequency_of_depreciation."
 		},
 		{
-			"id": "assets_needs_accounts_manager_perm",
+			"id": "assets_quantity_vs_serial",
+			"severity": "blocker",
+			"when": {"doctype": "Asset", "data.asset_quantity": ">1", "data.has_serial_no": 1},
+			"message": "Asset.asset_quantity > 1 combined with has_serial_no=1 is invalid. Per-unit serialisation requires one Asset record per serialised unit.",
+			"fix": "Split into multiple Asset records (one per serial_no) OR set asset_quantity=1 with has_serial_no=1 OR set has_serial_no=0 with asset_quantity>1."
+		},
+		{
+			"id": "assets_depreciation_schedule_read_only",
 			"severity": "advisory",
-			"when": {"doctype": "DocType"},
-			"message": "Assets DocTypes typically include Accounts Manager and Accounts User permission rows (Assets report to the Accounts function).",
-			"fix": "Add Accounts Manager (full) and Accounts User (no delete) rows to permissions; add Quality Manager (read-only) if maintenance records are involved."
+			"when": {"doctype": "Asset"},
+			"message": "Depreciation Schedule becomes READ-ONLY after Asset submit. The only way to alter it is via Asset Value Adjustment - direct edits to the Asset's schedule rows are rejected at save.",
+			"fix": "To modify the schedule post-submit, create an Asset Value Adjustment with the new valuation or useful_life. Never edit Asset.schedules[] directly."
+		},
+		{
+			"id": "assets_finance_book_rows_must_match",
+			"severity": "blocker",
+			"when": {"doctype": "Asset", "data.has_finance_books": 1},
+			"message": "Asset with has_finance_books=1 requires matching Asset Finance Book rows for every Finance Book used by the Company. Missing books produce inconsistent depreciation across tax vs accounting schedules.",
+			"fix": "Populate asset_finance_books with one row per Finance Book enabled on the Company, each carrying its own depreciation_method / total_number_of_depreciations / frequency_of_depreciation / depreciation_start_date."
+		},
+		{
+			"id": "assets_movement_needs_both_locations",
+			"severity": "blocker",
+			"when": {"doctype": "Asset Movement"},
+			"message": "Asset Movement requires BOTH source_location AND target_location. Missing either breaks location-based reporting and can be misinterpreted as a disposal on older ERPNext versions.",
+			"fix": "Set source_location + target_location on every Asset Movement Item. Use Asset Movement with purpose='Disposal' and a null target_location only when deliberately disposing."
+		},
+		{
+			"id": "assets_needs_assets_manager_perm",
+			"severity": "advisory",
+			"when": {"doctype": "DocType", "data.module": "Assets"},
+			"message": "Assets DocTypes conventionally include Assets Manager (full) + Assets User (no delete) primary roles, with Accounts Manager and Quality Manager as read-only observers. Earlier Alfred KBs misattributed Accounts as the primary role - Assets is its own module.",
+			"fix": "Add {role: 'Assets Manager', read:1, write:1, create:1, delete:1} and {role: 'Assets User', read:1, write:1, create:1, delete:0}; add Accounts Manager + Quality Manager read-only only if the DocType warrants finance / maintenance visibility."
 		}
 	],
 	"detection_hints": {
@@ -41,13 +99,22 @@
 			"Asset Movement", "Asset Movement Item",
 			"Asset Value Adjustment", "Asset Repair",
 			"Asset Maintenance", "Asset Maintenance Log", "Asset Maintenance Team",
-			"Depreciation Schedule", "Location"
+			"Asset Depreciation Schedule", "Depreciation Schedule",
+			"Asset Finance Book",
+			"Asset Capitalization", "Asset Capitalization Stock Item",
+			"Asset Shift Allocation", "Asset Shift Factor",
+			"Asset Activity", "Linked Location",
+			"Location", "Finance Book"
 		],
 		"keyword_hints": [
-			"asset category", "asset movement", "asset repair",
+			"asset", "asset category", "asset movement", "asset repair",
 			"asset maintenance", "asset value adjustment",
-			"depreciation schedule", "fixed asset", "capitalised",
-			"straight line", "written down value", "useful life"
+			"depreciation schedule", "depreciation method",
+			"fixed asset", "capitalised", "capitalized",
+			"straight line", "double declining", "written down value", "useful life",
+			"asset finance book", "multi-book depreciation",
+			"asset capitalization", "asset shift",
+			"disposal date", "gain on disposal", "loss on disposal"
 		]
 	}
 }
