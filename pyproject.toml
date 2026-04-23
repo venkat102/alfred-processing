@@ -20,6 +20,17 @@ dependencies = [
 	# run the full pytest suite + bench tests, confirm no drift/rescue
 	# regression, then commit.
 	"crewai==0.203.2",
+	# Range is wide but crewai 0.203.2 pins litellm==1.74.9 exactly, so
+	# the effective installed version is 1.74.9. That version carries 3
+	# CVEs (CVE-2026-35029 admin auth bypass + RCE, CVE-2026-35030 JWT
+	# OIDC cache-key collision, GHSA-69x8-hrgq-fjj8 weak password
+	# hashing). RISK ACCEPTED: Alfred uses litellm as an in-process
+	# library — it does not expose /config/update, /v2/login, or any
+	# proxy endpoint — so the CVEs' /config/update + /v2/login attack
+	# paths are not reachable from Alfred. Closing these CVEs requires
+	# bumping crewai, which the pyproject comment above explicitly
+	# calls out as deliberate work. See task #11 in tech-debt-backlog
+	# for the planned crewai bump.
 	"litellm>=1.40,<2.0",
 	"redis[hiredis]>=5.0,<6.0",
 	"pydantic>=2.0,<3.0",
@@ -32,9 +43,17 @@ dependencies = [
 dev = [
 	"pytest>=8.0",
 	"pytest-asyncio>=0.23",
+	"pytest-cov>=5.0",
 	"httpx>=0.25",
+	# httpx-ws: ASGIWebSocketTransport + aconnect_ws for WebSocket
+	# integration tests. Without this the WS test class in
+	# test_api_gateway.py skips entirely.
+	"httpx-ws>=0.6",
 	"ruff>=0.4",
 	"jsonschema>=4.0",
+	# pip-audit: supply-chain CVE scan; invoked in CI but useful locally
+	# (`.venv/bin/pip-audit --desc`) for a quick pre-commit check.
+	"pip-audit>=2.7",
 ]
 
 [build-system]
@@ -50,6 +69,17 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["F", "E", "W", "I", "UP", "B"]
+# TD-H3 phase 1: BLE001 (blind-except) enforced for NEW code. Existing
+# broad `except Exception:` sites are grandfathered with an inline
+# `# noqa: BLE001 — TD-H3` comment so ruff passes today; each site is
+# replaced with a specific exception class as it's touched in the
+# normal course of maintenance.
+extend-select = ["BLE001"]
+# Project uses tabs for indentation (see ruff.format.indent-style); the
+# W191 / E101 tab warnings are therefore false positives and disabled.
+# E501 (line length) deferred to a tech-debt pass; enabling it today
+# would trip ~114 existing lines.
+ignore = ["W191", "E101", "E501"]
 
 [tool.ruff.format]
 quote-style = "double"

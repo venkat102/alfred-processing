@@ -1,0 +1,55 @@
+# Dependabot — weekly PRs for dependency bumps.
+#
+# Pairs with the pip-audit job in ci.yml: dependabot proposes the bumps,
+# pip-audit catches the ones that close known CVEs, CI validates each
+# bump against the full test suite before a human reviews.
+#
+# CrewAI is deliberately pinned in pyproject.toml (our builder paths sit
+# on specific internals and the surface churns). Dependabot will still
+# open PRs for it — review each one carefully per the comment in
+# pyproject.toml.
+#
+# Spec: TD-H8 from docs/tech-debt-backlog.md.
+
+version: 2
+
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 5
+    groups:
+      # Group dev-only bumps so we don't open 10 PRs for pytest-* tweaks.
+      dev-deps:
+        dependency-type: "development"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    labels:
+      - "dependencies"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "deps(docker)"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "deps(ci)"
+    labels:
+      - "dependencies"
+      - "ci"
