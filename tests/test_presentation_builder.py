@@ -128,3 +128,19 @@ def test_enhance_rejects_unknown_intent():
 		enhance_generate_changeset_description(
 			"BASE", intent="create_doctype",
 		)
+
+
+# ── ask-don't-assume contract ────────────────────────────────
+
+def test_base_backstory_asks_dont_assume():
+	agent = build_presentation_agent(
+		intent="create_web_form", site_config={}, custom_tools=None,
+	)
+	assert "ASK, DO NOT ASSUME" in agent.backstory
+	assert "needs_clarification" in agent.backstory
+
+
+def test_checklist_exposes_needs_clarification_source():
+	schema = IntentRegistry.load().get("create_web_form")
+	text = render_registry_checklist(schema, intent="create_web_form")
+	assert "needs_clarification" in text

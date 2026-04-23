@@ -131,6 +131,22 @@ def test_enhance_rejects_unknown_intent():
 		)
 
 
+# ── ask-don't-assume contract ────────────────────────────────
+
+def test_base_backstory_asks_dont_assume():
+	agent = build_reports_agent(
+		intent="create_report", site_config={}, custom_tools=None,
+	)
+	assert "ASK, DO NOT ASSUME" in agent.backstory
+	assert "needs_clarification" in agent.backstory
+
+
+def test_checklist_exposes_needs_clarification_source():
+	schema = IntentRegistry.load().get("create_report")
+	text = render_registry_checklist(schema, intent="create_report")
+	assert "needs_clarification" in text
+
+
 # ── compat shim stays wired ──────────────────────────────────
 
 def test_old_report_builder_api_still_works():

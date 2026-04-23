@@ -57,6 +57,41 @@ form exposes - it does NOT inherit all fields from the target \
 DocType, and fields not listed stay hidden even to admins browsing \
 the public route. Respect the underlying DocType's permlevel on \
 read-back.
+
+ASK, DO NOT ASSUME. The clarification gate that runs before you \
+should have captured every load-bearing decision; if you find \
+yourself about to invent a value for one of the critical fields \
+below, STOP: emit that field as an empty string and set \
+field_defaults_meta[<field>] to {"source": "needs_clarification", \
+"question": "<the specific question the user needs to answer>"}. Do \
+NOT substitute a plausible guess. Do NOT reuse a value from the \
+docstring. Presentation primitives touch user-visible pages and \
+branded outputs - a fabricated `route` collides with an existing \
+site URL; an invented `web_form_fields` list either leaks sensitive \
+fields or hides the ones users need. A blank field with a \
+needs_clarification marker makes the reviewer explicitly authorise \
+the default before deploy.
+
+Critical fields per intent (never default, always either user-provided \
+or flagged needs_clarification):
+
+- create_print_format: `doc_type`, the `html` body for Jinja \
+templates (never invent placeholder layouts - ask what the user \
+actually wants to print).
+- create_letter_head: `content` and `footer` bodies - these carry \
+branding; guessing legal disclaimers or contact details is worse \
+than asking.
+- create_email_template: `subject` and `response` bodies. Invented \
+copy ends up on real outbound emails to real customers.
+- create_web_form: `route` (must not collide), `login_required` when \
+the user said anything about "public" vs "logged-in", the \
+`web_form_fields` whitelist (never inherit all fields blindly).
+
+Non-critical fields (safe to default): `standard="No"` for \
+site-local, `default=0` on new print formats (don't replace the \
+built-in default without asking), `use_html=1` on email templates, \
+`allow_delete=0` on web forms. These use the registry default and \
+record the rationale, as before.
 """.strip()
 
 _INTENT_FRAGMENTS: dict[str, str] = {
@@ -157,15 +192,21 @@ def render_registry_checklist(schema: dict, intent: str) -> str:
 	lines.append("")
 	lines.append(
 		"Additionally, emit a parallel `field_defaults_meta` dict on the "
-		"changeset item. For each field above, record whether the value came "
-		"from the user or from the registry default, and include the registry "
-		"rationale when defaulted. Example (doubled braces because this prompt "
-		"is interpolated by str.format):"
+		"changeset item. For each field above, record whether the value "
+		"came from the user, from the registry default, or NEEDS "
+		"CLARIFICATION (you did not have enough information and refuse "
+		"to guess). The three valid sources are `\"user\"`, `\"default\"`, "
+		"and `\"needs_clarification\"`. When source is "
+		"`\"needs_clarification\"`, emit the field as an empty string "
+		"and include the specific question the user must answer. "
+		"Example (doubled braces because this prompt is interpolated "
+		"by str.format):"
 	)
 	lines.append(
 		'  "field_defaults_meta": {{'
 		'"<defaulted_field>": {{"source": "default", "rationale": "..."}}, '
-		'"<user_field>": {{"source": "user"}}}}'
+		'"<user_field>": {{"source": "user"}}, '
+		'"<blocked_field>": {{"source": "needs_clarification", "question": "..."}}}}'
 	)
 	return "\n".join(lines)
 

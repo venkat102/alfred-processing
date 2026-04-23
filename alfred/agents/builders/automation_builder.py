@@ -67,6 +67,44 @@ reads the current form values, not the persisted DB state.
 For every automation task, call `lookup_pattern` first to see if a \
 curated idiom exists in the patterns library. Adapting a pattern is \
 always safer than hand-rolling from scratch.
+
+ASK, DO NOT ASSUME. The clarification gate that runs before you \
+should have captured every load-bearing decision; if you find \
+yourself about to invent a value for one of the critical fields \
+below, STOP: emit that field as an empty string and set \
+field_defaults_meta[<field>] to {"source": "needs_clarification", \
+"question": "<the specific question the user needs to answer>"}. Do \
+NOT substitute a plausible guess. Do NOT reuse a value from the \
+docstring. Automation primitives are the easiest place in Frappe to \
+do the wrong thing silently - an inferred event type, an invented \
+condition, or a fabricated allowed-roles list produces scripts that \
+fire at the wrong moment or workflows that nobody can advance. A \
+blank field with a needs_clarification marker makes the reviewer \
+explicitly authorise the default before deploy.
+
+Critical fields per intent (never default, always either user-provided \
+or flagged needs_clarification):
+
+- create_server_script: `reference_doctype` and `doctype_event` when \
+script_type=DocType Event (Before Save vs On Submit vs After Save is \
+load-bearing); the `script` body itself; `condition` if the script is \
+conditional.
+- create_client_script: `dt` (target DocType), the handler event names \
+(refresh, validate, <fieldname> on change), and the logic body.
+- create_notification: `document_type`, `event`, `recipients` (the \
+specific field / role / email the user named), `subject`, and \
+`condition` if the notification is conditional. NEVER guess `event` \
+just to have a value - "notify the approver when the claim is \
+submitted" means event=New (to tell the approver BEFORE they click), \
+not event=Submit.
+- create_workflow: `document_type`, full list of `states`, full list \
+of `transitions` including `allowed_roles` per transition. An \
+invented allowed_roles list means nobody can advance the workflow.
+
+Non-critical fields (safe to default): `disabled=0`, `enabled=1`, \
+`is_active=1`, `channel=Email`, `send_email_alert=0`, \
+`override_status=0`. These use the registry default and record the \
+rationale, as before.
 """.strip()
 
 _INTENT_FRAGMENTS: dict[str, str] = {
@@ -181,15 +219,21 @@ def render_registry_checklist(schema: dict, intent: str) -> str:
 	lines.append("")
 	lines.append(
 		"Additionally, emit a parallel `field_defaults_meta` dict on the "
-		"changeset item. For each field above, record whether the value came "
-		"from the user or from the registry default, and include the registry "
-		"rationale when defaulted. Example (doubled braces because this prompt "
-		"is interpolated by str.format):"
+		"changeset item. For each field above, record whether the value "
+		"came from the user, from the registry default, or NEEDS "
+		"CLARIFICATION (you did not have enough information and refuse "
+		"to guess). The three valid sources are `\"user\"`, `\"default\"`, "
+		"and `\"needs_clarification\"`. When source is "
+		"`\"needs_clarification\"`, emit the field as an empty string "
+		"and include the specific question the user must answer. "
+		"Example (doubled braces because this prompt is interpolated "
+		"by str.format):"
 	)
 	lines.append(
 		'  "field_defaults_meta": {{'
 		'"<defaulted_field>": {{"source": "default", "rationale": "..."}}, '
-		'"<user_field>": {{"source": "user"}}}}'
+		'"<user_field>": {{"source": "user"}}, '
+		'"<blocked_field>": {{"source": "needs_clarification", "question": "..."}}}}'
 	)
 	return "\n".join(lines)
 

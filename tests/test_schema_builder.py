@@ -147,6 +147,24 @@ def test_enhance_rejects_unknown_intent():
 		)
 
 
+# ── ask-don't-assume contract ────────────────────────────────
+
+def test_base_backstory_asks_dont_assume():
+	agent = build_schema_agent(
+		intent="create_doctype", site_config={}, custom_tools=None,
+	)
+	assert "ASK, DO NOT ASSUME" in agent.backstory
+	assert "needs_clarification" in agent.backstory
+
+
+def test_checklist_exposes_needs_clarification_source():
+	# The rendered prompt must teach the model the third field_defaults_meta
+	# source ("needs_clarification"), not just "user" / "default".
+	schema = IntentRegistry.load().get("create_doctype")
+	text = render_registry_checklist(schema, intent="create_doctype")
+	assert "needs_clarification" in text
+
+
 # ── compat shim stays wired ──────────────────────────────────
 
 def test_old_doctype_builder_api_still_works():

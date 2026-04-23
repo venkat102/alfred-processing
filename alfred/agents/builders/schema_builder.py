@@ -56,6 +56,34 @@ collide.
 - Custom Field fieldname follows snake_case and must be unique on the \
 target DocType. `insert_after` places it after an existing field; without \
 it, the field lands at the bottom of the form which confuses users.
+
+ASK, DO NOT ASSUME. The clarification gate that runs before you should \
+have captured every load-bearing decision; if you find yourself about to \
+invent a value for one of the critical fields below, STOP: emit that \
+field as an empty string and set field_defaults_meta[<field>] to \
+{"source": "needs_clarification", "question": "<the specific question \
+the user needs to answer>"}. Do NOT substitute a plausible guess. Do NOT \
+reuse a value from the docstring. Inventing a target DocType, a \
+fieldtype, a role name, or an action-flag set silently ships the wrong \
+thing - a blank field with a needs_clarification marker makes the \
+reviewer explicitly authorise the default before deploy.
+
+Critical fields per intent (never default, always either user-provided \
+or flagged needs_clarification):
+
+- create_doctype: `module`, DocType `name`, and any submittable lifecycle \
+flags the user named.
+- create_custom_field: `dt` (target DocType), `fieldname`, `label`, \
+`fieldtype`, and `options` whenever fieldtype is Select / Link / Table / \
+Table MultiSelect.
+- create_role_with_permissions: `role_name`, each target DocType, and \
+the set of action flags the user named (defaulting read+write+create+ \
+delete is acceptable ONLY when the user said "all permissions" or \
+equivalent - otherwise ask).
+
+Non-critical fields (safe to default): boolean hardening flags like \
+`two_factor_auth`, list-view flags, cosmetic ordering hints. These use \
+the registry default and record the rationale, as before.
 """.strip()
 
 _INTENT_FRAGMENTS: dict[str, str] = {
@@ -157,15 +185,21 @@ def render_registry_checklist(schema: dict, intent: str) -> str:
 	lines.append("")
 	lines.append(
 		"Additionally, emit a parallel `field_defaults_meta` dict on the "
-		"changeset item. For each field above, record whether the value came "
-		"from the user or from the registry default, and include the registry "
-		"rationale when defaulted. Example (doubled braces because this prompt "
-		"is interpolated by str.format):"
+		"changeset item. For each field above, record whether the value "
+		"came from the user, from the registry default, or NEEDS "
+		"CLARIFICATION (you did not have enough information and refuse "
+		"to guess). The three valid sources are `\"user\"`, `\"default\"`, "
+		"and `\"needs_clarification\"`. When source is "
+		"`\"needs_clarification\"`, emit the field as an empty string "
+		"and include the specific question the user must answer. "
+		"Example (doubled braces because this prompt is interpolated "
+		"by str.format):"
 	)
 	lines.append(
 		'  "field_defaults_meta": {{'
 		'"<defaulted_field>": {{"source": "default", "rationale": "..."}}, '
-		'"<user_field>": {{"source": "user"}}}}'
+		'"<user_field>": {{"source": "user"}}, '
+		'"<blocked_field>": {{"source": "needs_clarification", "question": "..."}}}}'
 	)
 	return "\n".join(lines)
 
