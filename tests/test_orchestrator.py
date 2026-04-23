@@ -227,6 +227,70 @@ class TestClassifyMode:
 		assert decision.source == "override"
 		llm.assert_not_called()
 
+	def test_dev_override_with_analytics_prompt_redirects_to_insights(self):
+		# Hybrid UX: user had Dev selected but asked an analytics question.
+		# Redirect to Insights and surface source="analytics_redirect" so
+		# the UI can render a banner with a "Run in Dev anyway" button.
+		with patch("alfred.orchestrator._classify_with_llm") as llm:
+			decision = _run(
+				classify_mode(
+					prompt="Show top 10 customers by revenue this quarter",
+					memory=None,
+					manual_override="dev",
+					site_config={},
+				)
+			)
+		assert decision.mode == "insights"
+		assert decision.source == "analytics_redirect"
+		assert decision.confidence == "high"
+		assert "Run in Dev anyway" in decision.reason
+		llm.assert_not_called()
+
+	def test_force_dev_override_bypasses_analytics_redirect(self):
+		# User clicked "Run in Dev anyway" on the redirect banner; the
+		# frontend re-sends with force_dev_override=True. Dev must win.
+		with patch("alfred.orchestrator._classify_with_llm") as llm:
+			decision = _run(
+				classify_mode(
+					prompt="Show top 10 customers by revenue this quarter",
+					memory=None,
+					manual_override="dev",
+					site_config={},
+					force_dev_override=True,
+				)
+			)
+		assert decision.mode == "dev"
+		assert decision.source == "override"
+		llm.assert_not_called()
+
+	def test_analytics_redirect_does_not_fire_for_non_dev_override(self):
+		# The redirect is Dev-specific: if the user forced Plan or
+		# Insights, leave the override alone.
+		decision = _run(
+			classify_mode(
+				prompt="Show top 10 customers by revenue this quarter",
+				memory=None,
+				manual_override="plan",
+				site_config={},
+			)
+		)
+		assert decision.mode == "plan"
+		assert decision.source == "override"
+
+	def test_analytics_redirect_does_not_fire_for_build_prompt(self):
+		# The redirect only triggers on analytics-shape prompts. An
+		# explicit build request with Dev selected must still hit dev.
+		decision = _run(
+			classify_mode(
+				prompt="Create a report listing top customers by revenue",
+				memory=None,
+				manual_override="dev",
+				site_config={},
+			)
+		)
+		assert decision.mode == "dev"
+		assert decision.source == "override"
+
 	def test_manual_override_normalizes_case(self):
 		decision = _run(
 			classify_mode(

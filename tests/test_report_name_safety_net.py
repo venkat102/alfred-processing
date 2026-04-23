@@ -108,3 +108,128 @@ def test_fills_only_empty_string_not_populated():
 	}]
 	_apply_safety_net(ctx)
 	assert ctx.changes[0]["data"]["report_name"] == "Handoff Name"
+
+
+# ── Aggregation safety net ─────────────────────────────────────────
+
+
+def _ctx_with_aggregation_candidate(query: str = "SELECT 1"):
+	conn = MagicMock()
+	conn.site_config = {}
+	c = PipelineContext(conn=conn, conversation_id="t", prompt="p")
+	c.mode = "dev"
+	c.intent = "create_report"
+	c.report_candidate = {
+		"target_doctype": "Sales Invoice",
+		"report_type": "Query Report",
+		"suggested_name": "Top 10 Customers by Revenue - This Quarter",
+		"query": query,
+		"aggregation": {
+			"source_doctype": "Sales Invoice",
+			"metric_field": "grand_total",
+			"metric_fn": "SUM",
+			"metric_label": "Revenue",
+			"group_by_field": "customer",
+			"group_by_label": "Customer",
+		},
+	}
+	return c
+
+
+def _apply_aggregation_safety_net(ctx):
+	"""Mirror the aggregation block of the post_crew safety net."""
+	if not ctx.changes:
+		return
+	if ctx.intent != "create_report":
+		return
+	if not isinstance(ctx.report_candidate, dict):
+		return
+	candidate = ctx.report_candidate
+	cand_query = candidate.get("query")
+	cand_target = candidate.get("target_doctype")
+	cand_aggregation = candidate.get("aggregation")
+	for item in ctx.changes:
+		if item.get("doctype") != "Report":
+			continue
+		data = item.setdefault("data", {})
+		meta = item.setdefault("field_defaults_meta", {})
+		if cand_aggregation and cand_query:
+			if data.get("report_type") != "Query Report":
+				data["report_type"] = "Query Report"
+				meta["report_type"] = {"source": "default", "rationale": "forced"}
+			if data.get("query") != cand_query:
+				data["query"] = cand_query
+				meta["query"] = {"source": "default", "rationale": "forced"}
+			if cand_target and data.get("ref_doctype") != cand_target:
+				data["ref_doctype"] = cand_target
+				meta["ref_doctype"] = {"source": "default", "rationale": "forced"}
+			if not data.get("is_standard"):
+				data["is_standard"] = "No"
+				meta["is_standard"] = {"source": "default", "rationale": "forced"}
+
+
+def test_aggregation_overwrites_report_type_from_report_builder():
+	# Specialist emitted Report Builder; safety net MUST force Query
+	# Report because Report Builder can't do GROUP BY + SUM.
+	ctx = _ctx_with_aggregation_candidate(query="SELECT customer, SUM(grand_total) FROM ...")
+	ctx.changes = [{
+		"op": "create", "doctype": "Report",
+		"data": {
+			"report_name": "X",
+			"report_type": "Report Builder",  # specialist got it wrong
+			"ref_doctype": "Customer",         # specialist got it wrong
+		},
+	}]
+	_apply_aggregation_safety_net(ctx)
+	assert ctx.changes[0]["data"]["report_type"] == "Query Report"
+	assert ctx.changes[0]["data"]["ref_doctype"] == "Sales Invoice"
+	assert ctx.changes[0]["data"]["query"] == "SELECT customer, SUM(grand_total) FROM ..."
+
+
+def test_aggregation_overwrites_specialist_query_when_different():
+	# Specialist may emit a non-aggregation query; handoff's SQL is
+	# authoritative. Override even when specialist already populated it.
+	ctx = _ctx_with_aggregation_candidate(query="SELECT customer, SUM(grand_total) ...")
+	ctx.changes = [{
+		"op": "create", "doctype": "Report",
+		"data": {
+			"report_type": "Query Report",
+			"query": "SELECT * FROM tabSalesInvoice",  # wrong SQL from specialist
+		},
+	}]
+	_apply_aggregation_safety_net(ctx)
+	assert ctx.changes[0]["data"]["query"] == "SELECT customer, SUM(grand_total) ..."
+
+
+def test_aggregation_fills_is_standard_default():
+	ctx = _ctx_with_aggregation_candidate()
+	ctx.changes = [{
+		"op": "create", "doctype": "Report",
+		"data": {"report_type": "Query Report", "query": "SELECT 1"},
+	}]
+	_apply_aggregation_safety_net(ctx)
+	assert ctx.changes[0]["data"]["is_standard"] == "No"
+
+
+def test_aggregation_safety_net_noop_without_aggregation_block():
+	# Candidate has no aggregation/query -> don't touch report_type.
+	# This is the Report Builder list-shape path.
+	conn = MagicMock()
+	conn.site_config = {}
+	c = PipelineContext(conn=conn, conversation_id="t", prompt="p")
+	c.mode = "dev"
+	c.intent = "create_report"
+	c.report_candidate = {
+		"target_doctype": "Customer",
+		"report_type": "Report Builder",
+		"suggested_name": "Top 10 Customers - This Quarter",
+	}
+	c.changes = [{
+		"op": "create", "doctype": "Report",
+		"data": {"report_type": "Report Builder", "ref_doctype": "Customer"},
+	}]
+	_apply_aggregation_safety_net(c)
+	# Nothing forced - Report Builder list shape is the intended output.
+	assert c.changes[0]["data"]["report_type"] == "Report Builder"
+	assert c.changes[0]["data"]["ref_doctype"] == "Customer"
+	assert "query" not in c.changes[0]["data"]

@@ -31,7 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os as _os_for_flag
+from alfred.config import get_settings as _get_settings
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -181,7 +181,7 @@ def _parse_report_candidate_marker(prompt: str) -> dict | None:
 		parsed = json.loads(m.group(1))
 		if isinstance(parsed, dict):
 			return parsed
-	except Exception:
+	except Exception:  # noqa: BLE001
 		pass
 	return None
 
@@ -401,7 +401,7 @@ def _detect_drift(result_text: str, user_prompt: str) -> str | None:
 			parsed = json.loads(stripped)
 			if isinstance(parsed, list):
 				return None
-		except Exception:
+		except Exception:  # noqa: BLE001
 			# Malformed JSON falls through to drift checks below - if the
 			# agent tried to emit a changeset but wrote unparseable JSON,
 			# drift detection can still catch obvious prose mixed in.
@@ -484,6 +484,10 @@ class PipelineContext:
 	# `orchestrator_reason`. Chat/insights/plan modes skip the crew and
 	# emit their own reply message types.
 	manual_mode_override: str = "auto"
+	# When True, bypass the analytics-shape redirect in classify_mode so a
+	# user who explicitly clicks "Run in Dev anyway" on the redirect banner
+	# gets dev mode on the retry. Frontend sends this as data.force_dev.
+	force_dev_override: bool = False
 	mode: str = "dev"
 	orchestrator_reason: str | None = None
 	orchestrator_source: str | None = None
@@ -588,7 +592,7 @@ def _summarise_probe_error(exc: Exception) -> str:
 	if isinstance(exc, _urllib_error.HTTPError):
 		try:
 			body = (exc.read() or b"").decode(errors="replace")[:200]
-		except Exception:
+		except Exception:  # noqa: BLE001
 			body = ""
 		return f"HTTP {exc.code}: {body}" if body else f"HTTP {exc.code}"
 	return str(exc) or exc.__class__.__name__
@@ -683,7 +687,7 @@ class AgentPipeline:
 					"type": "run_cancelled",
 					"data": {"reason": error, **extra},
 				})
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning("Failed to send cancellation message: %s", e)
 			return
 		try:
@@ -692,7 +696,7 @@ class AgentPipeline:
 				"type": "error",
 				"data": {"error": error, "code": code, **extra},
 			})
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("Failed to send error message: %s", e)
 
 	# ── Phases ───────────────────────────────────────────────────────
@@ -789,6 +793,20 @@ class AgentPipeline:
 			)
 
 		async def _do_probe(ollama_model: str, base_url: str):
+			# SSRF gate: the probe runs on every pipeline warmup, making
+			# it a parallel attack surface to ollama_chat. Validate the
+			# URL here too. See alfred/security/url_allowlist.py.
+			from alfred.security.url_allowlist import (
+				SsrfPolicyError, validate_llm_url,
+			)
+			try:
+				validate_llm_url(base_url)
+			except SsrfPolicyError as e:
+				# Raise with a clear message; the outer _probe_one loop
+				# logs + records the failure per attempt.
+				raise RuntimeError(
+					f"Probe URL rejected by SSRF policy ({e.reason}): {e}"
+				) from e
 			payload = json.dumps({
 				"model": ollama_model,
 				"prompt": "hi",
@@ -834,7 +852,7 @@ class AgentPipeline:
 							llm_errors_total.labels(
 								tier="warmup", error_type="probe_retry",
 							).inc()
-						except Exception:
+						except Exception:  # noqa: BLE001
 							pass
 						await asyncio.sleep(_PROBE_RETRY_BACKOFF_S)
 			assert last_exc is not None
@@ -935,7 +953,7 @@ class AgentPipeline:
 			raw_mode = (plan_result.get("pipeline_mode") or "").lower()
 			if raw_mode in ("full", "lite"):
 				ctx.plan_pipeline_mode = raw_mode
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("Plan check failed (allowing by default): %s", e)
 
 	async def _phase_orchestrate(self) -> None:
@@ -961,6 +979,7 @@ class AgentPipeline:
 			memory=ctx.conversation_memory,
 			manual_override=ctx.manual_mode_override,
 			site_config=ctx.conn.site_config or {},
+			force_dev_override=ctx.force_dev_override,
 		)
 		ctx.mode = decision.mode
 		ctx.orchestrator_reason = decision.reason
@@ -988,7 +1007,7 @@ class AgentPipeline:
 					"confidence": decision.confidence,
 				},
 			})
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("mode_switch send failed: %s", e)
 
 		# Phase A: chat mode short-circuits here.
@@ -1023,7 +1042,7 @@ class AgentPipeline:
 				user_context=ctx.user_context,
 				site_config=ctx.conn.site_config or {},
 			)
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("Chat handler raised: %s", e, exc_info=True)
 			reply = (
 				"Hi! I had trouble generating a reply just now. "
@@ -1042,7 +1061,7 @@ class AgentPipeline:
 					"mode": "chat",
 				},
 			})
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("chat_reply send failed: %s", e)
 
 		# Persist conversation memory so follow-up turns see this exchange.
@@ -1054,7 +1073,7 @@ class AgentPipeline:
 					ctx.conversation_id,
 					ctx.conversation_memory,
 				)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning("chat memory save failed: %s", e)
 
 	async def _run_insights_short_circuit(self) -> None:
@@ -1078,7 +1097,7 @@ class AgentPipeline:
 					"type": "agent_status",
 					"data": {"event": event_type, **data},
 				})
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning("insights event_callback send failed: %s", e)
 
 		ctx.event_callback = _event_cb
@@ -1091,7 +1110,7 @@ class AgentPipeline:
 				user_context=ctx.user_context,
 				event_callback=_event_cb,
 			)
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("Insights handler raised: %s", e, exc_info=True)
 			from alfred.models.insights_result import InsightsResult
 			result = InsightsResult(reply=(
@@ -1115,7 +1134,7 @@ class AgentPipeline:
 					),
 				},
 			})
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("insights_reply send failed: %s", e)
 
 		# Record the Q/A pair in conversation memory so later Plan/Dev turns
@@ -1123,7 +1142,7 @@ class AgentPipeline:
 		if ctx.conversation_memory is not None:
 			try:
 				ctx.conversation_memory.add_insights_query(ctx.prompt, reply)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning("insights memory record failed: %s", e)
 
 		if ctx.conversation_memory is not None and ctx.store is not None:
@@ -1134,7 +1153,7 @@ class AgentPipeline:
 					ctx.conversation_id,
 					ctx.conversation_memory,
 				)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning("insights memory save failed: %s", e)
 
 	# ── Plan -> Dev handoff helpers (Phase C) ───────────────────────
@@ -1193,7 +1212,7 @@ class AgentPipeline:
 				ctx.conversation_id,
 				(memory.active_plan or {}).get("title"),
 			)
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("Failed to mark active plan approved: %s", e)
 
 	def _mark_active_plan_built_if_any(self) -> None:
@@ -1209,7 +1228,7 @@ class AgentPipeline:
 			return
 		try:
 			memory.mark_active_plan_status("built")
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("Failed to mark active plan built: %s", e)
 
 	async def _run_plan_short_circuit(self) -> None:
@@ -1236,7 +1255,7 @@ class AgentPipeline:
 					"type": "agent_status",
 					"data": {"event": event_type, **data},
 				})
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning("plan event_callback send failed: %s", e)
 
 		ctx.event_callback = _event_cb
@@ -1249,7 +1268,7 @@ class AgentPipeline:
 				user_context=ctx.user_context,
 				event_callback=_event_cb,
 			)
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("Plan handler raised: %s", e, exc_info=True)
 			from alfred.models.plan_doc import PlanDoc
 
@@ -1273,7 +1292,7 @@ class AgentPipeline:
 					"mode": "plan",
 				},
 			})
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("plan_doc send failed: %s", e)
 
 		# Record as a proposed plan. The user has NOT approved it yet -
@@ -1285,7 +1304,7 @@ class AgentPipeline:
 				ctx.conversation_memory.add_plan_document(
 					plan_dict, status="proposed"
 				)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning("plan memory record failed: %s", e)
 
 		if ctx.conversation_memory is not None and ctx.store is not None:
@@ -1296,7 +1315,7 @@ class AgentPipeline:
 					ctx.conversation_id,
 					ctx.conversation_memory,
 				)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning("plan memory save failed: %s", e)
 
 	async def _phase_classify_intent(self) -> None:
@@ -1310,12 +1329,11 @@ class AgentPipeline:
 
 		See docs/specs/2026-04-21-doctype-builder-specialist.md.
 		"""
-		import os as _os
-
 		ctx = self.ctx
 		if ctx.mode != "dev":
 			return
-		if _os.environ.get("ALFRED_PER_INTENT_BUILDERS") != "1":
+		settings = _get_settings()
+		if not settings.ALFRED_PER_INTENT_BUILDERS:
 			return
 
 		# V4 handoff short-circuit: when the client's prompt carries a
@@ -1323,7 +1341,7 @@ class AgentPipeline:
 		# on an Insights reply), parse it, stash on ctx, and force-classify
 		# intent=create_report. Avoids a second heuristic/LLM pass - the
 		# Insights handler already did the interpretation work.
-		if _os.environ.get("ALFRED_REPORT_HANDOFF") == "1":
+		if settings.ALFRED_REPORT_HANDOFF:
 			parsed = _parse_report_candidate_marker(ctx.prompt)
 			if parsed is not None:
 				ctx.report_candidate = parsed
@@ -1367,9 +1385,10 @@ class AgentPipeline:
 		ctx = self.ctx
 		if ctx.mode != "dev":
 			return
-		if _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") != "1":
+		settings = _get_settings()
+		if not settings.ALFRED_PER_INTENT_BUILDERS:
 			return
-		if _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") != "1":
+		if not settings.ALFRED_MODULE_SPECIALISTS:
 			return
 
 		# Heuristic: use the first extracted target DocType so module
@@ -1379,7 +1398,7 @@ class AgentPipeline:
 		first_target = targets[0] if targets else None
 		ctx.module_target_doctype = first_target
 
-		if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
+		if settings.ALFRED_MULTI_MODULE:
 			# V3: primary + secondaries
 			from alfred.orchestrator import detect_modules
 			multi = await detect_modules(
@@ -1426,9 +1445,10 @@ class AgentPipeline:
 		ctx = self.ctx
 		if ctx.mode != "dev":
 			return
-		if _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") != "1":
+		settings = _get_settings()
+		if not settings.ALFRED_PER_INTENT_BUILDERS:
 			return
-		if _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") != "1":
+		if not settings.ALFRED_MODULE_SPECIALISTS:
 			return
 		if not ctx.module:
 			return
@@ -1451,13 +1471,13 @@ class AgentPipeline:
 		def _display(m: str) -> str:
 			try:
 				return registry.get(m).get("display_name", m)
-			except Exception:
+			except Exception:  # noqa: BLE001
 				return m
 
 		def _family_display(f: str) -> str:
 			try:
 				return registry.get_family(f).get("display_name", f)
-			except Exception:
+			except Exception:  # noqa: BLE001
 				return f
 
 		# Primary context call (same as V2 path)
@@ -1469,7 +1489,7 @@ class AgentPipeline:
 				site_config=ctx.conn.site_config or {},
 				redis=redis,
 			)
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning(
 				"provide_module_context failed for conversation=%s module=%s: %s",
 				ctx.conversation_id, ctx.module, e,
@@ -1492,7 +1512,7 @@ class AgentPipeline:
 					site_config=ctx.conn.site_config or {},
 					redis=redis,
 				)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning(
 					"provide_family_context failed for conversation=%s family=%s: %s",
 					ctx.conversation_id, primary_family, e,
@@ -1500,7 +1520,7 @@ class AgentPipeline:
 
 		# V3: secondary context calls (silent failure each)
 		secondary_ctxs: dict[str, str] = {}
-		if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
+		if settings.ALFRED_MULTI_MODULE:
 			for m in ctx.secondary_modules:
 				try:
 					snippet = await provide_context(
@@ -1512,7 +1532,7 @@ class AgentPipeline:
 					)
 					if snippet:
 						secondary_ctxs[m] = snippet
-				except Exception as e:
+				except Exception as e:  # noqa: BLE001
 					logger.warning(
 						"secondary provide_context failed for %s: %s", m, e,
 					)
@@ -1523,7 +1543,7 @@ class AgentPipeline:
 		# from module-specific conventions from advisory context.
 		# Header wrapping only applies when V3 flag is on - V2-only
 		# runs keep their existing prompt shape.
-		if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
+		if settings.ALFRED_MULTI_MODULE:
 			parts: list[str] = []
 			if primary_family and primary_family_ctx:
 				parts.append(
@@ -1598,7 +1618,7 @@ class AgentPipeline:
 					"type": "agent_status",
 					"data": {"event": event_type, **data},
 				})
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning("early event_callback send failed: %s", e)
 
 		ctx.early_event_callback = _early_cb
@@ -1683,7 +1703,7 @@ class AgentPipeline:
 		fkb_rendered: list[str] = []
 		try:
 			fkb_hits = _fkb.search_hybrid(source_prompt, k=3)
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			if span: span.set(fkb_error=f"fkb:{type(e).__name__}")
 			logger.warning("inject_kb: FKB search failed: %s", e)
 			fkb_hits = []
@@ -1728,7 +1748,7 @@ class AgentPipeline:
 						"get_site_customization_detail",
 						{"doctype": doctype},
 					)
-				except Exception as e:
+				except Exception as e:  # noqa: BLE001
 					logger.warning(
 						"inject_kb: site-detail call failed for %r: %s", doctype, e,
 					)
@@ -1841,8 +1861,6 @@ class AgentPipeline:
 		if self.ctx.mode != "dev":
 			return
 
-		import os as _os
-
 		from alfred.agents.crew import build_alfred_crew, build_lite_crew
 		from alfred.tools.mcp_tools import build_mcp_tools
 
@@ -1856,7 +1874,7 @@ class AgentPipeline:
 				await ctx.store.delete_task_state(
 					ctx.conn.site_id, f"crew-state-{ctx.conversation_id}"
 				)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.debug("Failed to clear prior crew state (ignored): %s", e)
 
 		ctx.custom_tools = (
@@ -1866,7 +1884,7 @@ class AgentPipeline:
 		# Phase 1 per-run MCP tracking state (budget, dedup, failure counter).
 		if (
 			ctx.conn.mcp_client is not None
-			and _os.environ.get("ALFRED_PHASE1_DISABLED") != "1"
+			and not _get_settings().ALFRED_PHASE1_DISABLED
 		):
 			from alfred.tools.mcp_tools import init_run_state
 			init_run_state(ctx.conn.mcp_client, conversation_id=ctx.conversation_id)
@@ -1982,7 +2000,7 @@ class AgentPipeline:
 			try:
 				from alfred.obs.metrics import crew_drift_total
 				crew_drift_total.labels(reason=drift_reason).inc()
-			except Exception:
+			except Exception:  # noqa: BLE001
 				pass
 
 		# Extract
@@ -2009,7 +2027,7 @@ class AgentPipeline:
 				crew_rescue_total.labels(
 					outcome="produced" if ctx.changes else "empty",
 				).inc()
-			except Exception:
+			except Exception:  # noqa: BLE001
 				pass
 
 		# Per-intent defaults backfill. Only runs when
@@ -2019,19 +2037,20 @@ class AgentPipeline:
 		# render defaults as editable pills. Runs after the rescue path so
 		# whichever path produced the changeset gets the same treatment.
 		# See docs/specs/2026-04-21-doctype-builder-specialist.md.
-		if ctx.changes and _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") == "1":
+		settings = _get_settings()
+		if ctx.changes and settings.ALFRED_PER_INTENT_BUILDERS:
 			from alfred.handlers.post_build.backfill_defaults import (
 				backfill_defaults_raw,
 			)
 			try:
 				module_arg = (
 					ctx.module
-					if _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") == "1"
+					if settings.ALFRED_MODULE_SPECIALISTS
 					else None
 				)
 				secondary_arg = (
 					ctx.secondary_modules
-					if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1"
+					if settings.ALFRED_MULTI_MODULE
 					else []
 				)
 				ctx.changes = backfill_defaults_raw(
@@ -2039,7 +2058,7 @@ class AgentPipeline:
 					module=module_arg,
 					secondary_modules=secondary_arg,
 				)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				# Safety net: never let backfill crash the pipeline. Log and
 				# carry the original changes forward so the user still sees
 				# something (even if defaults aren't labelled).
@@ -2060,22 +2079,95 @@ class AgentPipeline:
 			and ctx.intent == "create_report"
 			and isinstance(ctx.report_candidate, dict)
 		):
-			suggested_name = ctx.report_candidate.get("suggested_name")
-			if suggested_name:
-				for item in ctx.changes:
-					if item.get("doctype") != "Report":
-						continue
-					data = item.setdefault("data", {})
-					if not data.get("report_name"):
-						data["report_name"] = suggested_name
-						meta = item.setdefault("field_defaults_meta", {})
-						meta["report_name"] = {
+			candidate = ctx.report_candidate
+			suggested_name = candidate.get("suggested_name")
+			cand_report_type = candidate.get("report_type")
+			cand_query = candidate.get("query")
+			cand_target = candidate.get("target_doctype")
+			cand_aggregation = candidate.get("aggregation")
+			cand_filters = candidate.get("filters") or []
+			for item in ctx.changes:
+				if item.get("doctype") != "Report":
+					continue
+				data = item.setdefault("data", {})
+				meta = item.setdefault("field_defaults_meta", {})
+				if suggested_name and not data.get("report_name"):
+					data["report_name"] = suggested_name
+					meta["report_name"] = {
+						"source": "default",
+						"rationale": (
+							"Filled from the Insights-to-Report handoff's "
+							"suggested_name because the specialist's output "
+							"omitted it. Edit before deploy if you want a "
+							"different report title."
+						),
+					}
+				# Aggregation-shape handoff: the extractor already rendered a
+				# Query Report SQL body. Force report_type + ref_doctype +
+				# query to match the handoff so the specialist can't downgrade
+				# an aggregation prompt to Report Builder (which can't do
+				# GROUP BY + SUM) and end up with a flat list export.
+				# We OVERWRITE (not backfill) the three aggregation-critical
+				# fields because the specialist has proven it cannot reliably
+				# emit GROUP BY SQL - the handoff's pre-rendered query is
+				# authoritative. Users edit at deploy-preview time.
+				if cand_aggregation and cand_query:
+					if data.get("report_type") != "Query Report":
+						data["report_type"] = "Query Report"
+						meta["report_type"] = {
 							"source": "default",
 							"rationale": (
-								"Filled from the Insights-to-Report handoff's "
-								"suggested_name because the specialist's output "
-								"omitted it. Edit before deploy if you want a "
-								"different report title."
+								"Aggregation prompt (top N by <metric>) requires "
+								"Query Report; Report Builder cannot express "
+								"GROUP BY + SUM. Forced by handoff safety net."
+							),
+						}
+					if data.get("query") != cand_query:
+						data["query"] = cand_query
+						meta["query"] = {
+							"source": "default",
+							"rationale": (
+								"Copied verbatim from the Insights-to-Report "
+								"handoff's pre-rendered aggregation SQL "
+								"(authoritative - specialist-emitted SQL for "
+								"GROUP BY aggregations has proven unreliable). "
+								"Edit before deploy if the date range or metric "
+								"needs adjusting."
+							),
+						}
+					if cand_target and data.get("ref_doctype") != cand_target:
+						data["ref_doctype"] = cand_target
+						meta["ref_doctype"] = {
+							"source": "default",
+							"rationale": (
+								"Set to the metric's source DocType (e.g. Sales "
+								"Invoice for revenue) since the aggregation lives "
+								"on that table, not on the group-by entity."
+							),
+						}
+					if not data.get("is_standard"):
+						data["is_standard"] = "No"
+						meta["is_standard"] = {
+							"source": "default",
+							"rationale": (
+								"Handoff-generated reports default to site-local "
+								"(is_standard=No) so they don't need "
+								"developer_mode + Administrator at save time."
+							),
+						}
+					# TD-M7: forward candidate.filters → data.filters_json so
+					# the Query Report opens with the date-range filter
+					# defaults pre-filled. User can change the window at
+					# runtime without editing the SQL.
+					if cand_filters and not data.get("filters_json"):
+						data["filters_json"] = json.dumps(cand_filters)
+						meta["filters_json"] = {
+							"source": "default",
+							"rationale": (
+								"Filters for the %(from_date)s / %(to_date)s "
+								"placeholders in the SQL. Defaults came from the "
+								"Insights prompt's time range; user can change "
+								"at runtime to re-run for a different window."
 							),
 						}
 
@@ -2085,8 +2177,8 @@ class AgentPipeline:
 		if (
 			ctx.changes
 			and ctx.module
-			and _os_for_flag.environ.get("ALFRED_PER_INTENT_BUILDERS") == "1"
-			and _os_for_flag.environ.get("ALFRED_MODULE_SPECIALISTS") == "1"
+			and settings.ALFRED_PER_INTENT_BUILDERS
+			and settings.ALFRED_MODULE_SPECIALISTS
 		):
 			from alfred.agents.specialists.module_specialist import (
 				cap_secondary_severity,
@@ -2100,7 +2192,7 @@ class AgentPipeline:
 					site_config=ctx.conn.site_config or {},
 				)
 				secondary_notes: list = []
-				if _os_for_flag.environ.get("ALFRED_MULTI_MODULE") == "1":
+				if settings.ALFRED_MULTI_MODULE:
 					for m in ctx.secondary_modules:
 						try:
 							notes = await validate_output(
@@ -2110,13 +2202,13 @@ class AgentPipeline:
 								site_config=ctx.conn.site_config or {},
 							)
 							secondary_notes.extend(cap_secondary_severity(notes))
-						except Exception as e:
+						except Exception as e:  # noqa: BLE001
 							logger.warning(
 								"secondary validate for %s failed: %s", m, e,
 							)
 				all_notes = primary_notes + secondary_notes
 				ctx.module_validation_notes = [n.model_dump() for n in all_notes]
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning(
 					"validate_output failed for conversation=%s module=%s: %s",
 					ctx.conversation_id, ctx.module, e,

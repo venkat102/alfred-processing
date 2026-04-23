@@ -16,6 +16,7 @@ Protocol:
 
 import ast
 import asyncio
+import hmac
 import json
 import logging
 import re
@@ -25,6 +26,13 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from alfred.middleware.auth import verify_jwt_token
+from alfred.middleware.rate_limit import check_rate_limit
+
+# Server-side rate limit for WebSocket prompts. Matches the REST path
+# (alfred.api.routes.SERVER_DEFAULT_RATE_LIMIT). Tests patch this
+# constant directly; never read it from site_config (which is
+# client-supplied and therefore spoofable).
+SERVER_DEFAULT_RATE_LIMIT = 20
 
 if TYPE_CHECKING:
 	from alfred.agents.crew import CrewState
@@ -64,7 +72,7 @@ def _describe_tool_call(tool_name: str, arguments: dict) -> str:
 		return f"Running {tool_name}"
 	try:
 		return formatter(arguments or {})
-	except Exception:
+	except Exception:  # noqa: BLE001
 		return f"Running {tool_name}"
 
 
@@ -435,29 +443,47 @@ async def _authenticate_handshake(
 	except asyncio.TimeoutError:
 		try:
 			await websocket.close(code=WS_CLOSE_INVALID_HANDSHAKE, reason="Handshake timeout")
-		except Exception:
+		except Exception:  # noqa: BLE001
 			pass
 		return None
 	except WebSocketDisconnect:
 		logger.debug("Client disconnected before handshake: conversation=%s", conversation_id)
 		return None
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		try:
 			await websocket.close(code=WS_CLOSE_INVALID_HANDSHAKE, reason=f"Invalid handshake: {e}")
-		except Exception:
+		except Exception:  # noqa: BLE001
 			pass
 		return None
 
 	api_key = handshake.get("api_key", "")
 	expected_key = websocket.app.state.settings.API_SECRET_KEY
-	if api_key != expected_key:
+	# Constant-time comparison - `!=` leaks key bytes via response-latency
+	# timing. See alfred/middleware/auth.py::verify_api_key for the REST
+	# counterpart and rationale.
+	if not hmac.compare_digest(
+		api_key.encode("utf-8"), expected_key.encode("utf-8"),
+	):
 		logger.warning("WS auth failed: invalid API key for conversation=%s", conversation_id)
 		await websocket.close(code=WS_CLOSE_AUTH_FAILED, reason="Invalid API key")
 		return None
 
 	jwt_token = handshake.get("jwt_token", "")
+	# TD-C2: prefer JWT_SIGNING_KEY when set; fall back to API_SECRET_KEY
+	# for backward-compat. Startup logs a deprecation warning when the
+	# fallback is active (see alfred/main.py::create_app). Splitting the
+	# two means compromising the REST bearer key cannot forge JWTs.
+	# TD-M1: enforce iss/aud when configured (empty = no enforcement,
+	# backward-compat for pre-TD-M1 tokens).
+	settings = websocket.app.state.settings
+	signing_key = settings.JWT_SIGNING_KEY or settings.API_SECRET_KEY
 	try:
-		jwt_payload = verify_jwt_token(jwt_token, expected_key)
+		jwt_payload = verify_jwt_token(
+			jwt_token,
+			signing_key,
+			issuer=settings.JWT_ISSUER or None,
+			audience=settings.JWT_AUDIENCE or None,
+		)
 	except ValueError as e:
 		logger.warning("WS auth failed: JWT error for conversation=%s: %s", conversation_id, e)
 		await websocket.close(code=WS_CLOSE_AUTH_FAILED, reason=str(e))
@@ -579,13 +605,30 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 		manual_mode = (data.get("data", {}).get("mode") or "auto").strip().lower()
 		if manual_mode not in ("auto", "dev", "plan", "insights"):
 			manual_mode = "auto"
+		force_dev = bool(data.get("data", {}).get("force_dev", False))
 		if not prompt_text:
+			return
+
+		# TD-M6: reject new work during graceful shutdown so in-flight
+		# pipelines can drain. Clients should retry after reconnecting
+		# to a healthy replica.
+		if getattr(websocket.app.state, "shutting_down", False):
+			await websocket.send_json({
+				"msg_id": str(uuid.uuid4()),
+				"type": "error",
+				"data": {
+					"error": "Server is shutting down; retry on a fresh connection.",
+					"code": "SHUTTING_DOWN",
+				},
+			})
 			return
 
 		# If the pipeline is paused waiting for a clarification answer, route
 		# this prompt to the oldest pending question instead of starting a new
 		# pipeline. This lets the user just type their answer in the chat box
-		# without any special UI state - the frontend stays simple.
+		# without any special UI state - the frontend stays simple. Routed
+		# answers are NOT rate-limited: the pipeline is already running and
+		# we consumed a slot when we spawned it.
 		if conn._pending_questions:
 			oldest_id = next(iter(conn._pending_questions))
 			logger.info(
@@ -593,6 +636,33 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 				oldest_id, conn.user, conn.site_id,
 			)
 			conn.resolve_question(oldest_id, prompt_text)
+			return
+
+		# Per-user rate limit. Placed BEFORE the concurrency check so a
+		# user flooding N parallel prompts burns their quota even on the
+		# prompts that the concurrency guard would have rejected - good
+		# anti-abuse property. Server-side constant; the client's
+		# site_config cannot raise its own quota.
+		redis = websocket.app.state.redis
+		allowed, remaining, retry_after = await check_rate_limit(
+			redis, conn.site_id, conn.user,
+			SERVER_DEFAULT_RATE_LIMIT, source="websocket",
+		)
+		if not allowed:
+			logger.warning(
+				"WS prompt rate-limited for %s@%s (retry_after=%ds)",
+				conn.user, conn.site_id, retry_after,
+			)
+			await websocket.send_json({
+				"msg_id": str(uuid.uuid4()),
+				"type": "error",
+				"data": {
+					"error": f"Rate limit exceeded. Retry after {retry_after} seconds.",
+					"code": "RATE_LIMITED",
+					"retry_after": retry_after,
+					"remaining": remaining,
+				},
+			})
 			return
 
 		# Reject concurrent prompts on the same conversation. Two parallel
@@ -614,12 +684,23 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 			return
 
 		async def _run_and_clear():
+			# TD-M6: track in-flight pipelines so graceful shutdown
+			# can wait for them to drain. Guarded getattr so tests
+			# with a stubbed app.state still work.
+			app_state = getattr(websocket.app, "state", None)
+			if app_state is not None:
+				app_state.active_pipelines = getattr(app_state, "active_pipelines", 0) + 1
 			try:
 				await _run_agent_pipeline(
-					conn, conversation_id, prompt_text, manual_mode=manual_mode
+					conn, conversation_id, prompt_text,
+					manual_mode=manual_mode, force_dev=force_dev,
 				)
 			finally:
 				conn.active_pipeline = None
+				if app_state is not None:
+					app_state.active_pipelines = max(
+						0, getattr(app_state, "active_pipelines", 1) - 1,
+					)
 
 		conn.active_pipeline = asyncio.create_task(_run_and_clear())
 		return
@@ -689,7 +770,7 @@ async def _dry_run_with_retry(
 					}],
 				}
 			return result
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("Dry-run MCP call failed: %s", e)
 			return {
 				"valid": False, "validated": 0,
@@ -908,7 +989,7 @@ async def _clarify_requirements(
 				parsed = json.loads(match.group())
 				if isinstance(parsed, list):
 					questions = [q for q in parsed if isinstance(q, dict) and q.get("question")]
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("Clarify pass: failed to parse questions: %s", e)
 			questions = []
 
@@ -933,7 +1014,7 @@ async def _clarify_requirements(
 			})
 			try:
 				answer = await conn.ask_human(question_text, choices=choices, timeout=900)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning("ask_human failed for question %r: %s", question_text, e)
 				answer = "[no response]"
 
@@ -953,7 +1034,7 @@ async def _clarify_requirements(
 		})
 
 		return clarified, qa_pairs
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Clarify pass crashed, proceeding with original prompt: %s", e, exc_info=True)
 		return enhanced_prompt, []
 
@@ -1104,7 +1185,7 @@ async def _rescue_regenerate_changeset(
 				"message": "Rescue pass produced no changeset - request may be out of scope.",
 			})
 		return changes
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Rescue regeneration failed: %s", e, exc_info=True)
 		return []
 
@@ -1114,6 +1195,7 @@ async def _run_agent_pipeline(
 	conversation_id: str,
 	prompt: str,
 	manual_mode: str = "auto",
+	force_dev: bool = False,
 ):
 	"""Run the full agent SDLC pipeline for a user prompt.
 
@@ -1125,6 +1207,9 @@ async def _run_agent_pipeline(
 		manual_mode: The user's chat-mode selection from the UI switcher.
 			One of "auto" | "dev" | "plan" | "insights". The orchestrator
 			phase decides the final mode from this + prompt + memory.
+		force_dev: When True, bypass the analytics-shape redirect in
+			``classify_mode``. Sent by the frontend when the user clicks
+			"Run in Dev anyway" on the redirect banner.
 	"""
 	from alfred.api.pipeline import AgentPipeline, PipelineContext
 
@@ -1133,6 +1218,7 @@ async def _run_agent_pipeline(
 		conversation_id=conversation_id,
 		prompt=prompt,
 		manual_mode_override=manual_mode,
+		force_dev_override=force_dev,
 	)
 	conn.active_pipeline_ctx = ctx
 	try:
@@ -1146,7 +1232,7 @@ async def _heartbeat_loop(websocket: WebSocket, interval: int = 30):
 		while True:
 			await asyncio.sleep(interval)
 			await websocket.send_json({"msg_id": str(uuid.uuid4()), "type": "ping", "data": {}})
-	except Exception:
+	except Exception:  # noqa: BLE001
 		pass
 
 
@@ -1196,7 +1282,7 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 
 	except WebSocketDisconnect:
 		logger.info("WebSocket disconnected: user=%s, conversation=%s", conn.user, conversation_id)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.error("WebSocket error: user=%s, conversation=%s, error=%s", conn.user, conversation_id, e)
 	finally:
 		_connections.pop(conversation_id, None)
@@ -1213,5 +1299,5 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 			conn.active_pipeline.cancel()
 			try:
 				await conn.active_pipeline
-			except (asyncio.CancelledError, Exception):
+			except (asyncio.CancelledError, Exception):  # noqa: BLE001
 				pass

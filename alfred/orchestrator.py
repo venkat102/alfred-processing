@@ -57,13 +57,11 @@ _MEMORY_CONTEXT_CHAR_CAP = 1000
 def is_enabled() -> bool:
 	"""Feature-flag check for the mode orchestrator.
 
-	Off by default. Accepts 1/true/yes (case-insensitive) - matches the
-	parsing convention used by ALFRED_REFLECTION_ENABLED and
-	ALFRED_TRACING_ENABLED.
+	Default is True (see alfred.config.Settings). Pydantic coerces
+	"1"/"true"/"yes"/"on" to True; anything else to False.
 	"""
-	return os.environ.get("ALFRED_ORCHESTRATOR_ENABLED", "").strip().lower() in {
-		"1", "true", "yes", "on",
-	}
+	from alfred.config import get_settings
+	return get_settings().ALFRED_ORCHESTRATOR_ENABLED
 
 # Exact-match greetings and short conversational turns. Hit here means no
 # LLM call. Keep this set small and obvious - anything borderline should
@@ -290,13 +288,13 @@ def _parse_classifier_output(text: str) -> tuple[str | None, str, str]:
 
 	try:
 		parsed = json.loads(cleaned)
-	except Exception:
+	except Exception:  # noqa: BLE001
 		match = _JSON_OBJECT_RE.search(cleaned)
 		if not match:
 			return None, "", "low"
 		try:
 			parsed = json.loads(match.group(0))
-		except Exception:
+		except Exception:  # noqa: BLE001
 			return None, "", "low"
 
 	if not isinstance(parsed, dict):
@@ -352,7 +350,7 @@ async def _classify_with_llm(
 		)
 		logger.debug("Orchestrator classifier raw output: %r", raw[:300])
 		return _parse_classifier_output(raw)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Orchestrator classifier call failed: %s: %s", type(e).__name__, e)
 		return None, "", "low"
 
@@ -362,14 +360,18 @@ async def classify_mode(
 	memory: "ConversationMemory | None",
 	manual_override: str | None,
 	site_config: dict,
+	force_dev_override: bool = False,
 ) -> ModeDecision:
 	"""Decide which mode should handle this prompt.
 
 	Priority order:
-	  1. Manual override (if != "auto") - LLM skipped
-	  2. Fast-path match (greetings, imperative build prefixes) - LLM skipped
-	  3. LLM classifier call
-	  4. Confidence-based fallback if classifier fails or returns low confidence
+	  1. Analytics-shape redirect: if manual override is "dev" but the prompt
+	     is a read-side analytics / Q&A phrasing, redirect to insights (unless
+	     ``force_dev_override`` is set — the user clicked "Run in Dev anyway").
+	  2. Manual override (if != "auto") - LLM skipped
+	  3. Fast-path match (greetings, imperative build prefixes) - LLM skipped
+	  4. LLM classifier call
+	  5. Confidence-based fallback if classifier fails or returns low confidence
 
 	Never raises - always returns a valid ModeDecision. On complete failure
 	returns a safe-default chat decision. Every decision increments the
@@ -384,11 +386,33 @@ async def classify_mode(
 			orchestrator_decisions_total.labels(
 				source=decision.source, mode=decision.mode,
 			).inc()
-		except Exception:
+		except Exception:  # noqa: BLE001
 			pass
 		return decision
 
 	override = _normalize_override(manual_override)
+
+	# Hybrid redirect: "Dev" override + analytics-shape prompt → route to
+	# insights and surface a banner source so the UI can offer a one-click
+	# "Run in Dev anyway" that re-sends with force_dev_override=True.
+	# Without this, a user with the Dev toggle flipped on asks an analytics
+	# question and the generic Developer hallucinates a changeset.
+	if (
+		override == "dev"
+		and not force_dev_override
+		and _looks_like_analytics_query(prompt)
+	):
+		return _record(ModeDecision(
+			mode="insights",
+			reason=(
+				"Prompt looks like an analytics / Q&A request; routed to "
+				"Insights even though Dev was selected. Click 'Run in Dev "
+				"anyway' to override."
+			),
+			confidence="high",
+			source="analytics_redirect",
+		))
+
 	if override != "auto":
 		return _record(ModeDecision(
 			mode=override,
@@ -410,7 +434,7 @@ async def classify_mode(
 	if memory is not None:
 		try:
 			memory_context = memory.render_for_prompt()
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("memory.render_for_prompt failed: %s", e)
 			memory_context = ""
 
@@ -418,7 +442,7 @@ async def classify_mode(
 		mode, reason, confidence = await _classify_with_llm(
 			prompt, memory_context, site_config or {}
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Orchestrator classifier wrapper raised: %s", e)
 		mode, reason, confidence = None, "", "low"
 
@@ -744,6 +768,34 @@ def _match_intent_heuristic(prompt: str) -> str | None:
 	return None
 
 
+def _looks_like_analytics_query(prompt: str) -> bool:
+	"""Return True if the prompt is a read-side analytics / Q&A phrasing
+	that should never be interpreted as a build intent.
+
+	Mirrors the mode-level Insights fast-path (``_FAST_PATH_INSIGHTS_*``).
+	Dev-side guardrail: even if ``classify_mode`` somehow lands on dev
+	(manual override, active plan, classifier miss), a prompt like
+	"show top 10 customers by revenue" must not get routed to a Builder
+	specialist - the LLM intent classifier would pick a random intent
+	from 22 options and hallucinate a changeset out of thin air.
+	"""
+	if not prompt:
+		return False
+	normalized = prompt.strip().lower().rstrip("!.?,")
+	if not normalized:
+		return False
+	for prefix in _FAST_PATH_INSIGHTS_ANALYTICS_PREFIXES:
+		if normalized.startswith(prefix):
+			return True
+	for prefix in _FAST_PATH_INSIGHTS_PREFIXES:
+		if normalized.startswith(prefix):
+			return True
+	for pattern in _FAST_PATH_INSIGHTS_PATTERNS:
+		if pattern in normalized:
+			return True
+	return False
+
+
 async def _classify_intent_llm(prompt: str, site_config: dict) -> str:
 	"""Small LLM call that returns a supported intent key or ``"unknown"``.
 
@@ -753,8 +805,22 @@ async def _classify_intent_llm(prompt: str, site_config: dict) -> str:
 	from alfred.llm_client import ollama_chat
 
 	system = (
-		"You classify the user's Frappe customization request into ONE intent. "
-		f"Valid intents: {', '.join(_SUPPORTED_INTENTS)}, unknown. "
+		"You classify the user's Frappe customization BUILD request into ONE intent. "
+		f"Valid intents: {', '.join(_SUPPORTED_INTENTS)}, unknown.\n"
+		"\n"
+		"Rules:\n"
+		"- Return an intent ONLY when the prompt unambiguously names BOTH a "
+		"build verb (create / add / make / build / deploy / set up / configure / "
+		"enable / disable) AND a target primitive matching one of the intents.\n"
+		"- If the prompt is a QUESTION about the current site state "
+		"(\"what ...\", \"which ...\", \"show me ...\", \"list ...\", "
+		"\"how many ...\", \"top N ...\"), return unknown - that is a read-only "
+		"analytics / Insights request, NOT a build request.\n"
+		"- If the prompt is a GREETING, small talk, or ambiguous, return unknown.\n"
+		"- When in doubt between two build intents, prefer unknown - a wrong "
+		"intent hallucinates a full changeset; unknown falls back to the "
+		"generic Developer which can ask the user to clarify.\n"
+		"\n"
 		"Reply with ONLY the intent key, no prose, no punctuation."
 	)
 	reply = await ollama_chat(
@@ -772,6 +838,14 @@ async def _classify_intent_llm(prompt: str, site_config: dict) -> str:
 
 
 async def classify_intent(prompt: str, site_config: dict) -> IntentDecision:
+	if _looks_like_analytics_query(prompt):
+		return IntentDecision(
+			intent="unknown",
+			reason="prompt is a read-side analytics / Q&A phrasing (dev-side Insights guardrail)",
+			confidence="high",
+			source="analytics_guardrail",
+		)
+
 	heur = _match_intent_heuristic(prompt)
 	if heur is not None:
 		return IntentDecision(
@@ -789,7 +863,7 @@ async def classify_intent(prompt: str, site_config: dict) -> IntentDecision:
 			confidence="medium" if tag != "unknown" else "low",
 			source="classifier",
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Intent classifier failed: %s", e)
 		return IntentDecision(
 			intent="unknown",
@@ -894,7 +968,7 @@ async def detect_module(
 			confidence="medium",
 			source="classifier",
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Module classifier failed: %s", e)
 		return ModuleDecision(
 			module=None,
@@ -973,7 +1047,7 @@ async def detect_modules(
 			reason=f"LLM classifier returned {tag}",
 			confidence="medium", source="classifier",
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Multi-module classifier failed: %s", e)
 		return ModulesDecision(
 			module=None, secondary_modules=[],
