@@ -248,5 +248,5 @@ def check_llm_health(site_config: dict | None = None) -> dict:
 	try:
 		llm = _resolve_llm(site_config)
 		return {"healthy": True, "model": llm.model}
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		return {"healthy": False, "model": "unknown", "error": str(e)}

@@ -80,7 +80,7 @@ async def handle_chat(
 	if memory is not None:
 		try:
 			memory_context = memory.render_for_prompt()
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("memory.render_for_prompt failed in chat handler: %s", e)
 
 	system_parts = [_SYSTEM_PROMPT]
@@ -103,7 +103,7 @@ async def handle_chat(
 		)
 		if reply and reply.strip():
 			return reply.strip()
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Chat handler LLM call failed: %s", e)
 
 	return (

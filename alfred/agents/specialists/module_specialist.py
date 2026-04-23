@@ -77,7 +77,7 @@ def run_rule_validation(
 						fix=rule.get("fix"),
 						changeset_index=idx,
 					))
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				logger.warning(
 					"Module rule %s failed while evaluating change %d: %s",
 					rule.get("id", "<unknown>"), idx, e,
@@ -113,7 +113,7 @@ def _parse_llm_note_list(raw: str) -> list[dict] | None:
 		parsed = json.loads(cleaned)
 		if isinstance(parsed, list):
 			return parsed
-	except Exception:
+	except Exception:  # noqa: BLE001
 		pass
 
 	decoder = json.JSONDecoder()
@@ -124,7 +124,7 @@ def _parse_llm_note_list(raw: str) -> list[dict] | None:
 			parsed, _ = decoder.raw_decode(cleaned[idx:])
 			if isinstance(parsed, list):
 				return parsed
-		except Exception:
+		except Exception:  # noqa: BLE001
 			continue
 	return None
 
@@ -173,7 +173,7 @@ def _context_cache_set_inmem(key: tuple[str, str, str], value: str) -> None:
 async def _context_cache_get_redis(redis, key_str: str) -> str | None:
 	try:
 		return await redis.get(key_str)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.debug("Module context cache Redis read failed: %s", e)
 		return None
 
@@ -181,7 +181,7 @@ async def _context_cache_get_redis(redis, key_str: str) -> str | None:
 async def _context_cache_set_redis(redis, key_str: str, value: str) -> None:
 	try:
 		await redis.setex(key_str, _CONTEXT_CACHE_TTL_SECONDS, value)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.debug("Module context cache Redis write failed: %s", e)
 
 
@@ -215,7 +215,7 @@ def _family_cache_set_inmem(key: tuple[str, str], value: str) -> None:
 async def _family_cache_get_redis(redis, key_str: str) -> str | None:
 	try:
 		return await redis.get(key_str)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.debug("Family context cache Redis read failed: %s", e)
 		return None
 
@@ -223,7 +223,7 @@ async def _family_cache_get_redis(redis, key_str: str) -> str | None:
 async def _family_cache_set_redis(redis, key_str: str, value: str) -> None:
 	try:
 		await redis.setex(key_str, _FAMILY_CONTEXT_CACHE_TTL_SECONDS, value)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.debug("Family context cache Redis write failed: %s", e)
 
 
@@ -306,7 +306,7 @@ async def provide_family_context(
 				family, intent,
 			)
 		return result
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Family specialist provide_family_context failed (%s): %s", family, e)
 		return ""
 
@@ -392,7 +392,7 @@ async def provide_context(
 				module, intent, target_doctype,
 			)
 		return result
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Module specialist provide_context failed (%s): %s", module, e)
 		return ""
 
@@ -438,7 +438,7 @@ async def validate_output(
 			max_tokens=600,
 			temperature=0.1,
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Module specialist validate_output LLM failed (%s): %s", module, e)
 		return notes
 
@@ -473,7 +473,7 @@ async def validate_output(
 				fix=entry.get("fix"),
 			))
 			llm_added += 1
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.debug("Dropping malformed LLM note %r: %s", entry, e)
 
 	logger.info(

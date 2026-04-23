@@ -88,7 +88,7 @@ def _args_key(arguments: dict) -> str:
 	"""Stable serialization of arguments for cache/dedup keys."""
 	try:
 		return json.dumps(arguments, sort_keys=True, default=str)
-	except Exception:
+	except Exception:  # noqa: BLE001
 		return repr(arguments)
 
 

@@ -153,7 +153,7 @@ def make_condenser_callback(task_name: str):
 				"Condensed %s output: %d -> %d chars (-%.0f%%)",
 				task_name, original_len, condensed_len, reduction,
 			)
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning(
 				"Condenser for %s failed, preserving original: %s", task_name, e
 			)

@@ -299,14 +299,14 @@ async def load_conversation_memory(
 		return empty
 	try:
 		data = await store.get_task_state(site_id, _memory_key(conversation_id))
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("conversation memory load failed for %s: %s", conversation_id, e)
 		return empty
 	if not data:
 		return empty
 	try:
 		return ConversationMemory.from_dict(data)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("conversation memory parse failed for %s: %s", conversation_id, e)
 		return empty
 
@@ -323,7 +323,7 @@ async def save_conversation_memory(
 			"Saved conversation memory: site=%s, conversation=%s, items=%d",
 			site_id, conversation_id, len(memory.items),
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning(
 			"conversation memory save failed for %s/%s: %s",
 			site_id, conversation_id, e,

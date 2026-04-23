@@ -60,7 +60,7 @@ class AdminClient:
 					await self.redis.setex(cache_key, PLAN_CACHE_TTL, json.dumps(result))
 
 				return result
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("Admin Portal unreachable for plan check: %s", e)
 			# Fall back to cached or default allow
 			return {"allowed": True, "tier": "offline", "reason": "Admin Portal unreachable - allowing by default"}
@@ -86,7 +86,7 @@ class AdminClient:
 				)
 				response.raise_for_status()
 				return response.json().get("message", {})
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("Failed to report usage to Admin Portal: %s - queuing for retry", e)
 			# Queue for later
 			if self.redis:
@@ -107,7 +107,7 @@ class AdminClient:
 				)
 				response.raise_for_status()
 				return response.json().get("message", {})
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001
 			logger.warning("Failed to register site: %s", e)
 			return {"status": "error", "error": str(e)}
 
@@ -135,7 +135,7 @@ class AdminClient:
 					)
 					response.raise_for_status()
 					flushed += 1
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001
 				# Put it back at the end of the queue
 				await self.redis.rpush(queue_key, item)
 				logger.warning("Failed to flush usage report: %s - re-queued", e)

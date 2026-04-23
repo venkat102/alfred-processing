@@ -74,7 +74,7 @@ def _parse_plan_doc_json(raw: str) -> dict | None:
 		parsed = json.loads(cleaned)
 		if isinstance(parsed, dict):
 			return parsed
-	except Exception:
+	except Exception:  # noqa: BLE001
 		pass
 
 	# Fallback: find the first balanced { ... } block via JSONDecoder.
@@ -86,7 +86,7 @@ def _parse_plan_doc_json(raw: str) -> dict | None:
 			parsed, _end = decoder.raw_decode(cleaned[idx:])
 			if isinstance(parsed, dict):
 				return parsed
-		except Exception:
+		except Exception:  # noqa: BLE001
 			continue
 	return None
 
@@ -102,7 +102,7 @@ def _validate_as_plan_doc(raw_obj: dict, user_prompt: str) -> dict:
 	try:
 		plan = PlanDoc.model_validate(raw_obj)
 		return plan.model_dump()
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning(
 			"Plan doc validation failed: %s. Raw keys=%s",
 			e,
@@ -183,7 +183,7 @@ async def handle_plan(
 			site_config=conn.site_config or {},
 			custom_tools=custom_tools,
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Failed to build plan crew: %s", e, exc_info=True)
 		return PlanDoc.stub(
 			title="Plan unavailable",
@@ -202,7 +202,7 @@ async def handle_plan(
 			conversation_id=conversation_id,
 			event_callback=event_callback,
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001
 		logger.warning("Plan crew run raised: %s", e, exc_info=True)
 		return PlanDoc.stub(
 			title="Plan crew failed",
