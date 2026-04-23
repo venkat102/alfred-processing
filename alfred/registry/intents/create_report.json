@@ -4,6 +4,12 @@
 	"doctype": "Report",
 	"fields": [
 		{
+			"key": "report_name",
+			"label": "Report name",
+			"type": "data",
+			"required": true
+		},
+		{
 			"key": "ref_doctype",
 			"label": "Source DocType",
 			"type": "link",
@@ -14,23 +20,60 @@
 			"key": "report_type",
 			"label": "Report type",
 			"type": "select",
-			"options": ["Report Builder", "Query Report", "Script Report"],
+			"options": ["Report Builder", "Query Report", "Script Report", "Custom Report"],
 			"default": "Report Builder",
-			"rationale": "Report Builder is the safest default: field-list + filters, no SQL or Python. Promote to Query Report only when aggregations require raw SQL; Script Report is V2+ only."
+			"rationale": "Report Builder is the safest default: field-list + filters, no SQL or Python, no Script Manager role needed. Query Report requires a raw SQL string in `query` and passes check_safe_sql_query() (DDL / DML / multi-statement rejected). Script Report requires Script Manager role and executes Python from report_script. Custom Report renders an existing Report Builder config with different columns."
 		},
 		{
 			"key": "is_standard",
-			"label": "Standard?",
-			"type": "check",
-			"default": 0,
-			"rationale": "Standard reports live in an app's filesystem and require a module + file write. Default to non-standard (site-local) unless the user is shipping the report in an app."
+			"label": "Standard",
+			"type": "select",
+			"options": ["No", "Yes"],
+			"default": "No",
+			"rationale": "'No' = site-local (DB-only). 'Yes' writes the report to an app's filesystem and requires developer_mode + Administrator at save time; non-devs / non-Admins cannot create standard reports. Flipping 'Yes'->'No' on an existing standard report is ALSO blocked."
 		},
 		{
 			"key": "module",
 			"label": "Module",
 			"type": "link",
 			"link_doctype": "Module Def",
-			"required": true
+			"default": "",
+			"rationale": "Required only when is_standard='Yes'. Otherwise auto-fetched from the ref_doctype's module at save time."
+		},
+		{
+			"key": "query",
+			"label": "SQL query (Query Report only)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required when report_type='Query Report'. Must be a single SELECT - DDL / DML / multi-statement / CREATE / INSERT / UPDATE / DELETE are rejected by check_safe_sql_query(). Use parameterised filters via `%(filter_name)s`, never string-interpolate."
+		},
+		{
+			"key": "report_script",
+			"label": "Report script (Script Report only)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required when report_type='Script Report' AND is_standard='No'. Python body executed server-side with access to frappe / frappe.utils / the filters dict. Must return a tuple (columns, data) or (columns, data, message, chart, report_summary). Requires Script Manager role."
+		},
+		{
+			"key": "prepared_report",
+			"label": "Prepared report (async)",
+			"type": "check",
+			"default": 0,
+			"rationale": "Runs the report in a background job and emails the user when done. Auto-enabled when a Script Report exceeds a 15-second runtime. Default off for small / interactive reports."
+		},
+		{
+			"key": "disabled",
+			"label": "Disabled",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default enabled. Use 1 to keep the report row around but hide it from the Report list (useful for deprecated reports you might restore)."
+		},
+		{
+			"key": "add_total_row",
+			"label": "Add total row",
+			"type": "check",
+			"default": 0,
+			"rationale": "Appends a totals row. Silently ignored for Report Builder (depends_on in the JSON form gates it to Query / Script Report). Safe default off."
 		}
 	]
 }

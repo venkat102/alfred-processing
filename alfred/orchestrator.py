@@ -450,9 +450,56 @@ async def classify_mode(
 # "unknown" on failure. Spec:
 # docs/specs/2026-04-21-doctype-builder-specialist.md
 
-_SUPPORTED_INTENTS: tuple[str, ...] = ("create_doctype", "create_report")
+_SUPPORTED_INTENTS: tuple[str, ...] = (
+	"create_doctype",
+	"create_custom_field",
+	"create_role_with_permissions",
+	"create_report",
+	"create_dashboard",
+	"create_dashboard_chart",
+	"create_number_card",
+	"create_server_script",
+	"create_client_script",
+	"create_notification",
+	"create_workflow",
+	"create_print_format",
+	"create_letter_head",
+	"create_email_template",
+	"create_web_form",
+)
 
+# Heuristic substring matches (lowercased prompt). Order matters: more
+# specific patterns MUST live before more general ones, because dict
+# iteration preserves insertion order (Python 3.7+) and the first
+# matching family wins. Specifically:
+#   - Schema-family role/custom-field patterns run BEFORE create_doctype
+#     so "add a role on X DocType" doesn't match create_doctype first.
+#   - Reports-family number_card / dashboard_chart / dashboard patterns
+#     run BEFORE create_report so "create a dashboard with a chart"
+#     doesn't match create_report first.
 _HEURISTIC_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
+	"create_role_with_permissions": (
+		"create a role",
+		"create role",
+		"new role",
+		"add a role",
+		"add role",
+		"role with permission",
+		"role with permissions",
+		"grant permission",
+		"grant permissions",
+		"give permission",
+		"give permissions",
+	),
+	"create_custom_field": (
+		"add a custom field",
+		"add custom field",
+		"new custom field",
+		"create a custom field",
+		"create custom field",
+		"add a field to",
+		"add a field on",
+	),
 	"create_doctype": (
 		"create a doctype",
 		"create doctype",
@@ -462,6 +509,28 @@ _HEURISTIC_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
 		"build a doctype",
 		"make a doctype",
 	),
+	"create_number_card": (
+		"number card",
+		"kpi card",
+		"metric card",
+		"count card",
+	),
+	"create_dashboard_chart": (
+		"dashboard chart",
+		"add a chart",
+		"add chart",
+		"create a chart",
+		"new chart",
+		"build a chart",
+	),
+	"create_dashboard": (
+		"create a dashboard",
+		"create dashboard",
+		"new dashboard",
+		"add a dashboard",
+		"add dashboard",
+		"build a dashboard",
+	),
 	"create_report": (
 		"save as report",
 		"save this as a report",
@@ -469,6 +538,78 @@ _HEURISTIC_INTENT_PATTERNS: dict[str, tuple[str, ...]] = {
 		"make a report",
 		"build a report",
 		"new report",
+	),
+	"create_workflow": (
+		"create a workflow",
+		"create workflow",
+		"new workflow",
+		"add a workflow",
+		"add workflow",
+		"build a workflow",
+		"approval workflow",
+		"approval flow",
+		"review workflow",
+	),
+	"create_notification": (
+		"create a notification",
+		"create notification",
+		"new notification",
+		"add a notification",
+		"add notification",
+		"send an email when",
+		"send email when",
+		"email the ",
+		"notify the ",
+		"alert the ",
+	),
+	"create_server_script": (
+		"server script",
+		"before save",
+		"after save",
+		"before submit",
+		"on submit",
+		"validate the ",
+		"block save",
+		"block submit",
+		"throw an error",
+		"throw if",
+	),
+	"create_client_script": (
+		"client script",
+		"on form load",
+		"on field change",
+		"custom button on",
+		"hide field",
+		"show field",
+	),
+	"create_print_format": (
+		"print format",
+		"invoice template",
+		"invoice layout",
+		"quote template",
+		"quote layout",
+		"receipt template",
+		"receipt layout",
+		"document layout",
+	),
+	"create_letter_head": (
+		"letter head",
+		"letterhead",
+		"company header",
+		"company footer",
+		"branded header",
+		"branded footer",
+	),
+	"create_email_template": (
+		"email template",
+	),
+	"create_web_form": (
+		"web form",
+		"public form",
+		"portal form",
+		"external form",
+		"form on the website",
+		"form on the portal",
 	),
 }
 

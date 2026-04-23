@@ -1,0 +1,118 @@
+{
+	"intent": "create_number_card",
+	"display_name": "Create Number Card",
+	"doctype": "Number Card",
+	"fields": [
+		{
+			"key": "label",
+			"label": "Card label",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "type",
+			"label": "Card source",
+			"type": "select",
+			"options": ["Document Type", "Report", "Custom"],
+			"default": "Document Type",
+			"rationale": "Document Type aggregates rows of a DocType with a filter. Report extracts a column from an existing Report. Custom calls a whitelisted Python method returning {value, fieldtype, route?, route_options?}. Each source uses different subset of fields below."
+		},
+		{
+			"key": "document_type",
+			"label": "Source DocType (for type='Document Type')",
+			"type": "link",
+			"link_doctype": "DocType",
+			"default": "",
+			"rationale": "Required when type='Document Type'. Empty for Report / Custom. If document_type is a child table (istable=1), parent_document_type is also required."
+		},
+		{
+			"key": "parent_document_type",
+			"label": "Parent DocType (if document_type is a child table)",
+			"type": "link",
+			"link_doctype": "DocType",
+			"default": "",
+			"rationale": "Required when document_type names a child table. Frappe queries the child table filtered by its parent."
+		},
+		{
+			"key": "function",
+			"label": "Aggregation function (for type='Document Type')",
+			"type": "select",
+			"options": ["Count", "Sum", "Average", "Minimum", "Maximum"],
+			"default": "Count",
+			"rationale": "Required when type='Document Type'. Count doesn't need aggregate_function_based_on; Sum / Average / Minimum / Maximum all require a numeric field in aggregate_function_based_on."
+		},
+		{
+			"key": "aggregate_function_based_on",
+			"label": "Numeric field (for Sum / Average / Min / Max)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when function != 'Count'. Names the numeric field on the source DocType. Empty when function='Count'."
+		},
+		{
+			"key": "report_name",
+			"label": "Report name (for type='Report')",
+			"type": "link",
+			"link_doctype": "Report",
+			"default": "",
+			"rationale": "Required when type='Report'. Names an existing Report whose output feeds the number."
+		},
+		{
+			"key": "report_field",
+			"label": "Column in the Report (for type='Report')",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when type='Report'. Names a column in the Report's output - not validated at save, fails at render if the column doesn't exist."
+		},
+		{
+			"key": "report_function",
+			"label": "Report aggregation (for type='Report')",
+			"type": "select",
+			"options": ["Sum", "Average", "Minimum", "Maximum"],
+			"default": "Sum",
+			"rationale": "Required when type='Report'. How to aggregate the named report_field across rows. Note: Count is NOT valid here - for a Count card, use type='Document Type' with function='Count' instead."
+		},
+		{
+			"key": "method",
+			"label": "Whitelisted method path (for type='Custom')",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when type='Custom'. Dotted Python path to a whitelisted function returning {value, fieldtype, route?, route_options?}. Validation is deferred to runtime - typos fail silently on render."
+		},
+		{
+			"key": "filters_json",
+			"label": "Filters (JSON string)",
+			"type": "text",
+			"default": "[]",
+			"rationale": "JSON list of Frappe filter triples. '[]' means 'across all rows of the DocType' - if the user's ask implies any filter ('pending', 'this month', 'overdue'), DO NOT default to empty."
+		},
+		{
+			"key": "is_public",
+			"label": "Public (all users)",
+			"type": "check",
+			"default": 0,
+			"rationale": "0 = only the owner sees it. 1 = all users. Dashboards for everyone typically use is_public=1 cards."
+		},
+		{
+			"key": "show_percentage_stats",
+			"label": "Show trend vs prior period",
+			"type": "check",
+			"default": 1,
+			"rationale": "Default on. Shows the percentage change vs the previous stats_time_interval window. Disable for absolute-only KPIs where 'up vs down' would confuse."
+		},
+		{
+			"key": "stats_time_interval",
+			"label": "Trend window",
+			"type": "select",
+			"options": ["Daily", "Weekly", "Monthly", "Yearly"],
+			"default": "Daily",
+			"rationale": "Compares current value vs same-field value from the previous period. Daily works for most real-time KPIs; switch to Weekly / Monthly for slower-moving metrics."
+		},
+		{
+			"key": "color",
+			"label": "Accent colour",
+			"type": "data",
+			"default": "#449CF0",
+			"rationale": "Subtle accent on the card face. Frappe's default blue is safe; switch to red for warning KPIs (overdue) and green for healthy KPIs (on-time)."
+		}
+	]
+}

@@ -1,0 +1,111 @@
+{
+	"intent": "create_server_script",
+	"display_name": "Create Server Script",
+	"doctype": "Server Script",
+	"fields": [
+		{
+			"key": "name",
+			"label": "Descriptive name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "script_type",
+			"label": "Script type",
+			"type": "select",
+			"options": ["DocType Event", "API", "Scheduler Event", "Permission Query", "Workflow Task"],
+			"default": "DocType Event",
+			"rationale": "DocType Event hooks into document lifecycle events. API exposes a whitelisted endpoint. Scheduler Event runs on a cron cadence. Permission Query filters rows at the query layer. Workflow Task runs as part of a Workflow Action. Each type uses a different subset of fields."
+		},
+		{
+			"key": "reference_doctype",
+			"label": "Target DocType (DocType Event / Permission Query)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when script_type is DocType Event or Permission Query. The Frappe form gates the field via depends_on but there is NO server-side validation that it is present - if the specialist omits it for a DocType Event script, the hook silently never fires. Empty for API / Scheduler Event / Workflow Task."
+		},
+		{
+			"key": "doctype_event",
+			"label": "Event hook (DocType Event only)",
+			"type": "select",
+			"options": [
+				"Before Insert",
+				"Before Validate",
+				"Before Save",
+				"After Insert",
+				"After Save",
+				"Before Rename",
+				"After Rename",
+				"Before Submit",
+				"After Submit",
+				"Before Cancel",
+				"After Cancel",
+				"Before Discard",
+				"After Discard",
+				"Before Delete",
+				"After Delete",
+				"Before Save (Submitted Document)",
+				"After Save (Submitted Document)",
+				"Before Print",
+				"On Payment Authorization",
+				"On Payment Paid",
+				"On Payment Failed",
+				"On Payment Charge Processed",
+				"On Payment Mandate Charge Processed",
+				"On Payment Mandate Acquisition Processed"
+			],
+			"default": "Before Save",
+			"rationale": "Load-bearing: picking the wrong event runs the script at the wrong moment. Before Save runs on every save attempt (use to throw / cancel the save). Before Submit runs only on the 0->1 docstatus transition (use to gate approvals). After Save fires AFTER the document is persisted (use for side-effects where you need the saved name). On Trash fires on delete; Before Print during print render. Payment events fire from Payment Gateway integrations."
+		},
+		{
+			"key": "api_method",
+			"label": "API endpoint path (API only)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when script_type=API. The path to call via frappe.client.api_method(...). No server-side validation that it's set - missing value means the endpoint silently never registers. Empty for other script_types."
+		},
+		{
+			"key": "allow_guest",
+			"label": "Allow unauthenticated access (API only)",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, the API endpoint accepts calls without a logged-in user. Default 0 is safe; enable only for genuinely public endpoints (contact form intake, webhook receivers)."
+		},
+		{
+			"key": "event_frequency",
+			"label": "Scheduler frequency (Scheduler Event only)",
+			"type": "select",
+			"options": ["All", "Hourly", "Daily", "Weekly", "Monthly", "Yearly", "Hourly Long", "Daily Long", "Weekly Long", "Monthly Long", "Cron"],
+			"default": "Daily",
+			"rationale": "Required when script_type=Scheduler Event. Cron requires cron_format. The *_Long variants have longer timeouts for jobs that take more than a few minutes. Updating this field syncs the underlying Scheduled Job Type automatically."
+		},
+		{
+			"key": "cron_format",
+			"label": "Cron expression (event_frequency=Cron)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when event_frequency=Cron. Standard 5-field crontab expression (minute hour dom month dow). Empty for other frequencies."
+		},
+		{
+			"key": "script",
+			"label": "Script body (Python)",
+			"type": "text",
+			"default": "",
+			"rationale": "RestrictedPython body. The deploy dry-run COMPILES via FrappeTransformer which REJECTS any `import` statement, bare `exec`, assignment to `__builtins__`, or attribute access that fails safer_getattr. Use the pre-bound `frappe`, `_`, `db`, `qb`, `frappe.utils.*`, `json`, `datetime` directly - no imports. Read doc state with `doc.fieldname` or `frappe.db.get_value`, write with `doc.db_set`. Never string-interpolate into `frappe.db.sql` (SQL injection)."
+		},
+		{
+			"key": "enable_rate_limit",
+			"label": "Rate-limit the endpoint (API only)",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1 (API script_type only), applies rate_limit_count requests per rate_limit_seconds window per caller. Default off."
+		},
+		{
+			"key": "disabled",
+			"label": "Disabled",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default enabled. Disabled Scheduler Event scripts stop the underlying Scheduled Job Type; disabled DocType Event scripts skip the hook silently. Use for staging or emergency kill-switch."
+		}
+	]
+}

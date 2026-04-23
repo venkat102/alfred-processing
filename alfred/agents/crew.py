@@ -951,10 +951,18 @@ def _get_specialist_developer_agent(
 	if not intent or intent == "unknown":
 		return None
 
-	if intent == "create_doctype":
-		from alfred.agents.builders.doctype_builder import build_doctype_builder_agent
-		agent = build_doctype_builder_agent(
-			site_config=site_config, custom_tools=custom_tools
+	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS, build_schema_agent
+	from alfred.agents.builders.reports_builder import REPORTS_INTENTS, build_reports_agent
+	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS, build_automation_agent
+	from alfred.agents.builders.presentation_builder import (
+		PRESENTATION_INTENTS, build_presentation_agent,
+	)
+
+	if intent in SCHEMA_INTENTS:
+		agent = build_schema_agent(
+			intent=intent,
+			site_config=site_config,
+			custom_tools=custom_tools,
 		)
 		logger.info(
 			"Builder specialist selected: intent=%s agent_role=%r",
@@ -962,10 +970,35 @@ def _get_specialist_developer_agent(
 		)
 		return agent
 
-	if intent == "create_report":
-		from alfred.agents.builders.report_builder import build_report_builder_agent
-		agent = build_report_builder_agent(
-			site_config=site_config, custom_tools=custom_tools
+	if intent in REPORTS_INTENTS:
+		agent = build_reports_agent(
+			intent=intent,
+			site_config=site_config,
+			custom_tools=custom_tools,
+		)
+		logger.info(
+			"Builder specialist selected: intent=%s agent_role=%r",
+			intent, agent.role,
+		)
+		return agent
+
+	if intent in AUTOMATION_INTENTS:
+		agent = build_automation_agent(
+			intent=intent,
+			site_config=site_config,
+			custom_tools=custom_tools,
+		)
+		logger.info(
+			"Builder specialist selected: intent=%s agent_role=%r",
+			intent, agent.role,
+		)
+		return agent
+
+	if intent in PRESENTATION_INTENTS:
+		agent = build_presentation_agent(
+			intent=intent,
+			site_config=site_config,
+			custom_tools=custom_tools,
 		)
 		logger.info(
 			"Builder specialist selected: intent=%s agent_role=%r",
@@ -996,16 +1029,41 @@ def _enhance_task_description(
 	if not intent or intent == "unknown":
 		return base_description
 
-	if intent == "create_doctype":
-		from alfred.agents.builders.doctype_builder import enhance_generate_changeset_description
-		return enhance_generate_changeset_description(
-			base_description, module_context=module_context,
+	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS
+	from alfred.agents.builders.schema_builder import (
+		enhance_generate_changeset_description as enhance_schema,
+	)
+	from alfred.agents.builders.reports_builder import REPORTS_INTENTS
+	from alfred.agents.builders.reports_builder import (
+		enhance_generate_changeset_description as enhance_reports,
+	)
+	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS
+	from alfred.agents.builders.automation_builder import (
+		enhance_generate_changeset_description as enhance_automation,
+	)
+	from alfred.agents.builders.presentation_builder import PRESENTATION_INTENTS
+	from alfred.agents.builders.presentation_builder import (
+		enhance_generate_changeset_description as enhance_presentation,
+	)
+
+	if intent in SCHEMA_INTENTS:
+		return enhance_schema(
+			base_description, intent=intent, module_context=module_context,
 		)
 
-	if intent == "create_report":
-		from alfred.agents.builders.report_builder import enhance_generate_changeset_description
-		return enhance_generate_changeset_description(
-			base_description, module_context=module_context,
+	if intent in REPORTS_INTENTS:
+		return enhance_reports(
+			base_description, intent=intent, module_context=module_context,
+		)
+
+	if intent in AUTOMATION_INTENTS:
+		return enhance_automation(
+			base_description, intent=intent, module_context=module_context,
+		)
+
+	if intent in PRESENTATION_INTENTS:
+		return enhance_presentation(
+			base_description, intent=intent, module_context=module_context,
 		)
 
 	return base_description

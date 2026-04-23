@@ -1,0 +1,123 @@
+{
+	"intent": "create_web_form",
+	"display_name": "Create Web Form",
+	"doctype": "Web Form",
+	"fields": [
+		{
+			"key": "title",
+			"label": "Web form title",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "route",
+			"label": "URL route",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "doc_type",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "published",
+			"label": "Published",
+			"type": "check",
+			"default": 1,
+			"rationale": "When 1, the form is live at /<route>. When 0, the form exists but returns 404. Default 1 so the changeset produces a usable form; flip 0 for staging-only forms."
+		},
+		{
+			"key": "anonymous",
+			"label": "Anonymous submissions",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, submissions are saved under the Guest user regardless of the browser session. The submit path temporarily sets session.user to 'Guest' during save, then restores. This BYPASSES owner-based permission checks. Incompatible with login_required=1. Default 0."
+		},
+		{
+			"key": "login_required",
+			"label": "Login required",
+			"type": "check",
+			"default": 1,
+			"rationale": "When 1, only authenticated users (portal or Desk) can see / submit the form. Default 1. Setting 0 on a form with sensitive fields leaks those fields to anonymous visitors. Cannot be combined with anonymous=1. Several UX flags only take effect when login_required=1: allow_edit, allow_multiple, allow_delete, allow_comments, allow_print, show_attachments, show_list."
+		},
+		{
+			"key": "allow_multiple",
+			"label": "Allow multiple submissions per user",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only takes effect when login_required=1. Default 0: one submission per user (subsequent visits show the existing record). Set 1 for recurring forms (timesheets, support tickets)."
+		},
+		{
+			"key": "allow_edit",
+			"label": "Allow editing own submissions",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only takes effect when login_required=1. Default 0: submissions are final once saved. Set 1 for drafts or long-running records users should revise."
+		},
+		{
+			"key": "allow_delete",
+			"label": "Allow deleting own submissions",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only takes effect when login_required=1 AND allow_multiple=1. Default 0. Enable only when users genuinely need to retract their own rows."
+		},
+		{
+			"key": "allow_incomplete",
+			"label": "Allow save with missing mandatory fields",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, the accept() path sets doc.flags.ignore_mandatory=True during save, allowing partial submissions. ONLY applies via the web form path - direct API submissions still enforce reqd. Default 0."
+		},
+		{
+			"key": "apply_document_permissions",
+			"label": "Apply DocType permissions",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, Web Form read / edit / delete respect the target DocType's DocPerm rules (not just the web form's own flags). Useful when the form is a front-end over a Desk-managed DocType. Default 0 (web-form-only access)."
+		},
+		{
+			"key": "web_form_fields",
+			"label": "Fields whitelist (list)",
+			"type": "text",
+			"required": true
+		},
+		{
+			"key": "success_message",
+			"label": "Success message",
+			"type": "data",
+			"default": "Thank you. Your submission has been recorded.",
+			"rationale": "Shown on the success page when no success_url redirect is set. Keep short and confirming."
+		},
+		{
+			"key": "success_url",
+			"label": "Success redirect URL",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional. Redirect target after successful submit. Empty means the default success page (shows success_message)."
+		},
+		{
+			"key": "button_label",
+			"label": "Submit button label",
+			"type": "data",
+			"default": "Save",
+			"rationale": "Label on the primary button. 'Save' is the Frappe default; use 'Submit' / 'Send' / 'Request' per the form's business verb."
+		},
+		{
+			"key": "max_attachment_size",
+			"label": "Max attachment size (MB)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Caps file upload size. 0 means the site-wide File Upload size limit applies."
+		},
+		{
+			"key": "allow_comments",
+			"label": "Allow comments on submissions",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only takes effect when login_required=1. Adds a comments section to submitted records for the logged-in user."
+		}
+	]
+}
