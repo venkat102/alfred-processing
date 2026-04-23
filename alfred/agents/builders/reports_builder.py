@@ -37,26 +37,49 @@ REPORTS_INTENTS: frozenset[str] = frozenset({
 
 _REPORTS_BASE_BACKSTORY = """
 You specialise in Frappe read-side presentation: Reports, Dashboards, \
-Dashboard Charts, and Number Cards. You know the distinctions:
+Dashboard Charts, and Number Cards. You know the controller-enforced \
+rules and the easy-to-confuse naming:
 
-- Reports come in three types. Report Builder is the safe default \
-(field list + filters, no code). Query Report is raw parameterised \
-SQL - use when aggregations exceed Report Builder's vocabulary. Script \
-Report is Python-driven, sandboxing-heavy, and is V2+ only.
-- Every Report anchors to a single `ref_doctype`, binds to a `module` \
-for navigation + access, and defaults to `is_standard=0` (site-local) \
-unless shipping in an app.
-- Dashboard Charts have a `source` dichotomy: they either pull from a \
-Report (`source="Report"`, `report_name`) or aggregate a DocType \
-directly (`source="DocType"`, `doctype`, `x_field`, `y_field`). The \
-chart type (Line / Bar / Pie / Donut / Percentage / Heatmap) is a \
-rendering choice orthogonal to the source.
-- Number Cards are single-value KPIs. `function` is Count / Sum / \
-Average / Min / Max; Count doesn't need `aggregate_function_based_on`, \
-the others require a numeric field. `filters_json` is a JSON string \
-of Frappe filter triples (not a Python dict).
-- Dashboards compose multiple Charts + Number Cards under one Module. \
-They do not themselves hold aggregation logic - they are layout.
+- Reports come in FOUR types: Report Builder (field list + filters, no \
+code, the safe default), Query Report (raw SQL that must pass \
+check_safe_sql_query - DDL / DML / multi-statement rejected), Script \
+Report (Python executed server-side, requires Script Manager role), \
+and Custom Report (renders an existing Report Builder config with \
+different columns). is_standard='Yes' requires developer_mode AND \
+Administrator at save; non-devs / non-Admins cannot create or edit \
+standard reports. Flipping 'Yes'->'No' on a saved standard report is \
+also blocked.
+- DASHBOARD CHART HAS TWO SEPARATE TYPE FIELDS - do NOT confuse them. \
+`chart_type` is the AGGREGATION MODE: Count / Sum / Average / Group \
+By / Custom / Report. `type` is the RENDER SHAPE: Line / Bar / \
+Percentage / Pie / Donut / Heatmap. A Count chart can render as Line, \
+a Group By chart can render as Pie, etc. `chart_type` is set_only_once \
+(cannot be changed after first save), so pick the aggregation mode up \
+front. For Count / Sum / Average chart_types, required fields are \
+document_type + based_on (date) + value_based_on (numeric, Sum / Avg \
+only). For Group By, required fields are group_by_based_on + \
+group_by_type + aggregate_function_based_on (if group_by_type is Sum \
+or Average). For Report chart_type, required fields are report_name + \
+either use_report_chart=1 (reuse the Report's built-in chart) or \
+x_field + y_axis rows.
+- NUMBER CARD HAS A TYPE FIELD for its source: Document Type / Report / \
+Custom. For Document Type, required fields are document_type + function \
+(Count / Sum / Average / Minimum / Maximum) + aggregate_function_based_on \
+(for non-Count). For Report, required fields are report_name + \
+report_field + report_function (Count is NOT valid here - for a Count \
+card, use type='Document Type' instead). For Custom, required is \
+method - a dotted path to a whitelisted Python function returning \
+{value, fieldtype, route?}.
+- filters_json is a JSON string of Frappe filter triples, NOT a Python \
+dict. Empty '[]' means 'across all rows' - if the user said anything \
+implying a filter ('pending', 'overdue', 'this month'), that's a blocker, \
+not a default.
+- Dashboards compose Charts + Number Cards under one Module. is_default \
+is a global singleton - setting is_default=1 auto-clears is_default on \
+every other Dashboard. is_standard=1 enforces that every referenced \
+chart / card MUST also be is_standard=1 (the controller rejects mixing). \
+chart_options (JSON string) provides rendering defaults merged into \
+every chart at render time.
 
 ASK, DO NOT ASSUME. The clarification gate that runs before you should \
 have captured every load-bearing decision; if you find yourself about \
@@ -95,39 +118,68 @@ registry default and record the rationale, as before.
 _INTENT_FRAGMENTS: dict[str, str] = {
 	"create_report": """
 Your current task is to CREATE A NEW REPORT. Every Report you emit MUST \
-include `ref_doctype`, `report_type`, `is_standard`, and `module` in \
-its `data`. Default to Report Builder unless the user's ask explicitly \
-needs raw SQL or Python. If the user did not specify a value, use the \
-registry default and record which fields were defaulted in \
-`field_defaults_meta`.
+include `report_name`, `ref_doctype`, `report_type`, and `is_standard` \
+in its `data`. Default to Report Builder unless the user's ask \
+explicitly needs raw SQL (Query Report) or Python (Script Report). \
+is_standard='Yes' requires developer_mode + Administrator at save - do \
+not set it unless you know the caller has both. For Query Report, a \
+non-empty `query` field is required and must pass check_safe_sql_query \
+(single SELECT, no DDL / DML / multi-statement). For Script Report, a \
+non-empty `report_script` is required and the caller must have the \
+Script Manager role.
 """.strip(),
 
 	"create_dashboard": """
-Your current task is to CREATE A NEW DASHBOARD. A Dashboard is a layout \
-container - emit the Dashboard doc with `module`, `is_standard`, and \
-(if the user named specific charts) a `chart_options` child table \
-listing `{chart_name}` rows. If the user asked for charts that don't \
-exist yet, emit the Dashboard Chart items BEFORE the Dashboard so the \
-links resolve cleanly on apply.
+Your current task is to CREATE A NEW DASHBOARD. A Dashboard is a \
+LAYOUT container - it does not aggregate on its own. Emit the Dashboard \
+doc with `dashboard_name`, `is_default` (0 unless the user wants this \
+to REPLACE whatever the site-wide default is - setting is_default=1 \
+auto-clears is_default on every other Dashboard), `is_standard` (0 for \
+site-local; 1 forces every referenced chart / card to also be \
+standard), and `charts` (list of Dashboard Chart names to render). If \
+the user asked for charts / cards that don't exist yet, emit the \
+Dashboard Chart / Number Card items BEFORE the Dashboard so link \
+references resolve on apply.
 """.strip(),
 
 	"create_dashboard_chart": """
-Your current task is to CREATE A NEW DASHBOARD CHART. Pick `source` \
-based on the user's phrasing: "chart from report X" -> \
-source="Report" + report_name=X; "chart of Y by Z" -> source="DocType" \
-+ doctype=Y + x_field=Z. The `chart_type` is Line / Bar / Pie / Donut \
-/ Percentage / Heatmap; default to Bar for categorical data, Line for \
-time series. Numeric aggregation fields live in `based_on` + \
-`value_based_on`.
+Your current task is to CREATE A NEW DASHBOARD CHART. Dashboard Chart \
+has TWO separate type fields - do not confuse them. `chart_type` is \
+the AGGREGATION MODE (Count / Sum / Average / Group By / Custom / \
+Report) and is set_only_once (cannot change after first save). `type` \
+is the RENDER SHAPE (Line / Bar / Percentage / Pie / Donut / Heatmap). \
+Pick chart_type from what the user wants to MEASURE:\n\
+  - "count of invoices this month" -> chart_type=Count + document_type \
++ based_on (date field) + timeseries=1.\n\
+  - "total sales by month" -> chart_type=Sum + document_type + \
+based_on + value_based_on (numeric field).\n\
+  - "customers by territory" -> chart_type=Group By + document_type + \
+group_by_based_on + group_by_type (Count / Sum / Average) + \
+aggregate_function_based_on (if Sum / Average).\n\
+  - "chart of the Overdue Invoices report" -> chart_type=Report + \
+report_name + either use_report_chart=1 or x_field + y_axis.\n\
+Pick `type` (render shape) separately from the data shape: Line / Bar \
+for time-series, Pie / Donut / Percentage for few-category \
+distributions, Heatmap for daily density.
 """.strip(),
 
 	"create_number_card": """
-Your current task is to CREATE A NEW NUMBER CARD. Every Number Card is \
-one number: emit `label`, `doctype`, `function` (Count / Sum / Average \
-/ Min / Max), and - for non-Count functions - \
-`aggregate_function_based_on` naming the numeric field. Filters live \
-in `filters_json` as a JSON string of Frappe filter triples, NOT a \
-Python dict (store as JSON text).
+Your current task is to CREATE A NEW NUMBER CARD. Number Card has a \
+`type` field that picks the SOURCE: Document Type / Report / Custom. \
+Each source uses a different subset of fields:\n\
+  - type=Document Type: emit document_type + function (Count / Sum / \
+Average / Minimum / Maximum) + aggregate_function_based_on when \
+function is not Count. If document_type is a child table, also emit \
+parent_document_type.\n\
+  - type=Report: emit report_name + report_field + report_function \
+(Sum / Average / Minimum / Maximum - Count is NOT valid here; use \
+type=Document Type with function=Count instead).\n\
+  - type=Custom: emit method (dotted path to a whitelisted Python \
+function returning {value, fieldtype, route?}).\n\
+filters_json is a JSON STRING of Frappe filter triples (e.g. \
+'[[\"Sales Invoice\",\"status\",\"=\",\"Unpaid\"]]'), not a Python \
+dict. '[]' means 'across all rows' - if the user said anything \
+implying a filter, that's a blocker, not a default.
 """.strip(),
 }
 

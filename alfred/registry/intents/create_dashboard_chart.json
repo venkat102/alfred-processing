@@ -10,35 +10,71 @@
 			"required": true
 		},
 		{
-			"key": "source",
-			"label": "Source type",
+			"key": "chart_type",
+			"label": "Chart type (aggregation mode - NOT the visual shape)",
 			"type": "select",
-			"options": ["Report", "DocType"],
-			"default": "DocType",
-			"rationale": "DocType aggregation is the common case for KPI-style charts. Use Report when the user explicitly wants to plot an existing Report's output."
-		},
-		{
-			"key": "report_name",
-			"label": "Report name (when source=Report)",
-			"type": "data",
-			"default": "",
-			"rationale": "Required when source=Report. Names an existing Report in the site. Empty for DocType source."
+			"options": ["Count", "Sum", "Average", "Group By", "Custom", "Report"],
+			"default": "Count",
+			"rationale": "chart_type is the AGGREGATION MODE, not the visual shape. Count / Sum / Average sum rows of a DocType over time (requires document_type + based_on + value_based_on for Sum / Average). Group By aggregates rows by a field (requires group_by_based_on + group_by_type). Custom pulls from a Dashboard Chart Source plugin. Report plots a pre-existing Report. IMPORTANT: chart_type is set_only_once - cannot be changed after the chart saves, so pick the right mode up front."
 		},
 		{
 			"key": "document_type",
-			"label": "DocType (when source=DocType)",
+			"label": "Source DocType (for Count / Sum / Average / Group By)",
 			"type": "link",
 			"link_doctype": "DocType",
 			"default": "",
-			"rationale": "Required when source=DocType. Names the DocType to aggregate. Empty for Report source."
+			"rationale": "Required when chart_type is Count / Sum / Average / Group By. Cannot be a Single DocType (the controller rejects that). Empty when chart_type is Report or Custom."
 		},
 		{
-			"key": "chart_type",
-			"label": "Chart type",
+			"key": "parent_document_type",
+			"label": "Parent DocType (when document_type is a child table)",
+			"type": "link",
+			"link_doctype": "DocType",
+			"default": "",
+			"rationale": "Required when document_type is a child table (istable=1). Names the parent DocType so the chart can filter by parent. Empty when document_type is not a child table."
+		},
+		{
+			"key": "based_on",
+			"label": "Date field for time series (based_on)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when chart_type is Count / Sum / Average AND timeseries=1. Names the date / datetime field that drives the X axis (e.g. posting_date). Empty for non-time-series or Group By."
+		},
+		{
+			"key": "value_based_on",
+			"label": "Numeric field to aggregate (for Sum / Average)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when chart_type is Sum or Average. Names the numeric field summed or averaged on the Y axis. Empty for Count / Group By / Report / Custom."
+		},
+		{
+			"key": "group_by_type",
+			"label": "Group By aggregation (when chart_type='Group By')",
 			"type": "select",
-			"options": ["Line", "Bar", "Pie", "Donut", "Percentage", "Heatmap"],
-			"default": "Bar",
-			"rationale": "Bar is a safe default for categorical data. Line fits time-series, Pie and Donut fit distributions under ~6 categories, Heatmap fits per-day density."
+			"options": ["Count", "Sum", "Average"],
+			"default": "Count",
+			"rationale": "Only used when chart_type='Group By'. Count is the safe default (one bar per group). Sum / Average require aggregate_function_based_on naming a numeric field."
+		},
+		{
+			"key": "group_by_based_on",
+			"label": "Field to group by (when chart_type='Group By')",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when chart_type='Group By'. Names the DocField to group rows by (e.g. customer, status). Empty otherwise."
+		},
+		{
+			"key": "aggregate_function_based_on",
+			"label": "Numeric field for Group By Sum / Average",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when chart_type='Group By' AND group_by_type is Sum or Average. Names the numeric field aggregated per group. Empty for Count."
+		},
+		{
+			"key": "number_of_groups",
+			"label": "Number of groups (Group By)",
+			"type": "int",
+			"default": 5,
+			"rationale": "Caps the number of groups shown; others roll into 'Others'. 5 is the Frappe default and fits most pie / bar charts without clutter."
 		},
 		{
 			"key": "timespan",
@@ -46,29 +82,66 @@
 			"type": "select",
 			"options": ["Last Year", "Last Quarter", "Last Month", "Last Week", "Select Date Range"],
 			"default": "Last Year",
-			"rationale": "Last Year balances meaningful trend signal with query cost. Users can narrow to shorter spans."
+			"rationale": "Default window. 'Select Date Range' requires explicit from_date + to_date fields."
 		},
 		{
-			"key": "based_on",
-			"label": "Date field to group by (time-based charts)",
-			"type": "data",
-			"default": "",
-			"rationale": "For Line / Bar charts on DocType source, names the date field driving the X axis (e.g. posting_date). Empty for non-time-series."
-		},
-		{
-			"key": "value_based_on",
-			"label": "Numeric field to aggregate",
-			"type": "data",
-			"default": "",
-			"rationale": "For Sum / Average / Min / Max aggregations on DocType source, names the numeric field. Empty when counting rows (set aggregate_function_based_on separately for Count)."
-		},
-		{
-			"key": "group_by_type",
-			"label": "Grouping",
+			"key": "time_interval",
+			"label": "Time interval",
 			"type": "select",
-			"options": ["Count", "Sum", "Average"],
-			"default": "Count",
-			"rationale": "Count is the safe default for categorical summaries. Sum / Average require a numeric value_based_on."
+			"options": ["Yearly", "Quarterly", "Monthly", "Weekly", "Daily"],
+			"default": "Monthly",
+			"rationale": "Bucket size for time-series aggregation. Monthly balances signal with query cost for Last Year timespans."
+		},
+		{
+			"key": "timeseries",
+			"label": "Timeseries",
+			"type": "check",
+			"default": 1,
+			"rationale": "1 = X axis is time (based_on field). 0 = aggregate without time grouping. Forced to 0 by the form for chart_type Group By / Report."
+		},
+		{
+			"key": "type",
+			"label": "Render type (visual shape)",
+			"type": "select",
+			"options": ["Line", "Bar", "Percentage", "Pie", "Donut", "Heatmap"],
+			"default": "Line",
+			"rationale": "The VISUAL shape, separate from chart_type. Line / Bar fit time-series; Pie / Donut / Percentage fit distributions under ~6 categories; Heatmap fits per-day density (requires heatmap_year)."
+		},
+		{
+			"key": "report_name",
+			"label": "Report name (when chart_type='Report')",
+			"type": "link",
+			"link_doctype": "Report",
+			"default": "",
+			"rationale": "Required when chart_type='Report'. Names an existing Report. set_only_once - cannot be changed after save. Empty for other chart_types."
+		},
+		{
+			"key": "use_report_chart",
+			"label": "Use Report's built-in chart",
+			"type": "check",
+			"default": 0,
+			"rationale": "When chart_type='Report' AND the Report already defines a chart, set to 1 to reuse that definition (skips x_field / y_axis requirements). 0 means x_field + y_axis must be set."
+		},
+		{
+			"key": "x_field",
+			"label": "X-axis column (when chart_type='Report' and !use_report_chart)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when chart_type='Report' AND use_report_chart=0. Names a column in the Report's output."
+		},
+		{
+			"key": "filters_json",
+			"label": "Filters (JSON string)",
+			"type": "text",
+			"default": "[]",
+			"rationale": "JSON list of Frappe filter triples, e.g. '[[\"Sales Invoice\",\"status\",\"=\",\"Paid\"]]'. '[]' means 'all rows' - the controller also auto-excludes docstatus=2 (cancelled) regardless of this filter."
+		},
+		{
+			"key": "is_public",
+			"label": "Public (all users)",
+			"type": "check",
+			"default": 0,
+			"rationale": "0 = only visible to the owner. 1 = visible to every user. Dashboards that are_standard=1 typically use is_public=1 charts."
 		}
 	]
 }
