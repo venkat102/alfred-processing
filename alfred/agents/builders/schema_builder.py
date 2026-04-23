@@ -34,6 +34,8 @@ SCHEMA_INTENTS: frozenset[str] = frozenset({
 	"create_doctype",
 	"create_custom_field",
 	"create_role_with_permissions",
+	"create_property_setter",
+	"create_user_permission",
 })
 
 _SCHEMA_BASE_BACKSTORY = """
@@ -93,6 +95,37 @@ that is NOT ALL_USER_ROLE or SYSTEM_USER_ROLE requires that role to also \
 have a permlevel=0 perm. Duplicate (role, permlevel, if_owner) rows are \
 rejected.
 
+THREE CRITICAL DISTINCTIONS (specialists get these wrong most often):
+
+- **Property Setter vs Custom Field.** Custom Field ADDS a new field to \
+an existing DocType. Property Setter TWEAKS an existing DocField's \
+properties (label, reqd, hidden, options, read_only) or DocType-level \
+properties (title_field, search_fields, default_print_format, \
+allow_import). When the user says 'make customer_group required on \
+Customer', that is a PROPERTY SETTER, not a Custom Field - emitting a \
+Custom Field silently creates a duplicate field with a new fieldname \
+and leaves the original customer_group unchanged. Property Setter's \
+property_type must match the property's native type: reqd is Check so \
+value='1'; label is Data so value='New Label'.
+
+- **User Permission vs DocPerm / Custom DocPerm.** User Permission is \
+DOCUMENT-LEVEL and per-user: 'user alice@example.com can only see \
+Customer records where customer_group = VIP'. Custom DocPerm is \
+DOCTYPE-LEVEL and per-role: 'Sales User role can read the Customer \
+DocType'. They are ORTHOGONAL - neither replaces the other. A user \
+with Customer-read via role STILL needs a User Permission row per \
+specific Customer they may access (when apply_user_permissions=1 on \
+the DocPerm). When the user says 'restrict user X to region Y', that \
+is a USER PERMISSION; 'create a role that can read Customer' is a \
+CUSTOM DOCPERM.
+
+- **DocPerm `select` vs `read`.** These are two different flags on the \
+same row. `read` controls whether the user can OPEN a document. \
+`select` controls whether the user can see it in LIST views and link \
+dropdowns. Granting read without select produces the confusing state \
+'I have access but can't find the record in any list'. The default \
+action_flags set grants select=1 + read=1 together.
+
 ASK, DO NOT ASSUME. The clarification gate that runs before you should \
 have captured every load-bearing decision; if you find yourself about to \
 invent a value for one of the critical fields below, STOP: emit that \
@@ -151,11 +184,45 @@ more existing DocTypes. Emit ONE `Role` changeset item followed by ONE \
 item carries `role_name`, `desk_access=1` (unless the prompt mentions a \
 portal-only role), `two_factor_auth=0`. Each Custom DocPerm item carries \
 `parent` (the target DocType), `parenttype="DocType"`, `parentfield="permissions"`, \
-`role` (matching the Role's name), `permlevel` (default 0), and the action \
-flags (`read`, `write`, `create`, `delete`, `submit`, `cancel`, `amend`, \
-`print`, `email`, `export`, `report`, `share`). Never grant `write=1` with \
-`read=0`. The `create_role_with_permissions` pattern in the patterns \
-library is the canonical template.
+`role` (matching the Role's name), `permlevel` (default 0), and ALL thirteen \
+action flags (`select`, `read`, `write`, `create`, `delete`, `submit`, \
+`cancel`, `amend`, `print`, `email`, `export`, `report`, `share`) plus \
+`if_owner` (scope to own records) and `mask` (field-value masking in \
+reports). Never grant `write=1` with `read=0`. Never omit `select=1` when \
+granting `read=1` - they gate different paths (open vs list / dropdown). \
+The `create_role_with_permissions` pattern in the patterns library is the \
+canonical template.
+""".strip(),
+
+	"create_property_setter": """
+Your current task is to CREATE A PROPERTY SETTER - an override that \
+TWEAKS an existing DocField or DocType property without inventing a \
+new field. If the user says 'make X required on Y', 'change the label \
+of X', 'hide X field on Y', 'set Y's title_field to X', those are all \
+Property Setter tasks, NOT Custom Field. Emit `doc_type`, `field_name` \
+(the existing field being tweaked; leave empty when overriding a \
+DocType-level property), `property` (the name of the property to \
+override: reqd / hidden / label / options / read_only / in_list_view \
+for DocField; title_field / search_fields / default_print_format / \
+allow_import for DocType), `property_type` matching the property's \
+native type, and `value` as a string whose format matches property_type \
+(Check takes '0' / '1'; Data / Text take plain strings; Select takes \
+one of the property's valid option strings). Do not emit a Custom \
+Field to tweak an existing DocField - that creates a duplicate.
+""".strip(),
+
+	"create_user_permission": """
+Your current task is to CREATE A USER PERMISSION - a document-level \
+access gate that restricts a specific user to specific records. Emit \
+`user` (the User's email), `allow` (the target DocType being gated), \
+`for_value` (the specific record name the user IS permitted to see), \
+`apply_to_all_doctypes=1` (the usual intent: cascade the restriction \
+to every DocType that Links to `allow`), `hide_descendants=0` (for \
+tree DocTypes, set 1 to hide child records of the permitted node). \
+User Permission is ORTHOGONAL to Role / DocPerm - it does not replace \
+them; both must align for access to work. When the user says 'restrict \
+X to only see Y' or 'user A should only have access to records where \
+Z = W', this is a User Permission task.
 """.strip(),
 }
 
@@ -176,12 +243,24 @@ _INTENT_GOALS: dict[str, str] = {
 		"Custom DocPerm item per target DocType, with consistent role_name "
 		"across them and sensible action-flag defaults."
 	),
+	"create_property_setter": (
+		"Generate a Property Setter changeset item that overrides the "
+		"named property on the target DocField (or DocType when "
+		"field_name is empty) with value matching property_type."
+	),
+	"create_user_permission": (
+		"Generate a User Permission changeset item that gates the "
+		"target user to the named record on the named DocType, with "
+		"apply_to_all_doctypes controlling cascade behaviour."
+	),
 }
 
 _INTENT_ROLES: dict[str, str] = {
 	"create_doctype": "Frappe Developer - Schema Specialist (DocType)",
 	"create_custom_field": "Frappe Developer - Schema Specialist (Custom Field)",
 	"create_role_with_permissions": "Frappe Developer - Schema Specialist (Role + Permissions)",
+	"create_property_setter": "Frappe Developer - Schema Specialist (Property Setter)",
+	"create_user_permission": "Frappe Developer - Schema Specialist (User Permission)",
 }
 
 _MODULE_CONTEXT_MARKER = "MODULE CONTEXT"

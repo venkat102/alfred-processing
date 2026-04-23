@@ -166,6 +166,49 @@
 			"type": "int",
 			"default": 0,
 			"rationale": "Permission level for this field. permlevel > 0 requires at least one DocPerm row at the matching level on the parent DocType, otherwise the field is invisible to everyone. Default 0 is safe."
+		},
+		{
+			"key": "allow_on_submit",
+			"label": "Editable after submit",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1 AND the target DocType is is_submittable=1, the field can be edited even after the document is submitted (docstatus=1). Used for fields that legitimately change post-approval (internal notes, tracking IDs, scheduled delivery date). Silently ignored on non-submittable DocTypes."
+		},
+		{
+			"key": "print_hide",
+			"label": "Hide in print",
+			"type": "check",
+			"default": 0,
+			"rationale": "Excludes the field from print / PDF renders regardless of whether it has a value. Default 0 (visible in print)."
+		},
+		{
+			"key": "no_copy",
+			"label": "Exclude from document copy",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, the field is NOT carried when a user duplicates the document via Copy. Use for fields that must be unique per record (reference numbers, serial IDs) or sensitive data that shouldn't silently propagate."
+		},
+		{
+			"key": "non_negative",
+			"label": "Non-negative only",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only meaningful for Int / Float / Currency fieldtypes. When 1, values below zero are rejected at save. Default 0 (any number). Silently ignored on non-numeric fieldtypes."
+		},
+		{
+			"key": "precision",
+			"label": "Decimal precision (0-9)",
+			"type": "select",
+			"options": ["", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+			"default": "",
+			"rationale": "Only meaningful for Float / Currency / Percent fieldtypes. Overrides the site-wide default precision (usually 2). Empty means inherit the site default."
+		},
+		{
+			"key": "is_virtual",
+			"label": "Virtual (not stored)",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, the field is COMPUTED on read and not stored in the DB - requires a controller hook or a fetch_from to produce the value. Virtual fields cannot be Link or Table fieldtypes, and fieldtype cannot be changed to virtual on a field with existing data. Advanced use; default 0."
 		}
 	]
 }

@@ -1,0 +1,56 @@
+{
+	"intent": "create_user_permission",
+	"display_name": "Create User Permission (document-level gate)",
+	"doctype": "User Permission",
+	"fields": [
+		{
+			"key": "user",
+			"label": "User (email)",
+			"type": "link",
+			"link_doctype": "User",
+			"required": true
+		},
+		{
+			"key": "allow",
+			"label": "Target DocType to gate",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "for_value",
+			"label": "Specific record name to permit",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "apply_to_all_doctypes",
+			"label": "Apply to all doctypes that link to this DocType",
+			"type": "check",
+			"default": 1,
+			"rationale": "Default 1 is the usual intent: 'restrict the user to records where <allow> = <for_value>' cascades to every DocType that carries a Link to <allow>. When 0, the restriction applies ONLY to direct access of <allow> records and does NOT propagate to dependent DocTypes - useful for niche hybrid setups where the user should see e.g. their own Customer but all Sales Invoices regardless of customer."
+		},
+		{
+			"key": "applicable_for",
+			"label": "Applicable for DocType (when apply_to_all_doctypes=0)",
+			"type": "link",
+			"link_doctype": "DocType",
+			"default": "",
+			"rationale": "Only meaningful when apply_to_all_doctypes=0. Names a specific DocType where this permission row applies. Multiple rows per user (same allow / for_value, different applicable_for) author the 'user can see this record only in this doctype' shape."
+		},
+		{
+			"key": "hide_descendants",
+			"label": "Hide descendants (for tree DocTypes)",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only meaningful when the <allow> DocType is a tree (is_tree=1). When 1, child records of the permitted node are hidden as well - useful for hierarchical orgs where a user should see ONLY their territory and not its sub-territories. Default 0 (descendants visible)."
+		},
+		{
+			"key": "is_default",
+			"label": "Default value for the user",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, this permission's for_value auto-populates the corresponding Link field on new documents the user creates (e.g. default Company on a new Sales Invoice). Only ONE User Permission row per (user, allow) pair can have is_default=1."
+		}
+	]
+}
