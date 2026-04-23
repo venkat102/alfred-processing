@@ -15,7 +15,10 @@ API_KEY = "test-secret-key-12345"
 SITE_ID = "test.frappe.cloud"
 USER = "admin@test.com"
 ROLES = ["System Manager", "Administrator"]
-REDIS_URL = "redis://127.0.0.1:11000/2"
+# CI_REDIS_URL lets CI inject its redis-service URL (default 6379).
+# Local dev falls back to the Frappe bench port; GitHub Actions sets
+# CI_REDIS_URL=redis://localhost:6379/2 in the workflow.
+REDIS_URL = os.environ.get("CI_REDIS_URL") or "redis://127.0.0.1:11000/2"
 
 
 @pytest.fixture
@@ -33,7 +36,7 @@ async def app():
 		pool = aioredis.ConnectionPool.from_url(REDIS_URL, max_connections=5, decode_responses=True)
 		test_app.state.redis = aioredis.Redis(connection_pool=pool)
 		await test_app.state.redis.ping()
-	except Exception:
+	except Exception:  # noqa: BLE001
 		test_app.state.redis = None
 
 	yield test_app
@@ -93,6 +96,28 @@ class TestAuth:
 			"/api/v1/tasks",
 			json={"prompt": "test"},
 			headers={"Authorization": "Bearer wrong-key"},
+		)
+		assert resp.status_code == 401
+		assert resp.json()["detail"]["code"] == "AUTH_INVALID"
+
+	@pytest.mark.parametrize("bad_key", [
+		"x",                         # one byte (length mismatch -> compare_digest rejects)
+		API_KEY[:-1],                # correct-prefix, one byte too short
+		API_KEY[:-1] + "X",          # same length, last byte differs
+		"X" + API_KEY[1:],           # same length, first byte differs
+		API_KEY + "X",               # correct prefix + extra byte (length mismatch)
+		API_KEY.upper(),             # same letters, wrong case (keys are case-sensitive)
+	])
+	async def test_wrong_key_shapes_rejected(self, client, bad_key):
+		"""Lock in hmac.compare_digest behaviour across the edge-case shapes a
+		timing attacker would probe: prefix-correct-but-truncated, same-length-
+		one-byte-off, and correct-prefix-plus-extra-byte. Constant-time compare
+		must reject all of them the same way the old != did, with no
+		length-based branching that would leak byte positions."""
+		resp = await client.post(
+			"/api/v1/tasks",
+			json={"prompt": "test"},
+			headers={"Authorization": f"Bearer {bad_key}"},
 		)
 		assert resp.status_code == 401
 		assert resp.json()["detail"]["code"] == "AUTH_INVALID"
@@ -184,7 +209,7 @@ class TestJWT:
 		}
 		try:
 			unsigned = jwt.encode(payload, "", algorithm="none")
-		except Exception:
+		except Exception:  # noqa: BLE001
 			# Newer PyJWT refuses to encode with alg=none. That's even safer.
 			return
 		with pytest.raises(ValueError):
@@ -304,6 +329,136 @@ class TestRateLimit:
 					assert "Retry-After" in resp.headers
 		finally:
 			routes_mod.SERVER_DEFAULT_RATE_LIMIT = original_limit
+
+
+class TestWebSocketRateLimit:
+	"""TD-C6: the WebSocket prompt handler must rate-limit before spawning
+	the pipeline. Test pre-seeds the Redis sliding-window bucket to the
+	limit so the first prompt sent by the test is already over quota -
+	this avoids triggering a real pipeline (which would need LLM access)
+	on any attempt."""
+
+	async def test_ws_prompt_rate_limited_returns_error_frame(self, app):
+		if app.state.redis is None:
+			pytest.skip("Redis not available")
+
+		try:
+			from httpx_ws import aconnect_ws
+			from httpx_ws.transport import ASGIWebSocketTransport
+		except ImportError:
+			pytest.skip("httpx_ws not installed")
+
+		import time as _t
+		import alfred.api.websocket as ws_mod
+
+		original_limit = ws_mod.SERVER_DEFAULT_RATE_LIMIT
+		ws_mod.SERVER_DEFAULT_RATE_LIMIT = 1
+
+		# Pre-seed the user's sliding-window bucket with one recent entry
+		# so the next prompt is immediately over quota. Key format comes
+		# from alfred.middleware.rate_limit.check_rate_limit.
+		ratelimit_key = f"alfred:{SITE_ID}:ratelimit:{USER}"
+		now = _t.time()
+		await app.state.redis.zadd(ratelimit_key, {f"{now - 1}": now - 1})
+		await app.state.redis.expire(ratelimit_key, 3600)
+
+		try:
+			async with AsyncClient(
+				transport=ASGIWebSocketTransport(app=app),
+				base_url="http://test",
+			) as ws_client:
+				async with aconnect_ws("/ws/ratelimit-conv", ws_client) as ws:
+					await ws.send_json({
+						"api_key": API_KEY,
+						"jwt_token": _make_jwt(),
+						"site_config": {},
+					})
+					auth = json.loads(await ws.receive_text())
+					assert auth["type"] == "auth_success"
+
+					await ws.send_json({
+						"msg_id": "p1",
+						"type": "prompt",
+						"data": {"text": "Create a DocType called Book"},
+					})
+
+					resp = json.loads(await ws.receive_text())
+					while resp.get("type") == "ping":
+						resp = json.loads(await ws.receive_text())
+
+					assert resp["type"] == "error"
+					assert resp["data"]["code"] == "RATE_LIMITED"
+					assert resp["data"]["retry_after"] > 0
+					assert "remaining" in resp["data"]
+		finally:
+			ws_mod.SERVER_DEFAULT_RATE_LIMIT = original_limit
+			await app.state.redis.delete(ratelimit_key)
+
+	async def test_ws_prompt_under_limit_spawns_pipeline(self, app):
+		"""Smoke: when under-quota, rate-limit path is a no-op and the
+		prompt proceeds to normal pipeline spawning. The pipeline itself
+		will fail without a real LLM but we just want to confirm the
+		rate-limit gate does NOT block under-quota calls."""
+		if app.state.redis is None:
+			pytest.skip("Redis not available")
+
+		try:
+			from httpx_ws import aconnect_ws
+			from httpx_ws.transport import ASGIWebSocketTransport
+		except ImportError:
+			pytest.skip("httpx_ws not installed")
+
+		import alfred.api.websocket as ws_mod
+
+		original_limit = ws_mod.SERVER_DEFAULT_RATE_LIMIT
+		ws_mod.SERVER_DEFAULT_RATE_LIMIT = 100  # plenty of headroom
+
+		under_user = "under-limit-user@test.com"
+		ratelimit_key = f"alfred:{SITE_ID}:ratelimit:{under_user}"
+		# Ensure a clean slate for this user.
+		await app.state.redis.delete(ratelimit_key)
+
+		try:
+			async with AsyncClient(
+				transport=ASGIWebSocketTransport(app=app),
+				base_url="http://test",
+			) as ws_client:
+				async with aconnect_ws("/ws/ratelimit-ok-conv", ws_client) as ws:
+					import jwt as _jwt
+					jwt_token = _jwt.encode(
+						{"user": under_user, "roles": ROLES, "site_id": SITE_ID, "exp": int(__import__("time").time()) + 3600},
+						API_KEY, algorithm="HS256",
+					)
+					await ws.send_json({
+						"api_key": API_KEY,
+						"jwt_token": jwt_token,
+						"site_config": {},
+					})
+					auth = json.loads(await ws.receive_text())
+					assert auth["type"] == "auth_success"
+
+					await ws.send_json({
+						"msg_id": "p2",
+						"type": "prompt",
+						"data": {"text": "noop prompt"},
+					})
+
+					# Collect a few frames; we should NOT see a RATE_LIMITED
+					# response. The pipeline may emit other messages (status,
+					# error from LLM unavailability, etc) - those are fine.
+					rate_limited = False
+					for _ in range(5):
+						try:
+							frame = json.loads(await ws.receive_text())
+						except Exception:  # noqa: BLE001
+							break
+						if frame.get("type") == "error" and frame.get("data", {}).get("code") == "RATE_LIMITED":
+							rate_limited = True
+							break
+					assert not rate_limited, "Under-quota prompt was incorrectly rate-limited"
+		finally:
+			ws_mod.SERVER_DEFAULT_RATE_LIMIT = original_limit
+			await app.state.redis.delete(ratelimit_key)
 
 
 # ── WebSocket ────────────────────────────────────────────────────
