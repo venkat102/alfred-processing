@@ -1,0 +1,46 @@
+# Context trimmer — everything listed here is NOT sent to the Docker
+# daemon during build. Shrinks the image-build context from ~1 GB (with
+# .git + .venv) to ~5 MB, which makes every `docker build` faster AND
+# prevents secrets or dev state from leaking into image layers.
+
+# VCS + dev venvs
+.git
+.github
+.venv
+venv
+.pyenv
+
+# Python byproducts
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# IDE / editor state
+.vscode
+.idea
+*.swp
+.DS_Store
+
+# Test + dev-only paths
+tests
+docs
+benchmarks
+scripts
+dev.sh
+
+# Local env / generated files
+.env
+.env.local
+.env.*.local
+coverage.xml
+.coverage
+htmlcov
+
+# Large binary artifacts that should never ship in an image
+*.log
+alfred_trace.jsonl
