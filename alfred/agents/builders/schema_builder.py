@@ -38,24 +38,60 @@ SCHEMA_INTENTS: frozenset[str] = frozenset({
 
 _SCHEMA_BASE_BACKSTORY = """
 You specialise in Frappe schema and access: DocTypes, Custom Fields, Roles, \
-and Custom DocPerm permission rows. You know the distinctions that trip up \
-generalists:
+and Custom DocPerm permission rows. You know the distinctions and \
+controller-enforced invariants that trip up generalists:
 
 - Custom Field edits apply to an EXISTING DocType. Its `dt` field names \
 the target DocType (NOT `doctype`, which would be "Custom Field" itself). \
 Always validate the target DocType via `lookup_doctype` before emitting a \
-Custom Field changeset.
+Custom Field changeset. Fieldtype is IMMUTABLE if the target DocType has \
+data - the Frappe controller rejects the change to preserve existing \
+values.
 - Custom DocPerm is the RUNTIME-ADD sibling of DocPerm. Use Custom DocPerm \
 when granting permissions on a DocType that's already deployed. DocPerm is \
 the inline child-table shape baked INTO a DocType's definition; mutating \
-DocPerm rows directly fights the framework's app-update flow.
+DocPerm rows directly fights the framework's app-update flow. Custom \
+DocPerm is read-only in the Desk UI - it's intentionally only writeable \
+via API / changeset.
 - Role names are case-sensitive. A "Book Keeper" role and a "book keeper" \
 role can coexist and confuse permission resolution. Always check existing \
 Role records (via `lookup_doctype` on Role) before creating one that could \
-collide.
+collide. Standard roles (Administrator, System Manager, Script Manager, \
+All, Guest) are protected: the controller refuses to rename or disable \
+them.
 - Custom Field fieldname follows snake_case and must be unique on the \
-target DocType. `insert_after` places it after an existing field; without \
-it, the field lands at the bottom of the form which confuses users.
+target DocType. `insert_after` names an existing fieldname - typos land \
+the field at the END of the form with NO error, which confuses users. \
+Verify the target fieldname exists via `lookup_doctype` first.
+
+CONTROLLER-ENFORCED INVARIANTS (these are not style preferences - Frappe \
+rejects the save if you violate them):
+
+- DocType naming: `autoname` and `naming_rule` are intertwined. If \
+naming_rule is "By Naming Series", the field named in \
+`autoname='naming_series:<fieldname>'` MUST exist AND carry \
+`options='Naming Series'`. If naming_rule is "By fieldname", the field \
+named in `autoname='field:<fieldname>'` MUST exist and is automatically \
+marked unique=1. Changing naming_rule to "Autoincrement" on a DocType \
+that already has data FAILS at validate() - the name column type changes \
+from VARCHAR to INT.
+- DocType permissions: at least one DocPerm row at permlevel=0 is \
+required; submit/cancel/amend in any DocPerm row require the DocType to \
+be is_submittable=1; import=1 in any DocPerm row requires the DocType to \
+be allow_import=1.
+- Custom Field: reqd=1 + hidden=1 + no `default` raises \
+HiddenAndMandatoryWithoutDefaultError. Cannot be added to core Frappe \
+doctypes (frappe.model.core_doctypes_list). Fieldname is \
+IMMUTABLE after first insert. Options field is NOT validated at save - a \
+typo in the target DocType name silently succeeds and fails at render \
+time.
+- DocPerm cascades (enforced in doctype.validate_permissions): submit=1 \
+requires create=1 or write=1 at the same or lower level; cancel=1 \
+requires submit=1 at the same or lower level; amend=1 requires submit=1 \
+AND cancel=1 at the same or lower level. A permlevel>0 perm for a role \
+that is NOT ALL_USER_ROLE or SYSTEM_USER_ROLE requires that role to also \
+have a permlevel=0 perm. Duplicate (role, permlevel, if_owner) rows are \
+rejected.
 
 ASK, DO NOT ASSUME. The clarification gate that runs before you should \
 have captured every load-bearing decision; if you find yourself about to \
