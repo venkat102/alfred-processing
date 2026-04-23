@@ -17,6 +17,7 @@ def test_reports_intents_cover_the_family():
 		"create_dashboard",
 		"create_dashboard_chart",
 		"create_number_card",
+		"create_auto_email_report",
 	})
 
 
@@ -91,6 +92,37 @@ def test_build_reports_agent_rejects_unknown_intent():
 		build_reports_agent(
 			intent="create_workflow", site_config={}, custom_tools=None,
 		)
+
+
+def test_build_reports_agent_auto_email_report_intent():
+	agent = build_reports_agent(
+		intent="create_auto_email_report", site_config={}, custom_tools=None,
+	)
+	assert "Auto Email Report" in agent.role
+	# Silent-suppression gotcha must be in the backstory
+	assert "send_if_data" in agent.backstory.lower() or "silently suppresses" in agent.backstory.lower()
+
+
+def test_render_checklist_auto_email_report_lists_every_field():
+	schema = IntentRegistry.load().get("create_auto_email_report")
+	text = render_registry_checklist(schema, intent="create_auto_email_report")
+	for key in ("report", "email_to", "frequency", "format", "send_if_data"):
+		assert key in text
+
+
+def test_dashboard_chart_has_y_axis_for_report_type():
+	# Regression: y_axis is required for chart_type='Report' !use_report_chart.
+	# Prior registry treated this as a single field (value_based_on).
+	schema = IntentRegistry.load().get("create_dashboard_chart")
+	field_keys = {f["key"] for f in schema["fields"]}
+	assert "y_axis" in field_keys
+
+
+def test_number_card_has_filters_config_for_custom_type():
+	# Regression: filters_config is required for type='Custom'.
+	schema = IntentRegistry.load().get("create_number_card")
+	field_keys = {f["key"] for f in schema["fields"]}
+	assert "filters_config" in field_keys
 
 
 # ── enhance_generate_changeset_description ───────────────────
