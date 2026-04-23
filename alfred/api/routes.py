@@ -3,6 +3,13 @@
 All endpoints except /health require API key authentication.
 Site isolation: site_id is extracted from JWT on WebSocket connections.
 For REST endpoints, site_id comes from the request body (validated via API key).
+
+URL versioning (TD-M9):
+  - /health              unversioned — probe/liveness endpoint, standard practice
+  - /api/v1/<resource>   versioned — every functional endpoint
+  New endpoints MUST use the /api/v1/ prefix. When breaking changes are
+  needed, add /api/v2/* routes and keep /api/v1/* live for a
+  deprecation window (Sunset + Deprecation headers on v1).
 """
 
 import uuid
@@ -44,7 +51,7 @@ async def health_check(request: Request):
 		try:
 			await request.app.state.redis.ping()
 			redis_status = "connected"
-		except Exception:
+		except Exception:  # noqa: BLE001
 			redis_status = "error"
 
 	return {"status": "ok", "version": __version__, "redis": redis_status}
@@ -76,7 +83,8 @@ async def create_task(
 
 	# Rate limit uses SERVER-SIDE default - never trust client-supplied limits
 	allowed, remaining, retry_after = await check_rate_limit(
-		request.app.state.redis, site_id, user, SERVER_DEFAULT_RATE_LIMIT
+		request.app.state.redis, site_id, user,
+		SERVER_DEFAULT_RATE_LIMIT, source="rest",
 	)
 	if not allowed:
 		raise HTTPException(

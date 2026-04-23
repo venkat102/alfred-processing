@@ -20,6 +20,7 @@ async def check_rate_limit(
 	site_id: str,
 	user: str,
 	max_per_hour: int = DEFAULT_MAX_TASKS_PER_HOUR,
+	source: str = "unknown",
 ) -> tuple[bool, int, int]:
 	"""Check if a user has exceeded their rate limit.
 
@@ -30,6 +31,8 @@ async def check_rate_limit(
 		site_id: Customer site identifier.
 		user: User email.
 		max_per_hour: Maximum tasks per user per hour. 0 means unlimited.
+		source: "rest" or "websocket" — tagged onto the Prometheus block
+			counter so operators can see which entry path is being abused.
 
 	Returns:
 		Tuple of (allowed: bool, remaining: int, retry_after_seconds: int).
@@ -70,7 +73,14 @@ async def check_rate_limit(
 
 		# Remove the entry we just added since the request is denied
 		await redis.zrem(key, f"{now}")
-		logger.warning("Rate limit exceeded for %s@%s (%d/%d)", user, site_id, current_count, max_per_hour)
+		logger.warning("Rate limit exceeded for %s@%s (%d/%d) source=%s", user, site_id, current_count, max_per_hour, source)
+		# Metric increment is best-effort; a broken metrics import must
+		# not block the rate-limit response from reaching the user.
+		try:
+			from alfred.obs.metrics import rate_limit_block_total
+			rate_limit_block_total.labels(source=source).inc()
+		except Exception:  # noqa: BLE001
+			pass
 		return False, 0, retry_after
 
 	return True, remaining, 0
