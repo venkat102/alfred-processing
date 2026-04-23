@@ -1,0 +1,43 @@
+# Pre-commit hooks — TD-L1.
+#
+# Install once per clone: `pre-commit install`
+# Run manually:           `pre-commit run --all-files`
+# CI also runs:           `pre-commit run --all-files` (second opinion
+#                         in case someone commits without the hook).
+#
+# Hook order: cheap checks first so a failure short-circuits before
+# ruff takes the time to scan.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: |
+          (?x)(
+              ^alfred/registry/.*\.json$|
+              ^tests/.*\.snap$
+          )
+      - id: end-of-file-fixer
+        exclude: |
+          (?x)(
+              ^alfred/registry/.*\.json$|
+              ^tests/.*\.snap$
+          )
+      - id: check-yaml
+        args: [--unsafe]   # GitHub Actions workflows use YAML tags
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.1
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format

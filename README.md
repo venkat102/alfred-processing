@@ -167,8 +167,17 @@ docker compose up -d
 # Full suite minus the state store (needs live Redis)
 .venv/bin/python -m pytest tests/ --ignore=tests/test_state_store.py -q
 
+# Run with coverage report (terminal + XML for Codecov integration)
+.venv/bin/python -m pytest --cov=alfred --cov-report=term-missing:skip-covered --cov-report=xml
+
 # Standalone LLM connectivity check
 .venv/bin/python test_llm.py
+
+# Verify .env.example is in sync with Settings (TD-M10 guard)
+.venv/bin/python scripts/check_env_example.py
+
+# Install pre-commit hooks (ruff, whitespace, YAML/TOML lint)
+.venv/bin/pre-commit install
 ```
 
 ## Feature Flags (environment variables)
