@@ -90,7 +90,7 @@ class TestAuth:
 	async def test_missing_auth_returns_401(self, client):
 		resp = await client.post("/api/v1/tasks", json={"prompt": "test"})
 		assert resp.status_code == 401
-		assert resp.json()["detail"]["code"] == "AUTH_MISSING"
+		assert resp.json()["code"] == "AUTH_MISSING"
 
 	async def test_invalid_key_returns_401(self, client):
 		resp = await client.post(
@@ -99,7 +99,7 @@ class TestAuth:
 			headers={"Authorization": "Bearer wrong-key"},
 		)
 		assert resp.status_code == 401
-		assert resp.json()["detail"]["code"] == "AUTH_INVALID"
+		assert resp.json()["code"] == "AUTH_INVALID"
 
 	@pytest.mark.parametrize("bad_key", [
 		"x",                         # one byte (length mismatch -> compare_digest rejects)
@@ -121,7 +121,7 @@ class TestAuth:
 			headers={"Authorization": f"Bearer {bad_key}"},
 		)
 		assert resp.status_code == 401
-		assert resp.json()["detail"]["code"] == "AUTH_INVALID"
+		assert resp.json()["code"] == "AUTH_INVALID"
 
 	async def test_valid_key_passes(self, client, app):
 		resp = await client.post(
