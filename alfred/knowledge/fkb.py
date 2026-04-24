@@ -152,7 +152,9 @@ def _load_entries() -> dict[str, Any]:
 			continue
 		try:
 			parsed = yaml.safe_load(path.read_text()) or {}
-		except Exception as e:  # noqa: BLE001
+		except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
+			# YAMLError on malformed syntax; OSError on disk read failure
+			# (permissions, transient I/O); UnicodeDecodeError on non-UTF8.
 			logger.error("FKB: failed to parse %s: %s", filename, e)
 			continue
 		if not isinstance(parsed, dict):
@@ -287,7 +289,7 @@ def _get_model():
 	try:
 		_model = SentenceTransformer(_EMBEDDING_MODEL_NAME)
 		logger.info("FKB: loaded embedding model %s", _EMBEDDING_MODEL_NAME)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — SentenceTransformer load traverses torch/transformers; anything can raise (download failure, CUDA init, MemoryError, HF auth). Fail-open to keyword-only.
 		logger.error("FKB: failed to load model: %s", e)
 		_model_load_failed = True
 		return None
@@ -353,7 +355,7 @@ def _ensure_embeddings():
 		_embeddings_stale = False
 		logger.info("FKB: computed %d entry embeddings (%s)", len(ids), _embeddings.shape)
 		return True
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — model.encode goes through torch/transformers; any raise (CUDA, MemoryError, numpy coerce) downgrades us to keyword-only, never blocks the pipeline.
 		logger.error("FKB: embedding generation failed: %s", e)
 		_embeddings = None
 		_embedding_ids = []
@@ -393,7 +395,7 @@ def search_semantic(
 	try:
 		qvec = model.encode([query], normalize_embeddings=True, show_progress_bar=False)
 		qvec = np.asarray(qvec, dtype=np.float32)[0]
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — model.encode is torch-backed; same rationale as compute path above.
 		logger.warning("FKB: failed to embed query: %s", e)
 		return []
 

@@ -167,8 +167,9 @@ class StateStore:
 
 		try:
 			entries = await self._redis.xrange(key, min=f"({since_id}" if since_id != "0" else "-", max="+")
-		except Exception:  # noqa: BLE001
-			# If since_id is invalid or stream doesn't exist, return from beginning
+		except aioredis.ResponseError:
+			# Invalid since_id (malformed stream ID) - retry without it.
+			# Other RedisError types (connection failures etc.) propagate.
 			logger.warning("Failed to read from %s since %s, reading from start", key, since_id)
 			entries = await self._redis.xrange(key, min="-", max="+")
 
@@ -216,6 +217,8 @@ class StateStore:
 		"""Check if Redis is reachable by sending a PING command."""
 		try:
 			return await self._redis.ping()
-		except Exception as e:  # noqa: BLE001
+		except (aioredis.RedisError, OSError) as e:
+			# RedisError covers connection/auth/timeout from the redis client.
+			# OSError covers underlying socket failures that escape the wrapper.
 			logger.error("Redis health check failed: %s", e)
 			return False

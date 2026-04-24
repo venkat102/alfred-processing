@@ -175,7 +175,7 @@ class Tracer:
 		for fn in self._exporters:
 			try:
 				fn(data)
-			except Exception as e:  # noqa: BLE001
+			except Exception as e:  # noqa: BLE001 — exporter is user-supplied callable; any raise must be swallowed or the tracer breaks the pipeline
 				logger.warning("Tracer exporter failed: %s", e)
 
 

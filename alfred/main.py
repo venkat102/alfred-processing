@@ -69,7 +69,12 @@ async def lifespan(app: FastAPI):
 		await redis_client.ping()
 		app.state.redis = redis_client
 		logger.info("Redis connected at %s", settings.REDIS_URL)
-	except Exception as e:  # noqa: BLE001
+	except (aioredis.RedisError, OSError, ValueError) as e:
+		# RedisError covers connect/auth/timeout from the Redis client.
+		# OSError covers the underlying socket failure that escapes the
+		# wrapper on some kernels. ValueError covers a malformed
+		# REDIS_URL. App boots in Redis-less degraded mode (rate limit,
+		# task state, conversation memory all silently skip).
 		logger.warning("Redis unavailable at %s: %s", settings.REDIS_URL, e)
 		app.state.redis = None
 

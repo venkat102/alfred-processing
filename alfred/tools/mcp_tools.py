@@ -88,7 +88,10 @@ def _args_key(arguments: dict) -> str:
 	"""Stable serialization of arguments for cache/dedup keys."""
 	try:
 		return json.dumps(arguments, sort_keys=True, default=str)
-	except Exception:  # noqa: BLE001
+	except (TypeError, ValueError):
+		# json.dumps can raise TypeError on a non-serialisable type the
+		# default=str fallback can't stringify, or ValueError on a
+		# circular reference. repr() is always a string.
 		return repr(arguments)
 
 

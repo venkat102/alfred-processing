@@ -148,7 +148,7 @@ def _record_block(reason: str) -> None:
 	try:
 		from alfred.obs.metrics import ssrf_block_total
 		ssrf_block_total.labels(reason=reason).inc()
-	except Exception:  # noqa: BLE001
+	except Exception:  # noqa: BLE001 — metrics best-effort; a broken metrics import must not prevent the block from being enforced
 		pass
 
 

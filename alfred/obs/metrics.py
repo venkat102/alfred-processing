@@ -127,5 +127,8 @@ def reset_for_tests() -> None:
 	):
 		try:
 			m._metrics.clear()  # type: ignore[attr-defined]
-		except Exception:  # noqa: BLE001
+		except AttributeError:
+			# prometheus_client renamed/removed the private _metrics dict
+			# in this version. Test reset is best-effort; let metrics
+			# accumulate across tests rather than crash the suite.
 			pass

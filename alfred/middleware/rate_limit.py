@@ -79,7 +79,7 @@ async def check_rate_limit(
 		try:
 			from alfred.obs.metrics import rate_limit_block_total
 			rate_limit_block_total.labels(source=source).inc()
-		except Exception:  # noqa: BLE001
+		except Exception:  # noqa: BLE001 — metrics best-effort; must not block the rate-limit response from reaching the user
 			pass
 		return False, 0, retry_after
 
