@@ -55,7 +55,7 @@ class TestHandleInsights:
 					conversation_id="conv-1",
 					user_context={"user": "tester", "roles": []},
 				)
-			)
+			).reply
 
 		assert "You have 12 DocTypes" in reply
 		# Budget must have been set to the tight insights cap
@@ -106,7 +106,7 @@ class TestHandleInsights:
 					conversation_id="conv-1",
 					user_context={"user": "tester"},
 				)
-			)
+			).reply
 		assert reply == "reply from llm"
 
 	def test_run_failure_returns_fallback(self):
@@ -126,7 +126,7 @@ class TestHandleInsights:
 					conversation_id="conv-1",
 					user_context={"user": "tester"},
 				)
-			)
+			).reply
 		assert reply is not None
 		assert "try again" in reply.lower() or "error" in reply.lower()
 
@@ -147,7 +147,7 @@ class TestHandleInsights:
 					conversation_id="conv-1",
 					user_context={"user": "tester"},
 				)
-			)
+			).reply
 		assert "rephrase" in reply.lower() or "didn't get" in reply.lower()
 
 	def test_non_completed_status_returns_fallback(self):
@@ -167,7 +167,7 @@ class TestHandleInsights:
 					conversation_id="conv-1",
 					user_context={"user": "tester"},
 				)
-			)
+			).reply
 		assert "couldn't" in reply.lower() or "couldn" in reply.lower()
 		assert "crew state bad" in reply
 
@@ -191,7 +191,7 @@ class TestHandleInsights:
 					conversation_id="conv-1",
 					user_context={"user": "tester"},
 				)
-			)
+			).reply
 		assert reply == "You have 3 workflows."
 
 	def test_build_crew_failure_returns_fallback(self):
@@ -207,7 +207,7 @@ class TestHandleInsights:
 					conversation_id="conv-1",
 					user_context={"user": "tester"},
 				)
-			)
+			).reply
 		assert "Insights agent" in reply
 		assert "try again" in reply.lower() or "rephrase" in reply.lower()
 

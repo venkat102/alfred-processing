@@ -542,9 +542,14 @@ def build_insights_crew(
 		verbose=True,
 	)
 
-	description = INSIGHTS_TASK_DESCRIPTION.format(
-		prompt=user_prompt,
-		user_context=json.dumps(user_context, indent=2),
+	# The template contains literal JSON examples like ``{"disabled": 0}``
+	# inside the tool-selection guide. ``str.format`` would trip on those
+	# as unknown format keys, so we splice the two real placeholders in
+	# by hand instead of doubling every literal brace in the template.
+	description = (
+		INSIGHTS_TASK_DESCRIPTION
+		.replace("{prompt}", user_prompt)
+		.replace("{user_context}", json.dumps(user_context, indent=2))
 	)
 
 	task = Task(
