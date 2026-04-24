@@ -945,10 +945,23 @@ def _get_specialist_developer_agent(
 	None means "use the generic Developer agent built by build_agents()".
 	Returned Agent slots into agents['developer'] unchanged; the rest of
 	the crew (Tester, Deployer) treats it identically.
+
+	Logs each fallback path so operators can tell apart:
+	  - flag-off (no log; expected)
+	  - classifier punt (intent None / "unknown"): INFO
+	  - intent recognised but no builder registered: WARNING (implies
+	    a drift between the classifier's vocabulary and the builder
+	    catalog - someone added a new intent without adding a builder,
+	    or renamed a builder family without updating the classifier)
 	"""
 	if not _per_intent_builders_enabled():
 		return None
 	if not intent or intent == "unknown":
+		logger.info(
+			"No specialist dispatched: intent=%r - falling back to generic Developer. "
+			"Classifier couldn't match the prompt to a known intent.",
+			intent,
+		)
 		return None
 
 	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS, build_schema_agent
@@ -1006,6 +1019,17 @@ def _get_specialist_developer_agent(
 		)
 		return agent
 
+	# Intent was classified to a non-empty value but no family claims it.
+	# This is the "classifier / builder drift" signal - raise it to WARNING
+	# so it shows up in operator dashboards. The prompt still completes
+	# (generic Developer picks it up) but the specialist stack missed.
+	logger.warning(
+		"No builder registered for intent=%r - falling back to generic Developer. "
+		"Known families: schema=%s, reports=%s, automation=%s, presentation=%s.",
+		intent,
+		sorted(SCHEMA_INTENTS), sorted(REPORTS_INTENTS),
+		sorted(AUTOMATION_INTENTS), sorted(PRESENTATION_INTENTS),
+	)
 	return None
 
 
