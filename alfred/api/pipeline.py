@@ -1164,7 +1164,7 @@ class AgentPipeline:
 		# can resolve references like "that workflow I asked about".
 		if ctx.conversation_memory is not None:
 			try:
-				ctx.conversation_memory.add_insights_query(ctx.prompt, reply)
+				ctx.conversation_memory.add_insights_query(ctx.prompt, result.reply)
 			except (AttributeError, TypeError, KeyError) as e:
 				# Memory mutation failure: AttributeError on unexpected
 				# memory shape, TypeError on bad argument types, KeyError
