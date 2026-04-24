@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from alfred.middleware.auth import verify_jwt_token
+from alfred.obs.tasks import spawn_logged
 
 if TYPE_CHECKING:
 	from alfred.agents.crew import CrewState
@@ -866,7 +867,7 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 			finally:
 				conn.active_pipeline = None
 
-		conn.active_pipeline = asyncio.create_task(_run_and_clear())
+		conn.active_pipeline = spawn_logged(_run_and_clear(), name="pipeline-run")
 		return
 
 	logger.info("Custom message from %s@%s: type=%s", conn.user, conn.site_id, msg_type)
@@ -1446,7 +1447,10 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 	})
 
 	heartbeat_interval = websocket.app.state.settings.WS_HEARTBEAT_INTERVAL
-	heartbeat_task = asyncio.create_task(_heartbeat_loop(websocket, heartbeat_interval))
+	heartbeat_task = spawn_logged(
+		_heartbeat_loop(websocket, heartbeat_interval),
+		name="heartbeat-loop",
+	)
 
 	try:
 		while True:
