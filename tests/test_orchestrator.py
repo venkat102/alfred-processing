@@ -208,6 +208,23 @@ class TestParseClassifierOutput:
 		assert reason == ""
 		assert conf == "medium"
 
+	def test_garbage_logs_warning_not_silent(self, caplog):
+		"""The (None, "", "low") fallback must log so prompt regressions are visible.
+
+		Regression guard for commit c124f9b: before it, the except blocks
+		at orchestrator.py:293 + :299 silently returned without logging,
+		and classifier drift could land as "low confidence" routing for
+		weeks before anyone noticed.
+		"""
+		import logging
+		with caplog.at_level(logging.WARNING, logger="alfred.orchestrator"):
+			_parse_classifier_output("this is not json at all")
+		matching = [
+			r for r in caplog.records
+			if "mode classifier JSON parse failed" in r.getMessage()
+		]
+		assert matching, "expected a WARNING log on JSON parse failure"
+
 
 class TestClassifyMode:
 	def test_manual_override_bypasses_llm(self):
