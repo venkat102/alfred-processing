@@ -11,7 +11,10 @@ from httpx import ASGITransport, AsyncClient
 from alfred.main import create_app
 from alfred.middleware.auth import create_jwt_token, verify_jwt_token
 
-API_KEY = "test-secret-key-12345"
+# 48-char random hex - above the 32-byte floor that alfred.config enforces
+# on API_SECRET_KEY. Using a weaker test key here would trip the validator
+# at Settings() construction and defeat the point of the validator.
+API_KEY = "test-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4"
 SITE_ID = "test.frappe.cloud"
 USER = "admin@test.com"
 ROLES = ["System Manager", "Administrator"]

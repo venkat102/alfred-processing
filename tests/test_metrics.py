@@ -35,7 +35,8 @@ from alfred.obs.metrics import (
 @pytest.fixture
 def app():
 	import os
-	os.environ["API_SECRET_KEY"] = "test-secret"
+	# 48-char test key - above the 32-byte floor enforced by alfred.config.
+	os.environ["API_SECRET_KEY"] = "test-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4"
 	return create_app()
 
 
