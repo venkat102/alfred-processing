@@ -22,7 +22,6 @@ pipeline.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import logging
@@ -32,9 +31,10 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger("alfred.tracer")
 

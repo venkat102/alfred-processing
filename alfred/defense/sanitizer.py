@@ -17,7 +17,6 @@ rejected greetings like "hi" and any prompt that didn't match a narrow
 keyword set. Fixed 2026-04-15.
 """
 
-import json
 import logging
 import re
 

@@ -821,7 +821,6 @@ async def run_crew(
 
 		def _ws_input(prompt_text=""):
 			"""Replacement for builtins.input() that routes through WebSocket."""
-			import concurrent.futures
 			loop = asyncio.new_event_loop()
 			try:
 				return loop.run_until_complete(human_input_handler(prompt_text))
@@ -964,12 +963,13 @@ def _get_specialist_developer_agent(
 		)
 		return None
 
-	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS, build_schema_agent
-	from alfred.agents.builders.reports_builder import REPORTS_INTENTS, build_reports_agent
 	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS, build_automation_agent
 	from alfred.agents.builders.presentation_builder import (
-		PRESENTATION_INTENTS, build_presentation_agent,
+		PRESENTATION_INTENTS,
+		build_presentation_agent,
 	)
+	from alfred.agents.builders.reports_builder import REPORTS_INTENTS, build_reports_agent
+	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS, build_schema_agent
 
 	if intent in SCHEMA_INTENTS:
 		agent = build_schema_agent(
@@ -1053,14 +1053,6 @@ def _enhance_task_description(
 	if not intent or intent == "unknown":
 		return base_description
 
-	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS
-	from alfred.agents.builders.schema_builder import (
-		enhance_generate_changeset_description as enhance_schema,
-	)
-	from alfred.agents.builders.reports_builder import REPORTS_INTENTS
-	from alfred.agents.builders.reports_builder import (
-		enhance_generate_changeset_description as enhance_reports,
-	)
 	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS
 	from alfred.agents.builders.automation_builder import (
 		enhance_generate_changeset_description as enhance_automation,
@@ -1068,6 +1060,14 @@ def _enhance_task_description(
 	from alfred.agents.builders.presentation_builder import PRESENTATION_INTENTS
 	from alfred.agents.builders.presentation_builder import (
 		enhance_generate_changeset_description as enhance_presentation,
+	)
+	from alfred.agents.builders.reports_builder import REPORTS_INTENTS
+	from alfred.agents.builders.reports_builder import (
+		enhance_generate_changeset_description as enhance_reports,
+	)
+	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS
+	from alfred.agents.builders.schema_builder import (
+		enhance_generate_changeset_description as enhance_schema,
 	)
 
 	if intent in SCHEMA_INTENTS:

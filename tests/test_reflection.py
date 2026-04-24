@@ -16,7 +16,6 @@ Covers:
 
 import asyncio
 import os
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from alfred.agents.reflection import (

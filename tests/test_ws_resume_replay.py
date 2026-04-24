@@ -13,7 +13,6 @@ in-memory fake store so they run everywhere (no Redis required).
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

@@ -281,11 +281,11 @@ class TestCrewRecoveryCounters:
 
 class TestLlmErrorCounter:
 	def test_http_error_increments_counter(self):
+		import io
 		import urllib.error
+		from unittest.mock import patch
 
 		from alfred.llm_client import ollama_chat_sync
-		import io
-		from unittest.mock import patch
 
 		err = urllib.error.HTTPError(
 			"http://x/api/chat", 500, "Server Error", {}, io.BytesIO(b"boom"),
@@ -305,8 +305,9 @@ class TestLlmErrorCounter:
 		assert any(s.value == 1.0 for s in samples)
 
 	def test_timeout_error_increments_counter(self):
-		from alfred.llm_client import ollama_chat_sync
 		from unittest.mock import patch
+
+		from alfred.llm_client import ollama_chat_sync
 
 		with patch(
 			"alfred.llm_client.urllib.request.urlopen",

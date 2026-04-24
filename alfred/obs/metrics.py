@@ -29,8 +29,8 @@ the tracer doesn't natively expose.
 
 from __future__ import annotations
 
-from prometheus_client import CollectorRegistry, Counter, Histogram
 from prometheus_client import REGISTRY as DEFAULT_REGISTRY
+from prometheus_client import CollectorRegistry, Counter, Histogram
 
 # Using the default registry so make_asgi_app() finds everything without
 # explicit threading. If tests need isolation they can reset via the

@@ -11,7 +11,6 @@ import json
 import logging
 import uuid
 from concurrent.futures import TimeoutError as concurrent_futures_TimeoutError
-from typing import Any
 
 logger = logging.getLogger("alfred.mcp_client")
 
@@ -131,7 +130,7 @@ class MCPClient:
 
 			result = await asyncio.wait_for(future, timeout=self._timeout)
 			return result
-		except asyncio.TimeoutError:
+		except TimeoutError:
 			logger.warning("MCP timeout: tool=%s, id=%s (after %ds)", tool_name, request_id, self._timeout)
 			raise TimeoutError(f"MCP tool '{tool_name}' timed out after {self._timeout}s")
 		except Exception as e:
@@ -211,7 +210,7 @@ class MCPClient:
 			await self._send(request)
 			result = await asyncio.wait_for(future, timeout=self._timeout)
 			return result.get("tools", [])
-		except asyncio.TimeoutError:
+		except TimeoutError:
 			raise TimeoutError("MCP tools/list timed out")
 		finally:
 			self._pending.pop(request_id, None)

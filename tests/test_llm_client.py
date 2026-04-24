@@ -18,7 +18,6 @@ from unittest.mock import patch
 
 import pytest
 
-from alfred import llm_client
 from alfred.llm_client import (
 	OllamaError,
 	_resolve_ollama_config,

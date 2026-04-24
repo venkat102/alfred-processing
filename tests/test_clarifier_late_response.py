@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from alfred.api.websocket import ConnectionState, _EXPIRED_Q_TTL_SECONDS
+from alfred.api.websocket import _EXPIRED_Q_TTL_SECONDS, ConnectionState
 
 
 def _make_conn() -> ConnectionState:

@@ -14,11 +14,7 @@ Covers:
 """
 
 import asyncio
-import io
 import json
-import os
-import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -29,6 +25,8 @@ from alfred.obs.tracer import (
 	configure_from_env,
 	jsonl_file_exporter,
 	stdout_exporter,
+)
+from alfred.obs.tracer import (
 	tracer as global_tracer,
 )
 

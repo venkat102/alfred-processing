@@ -32,20 +32,20 @@ import asyncio
 import json
 import logging
 import os as _os_for_flag
+import re as _re
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
-
-import re as _re
+from typing import TYPE_CHECKING, Any
 
 from alfred.obs import tracer
 
 if TYPE_CHECKING:
-	from alfred.api.websocket import ConnectionState
 	from alfred.agents.crew import CrewState
-	from alfred.state.store import StateStore
+	from alfred.api.websocket import ConnectionState
 	from alfred.state.conversation_memory import ConversationMemory
+	from alfred.state.store import StateStore
 
 logger = logging.getLogger("alfred.pipeline")
 
@@ -458,7 +458,7 @@ class PipelineContext:
 	populated by the phases in execution order.
 	"""
 
-	conn: "ConnectionState"
+	conn: ConnectionState
 	conversation_id: str
 	prompt: str
 
@@ -514,8 +514,8 @@ class PipelineContext:
 	report_candidate: dict | None = None
 
 	# Services
-	store: "StateStore | None" = None
-	conversation_memory: "ConversationMemory | None" = None
+	store: StateStore | None = None
+	conversation_memory: ConversationMemory | None = None
 
 	# Phase outputs (populated as the pipeline runs)
 	user_context: dict = field(default_factory=dict)
@@ -538,7 +538,7 @@ class PipelineContext:
 	pipeline_mode_source: str = "site_config"
 	custom_tools: dict | None = None
 	crew: Any = None
-	crew_state: "CrewState | None" = None
+	crew_state: CrewState | None = None
 	crew_result: dict | None = None
 	result_text: str = ""
 	changes: list[dict] = field(default_factory=list)
@@ -632,7 +632,7 @@ class AgentPipeline:
 						pipeline_phase_duration_seconds.labels(phase=name).observe(
 							_time.perf_counter() - phase_started
 						)
-		except asyncio.TimeoutError:
+		except TimeoutError:
 			logger.error(
 				"Pipeline timeout for conversation=%s", self.ctx.conversation_id
 			)
@@ -746,8 +746,8 @@ class AgentPipeline:
 
 	async def _phase_load_state(self) -> None:
 		"""Load redis store + per-conversation memory, capture user context."""
-		from alfred.state.store import StateStore
 		from alfred.state.conversation_memory import load_conversation_memory
+		from alfred.state.store import StateStore
 
 		ctx = self.ctx
 		redis = getattr(ctx.conn.websocket.app.state, "redis", None)
@@ -784,7 +784,9 @@ class AgentPipeline:
 		site_config = ctx.conn.site_config or {}
 
 		from alfred.llm_client import (
-			TIER_AGENT, TIER_REASONING, TIER_TRIAGE,
+			TIER_AGENT,
+			TIER_REASONING,
+			TIER_TRIAGE,
 			_resolve_ollama_config_for_tier,
 		)
 
@@ -1148,7 +1150,7 @@ class AgentPipeline:
 		# can resolve references like "that workflow I asked about".
 		if ctx.conversation_memory is not None:
 			try:
-				ctx.conversation_memory.add_insights_query(ctx.prompt, reply)
+				ctx.conversation_memory.add_insights_query(ctx.prompt, result.reply)
 			except Exception as e:
 				logger.warning("insights memory record failed: %s", e)
 
@@ -1937,12 +1939,12 @@ class AgentPipeline:
 		if self.ctx.mode != "dev":
 			return
 
+		from alfred.agents.reflection import reflect_minimality
 		from alfred.api.websocket import (
+			_dry_run_with_retry,
 			_extract_changes,
 			_rescue_regenerate_changeset,
-			_dry_run_with_retry,
 		)
-		from alfred.agents.reflection import reflect_minimality
 
 		ctx = self.ctx
 		result = ctx.crew_result or {}

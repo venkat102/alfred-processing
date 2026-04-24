@@ -13,9 +13,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from alfred.handlers.insights import _INSIGHTS_TOOL_BUDGET, handle_insights
 

@@ -8,7 +8,6 @@ from alfred.agents.builders.schema_builder import (
 )
 from alfred.registry.loader import IntentRegistry
 
-
 # ── Intent set ────────────────────────────────────────────────
 
 def test_schema_intents_cover_the_family():
@@ -220,7 +219,11 @@ def test_old_doctype_builder_api_still_works():
 	# tests) don't break during the rename.
 	from alfred.agents.builders.doctype_builder import (
 		build_doctype_builder_agent,
+	)
+	from alfred.agents.builders.doctype_builder import (
 		enhance_generate_changeset_description as legacy_enhance,
+	)
+	from alfred.agents.builders.doctype_builder import (
 		render_registry_checklist as legacy_render,
 	)
 	agent = build_doctype_builder_agent(site_config={}, custom_tools=None)

@@ -12,15 +12,14 @@ Covers:
 """
 
 import asyncio
-import pytest
 
 from alfred.state.conversation_memory import (
-	ConversationMemory,
-	load_conversation_memory,
-	save_conversation_memory,
 	_MAX_CLARIFICATIONS,
 	_MAX_ITEMS,
 	_MAX_PROMPTS,
+	ConversationMemory,
+	load_conversation_memory,
+	save_conversation_memory,
 )
 
 
@@ -55,7 +54,7 @@ class TestAddPrompt:
 		assert len(m.recent_prompts) == _MAX_PROMPTS
 		# Most recent kept, oldest dropped
 		assert m.recent_prompts[-1] == f"prompt {_MAX_PROMPTS + 4}"
-		assert m.recent_prompts[0] == f"prompt 5"
+		assert m.recent_prompts[0] == "prompt 5"
 
 	def test_empty_prompt_is_skipped(self):
 		m = ConversationMemory(conversation_id="c1")

@@ -123,7 +123,7 @@ def build_plan_crew(
 	user_context: dict | None = None,
 	site_config: dict | None = None,
 	custom_tools: dict | None = None,
-) -> tuple[Crew, "CrewState"]:
+) -> tuple[Crew, CrewState]:
 	"""Build the 3-agent Plan crew.
 
 	Returns (crew, state) in the same shape as `build_alfred_crew` so the
@@ -139,7 +139,7 @@ def build_plan_crew(
 			roles.
 	"""
 	# Local imports to avoid a circular module graph with crew.py.
-	from alfred.agents.crew import CrewState, TASK_DESCRIPTIONS
+	from alfred.agents.crew import TASK_DESCRIPTIONS, CrewState
 	from alfred.agents.definitions import build_agents
 
 	user_context = user_context or {}

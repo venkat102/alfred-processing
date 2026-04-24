@@ -14,14 +14,13 @@ Covers:
 
 import asyncio
 from contextlib import ExitStack
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from alfred.api.pipeline import (
 	AgentPipeline,
 	PipelineContext,
-	StopSignal,
 	_detect_drift,
 )
 
@@ -282,8 +281,8 @@ class TestWarmupPhase:
 		model runner crashed - must also trip OLLAMA_UNHEALTHY."""
 		ctx = self._ctx_with_models()
 		pipeline = AgentPipeline(ctx)
-		import urllib.error
 		import io
+		import urllib.error
 		def _raise_500(*args, **kwargs):
 			raise urllib.error.HTTPError(
 				"http://fake-ollama:11434/api/generate", 500, "Server Error",
@@ -348,7 +347,7 @@ class TestErrorBoundaries:
 		pipeline = AgentPipeline(ctx)
 
 		async def raise_timeout():
-			raise asyncio.TimeoutError()
+			raise TimeoutError()
 
 		with patch.object(pipeline, "_phase_sanitize", side_effect=raise_timeout):
 			_run(pipeline.run())

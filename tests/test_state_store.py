@@ -5,7 +5,6 @@ or falls back to default port 6379.
 """
 
 import asyncio
-import json
 
 import pytest
 import redis.asyncio as aioredis

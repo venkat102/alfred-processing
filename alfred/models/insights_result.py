@@ -11,7 +11,7 @@ Spec: docs/specs/2026-04-22-insights-to-report-handoff.md.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -29,9 +29,9 @@ class ReportCandidate(BaseModel):
 	columns: list[dict[str, Any]] = Field(default_factory=list)
 	filters: list[dict[str, Any]] = Field(default_factory=list)
 	sort: list[dict[str, Any]] = Field(default_factory=list)
-	limit: Optional[int] = None
-	time_range: Optional[dict[str, Any]] = None
-	suggested_name: Optional[str] = None
+	limit: int | None = None
+	time_range: dict[str, Any] | None = None
+	suggested_name: str | None = None
 
 	def to_handoff_prompt(self) -> str:
 		"""Render the candidate as a human-readable block for a Dev prompt.
@@ -84,4 +84,4 @@ class InsightsResult(BaseModel):
 	"""
 
 	reply: str
-	report_candidate: Optional[ReportCandidate] = None
+	report_candidate: ReportCandidate | None = None

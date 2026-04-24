@@ -16,8 +16,6 @@ import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from alfred.handlers.plan import (
 	_PLAN_TOOL_BUDGET,
 	_parse_plan_doc_json,

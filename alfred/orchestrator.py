@@ -214,7 +214,7 @@ def _normalize_mode(mode: str | None) -> str | None:
 	return val if val in _VALID_MODES else None
 
 
-def _has_active_plan(memory: "ConversationMemory | None") -> bool:
+def _has_active_plan(memory: ConversationMemory | None) -> bool:
 	"""Check if the conversation has an active plan the user could reference.
 
 	Phase C adds a proper `active_plan` slot on ConversationMemory. Until
@@ -359,7 +359,7 @@ async def _classify_with_llm(
 
 async def classify_mode(
 	prompt: str,
-	memory: "ConversationMemory | None",
+	memory: ConversationMemory | None,
 	manual_override: str | None,
 	site_config: dict,
 ) -> ModeDecision:

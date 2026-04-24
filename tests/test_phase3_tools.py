@@ -1,32 +1,27 @@
 """Tests for Phase 3 agent tools: permission checks and code validation."""
 
-import json
-import os
 
-import pytest
 
+from alfred.models.agent_outputs import (
+	ArchitectureBlueprint,
+	AssessmentResult,
+	Changeset,
+	DeploymentResult,
+	RequirementSpec,
+	TestReport,
+)
+from alfred.tools.code_validation import (
+	validate_changeset_order,
+	validate_doctype_definition,
+	validate_js_syntax,
+	validate_python_syntax,
+	validate_workflow_definition,
+)
 from alfred.tools.permission_checks import (
-	PERMISSION_MATRIX,
 	assess_complexity,
 	check_escalation_needed,
 	check_permissions,
 )
-from alfred.tools.code_validation import (
-	validate_python_syntax,
-	validate_js_syntax,
-	validate_doctype_definition,
-	validate_workflow_definition,
-	validate_changeset_order,
-)
-from alfred.models.agent_outputs import (
-	RequirementSpec,
-	AssessmentResult,
-	ArchitectureBlueprint,
-	Changeset,
-	TestReport,
-	DeploymentResult,
-)
-
 
 # ── Permission Checks (Task 3.2) ─────────────────────────────────
 
@@ -351,7 +346,7 @@ class TestPydanticModels:
 		assert spec.summary == "Create a Book DocType"
 
 	def test_assessment_result(self):
-		from alfred.models.agent_outputs import Verdict, Complexity, PermissionCheckResult
+		from alfred.models.agent_outputs import Complexity, PermissionCheckResult, Verdict
 		result = AssessmentResult(
 			verdict=Verdict.AI_CAN_HANDLE,
 			permission_check=PermissionCheckResult(passed=True),
@@ -368,7 +363,7 @@ class TestPydanticModels:
 		assert bp.rollback_safe is True
 
 	def test_changeset(self):
-		from alfred.models.agent_outputs import ChangesetItem, ChangeOperation
+		from alfred.models.agent_outputs import ChangeOperation, ChangesetItem
 		cs = Changeset(items=[
 			ChangesetItem(operation=ChangeOperation.CREATE, doctype="DocType", data={"name": "Book"}),
 		])

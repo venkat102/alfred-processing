@@ -1,25 +1,20 @@
 """Tests for Phase 6 - Integration & Hardening components."""
 
-import asyncio
 import json
-import os
-import time
 
 import pytest
 
+from alfred.agents.token_tracker import TokenTracker, estimate_cost
 from alfred.defense.sanitizer import (
-	sanitize_prompt,
-	classify_intent,
 	check_prompt,
-	KNOWN_INTENTS,
+	classify_intent,
+	sanitize_prompt,
 )
 from alfred.middleware.error_handling import (
+	get_user_error_message,
 	retry_with_backoff,
 	validate_agent_output,
-	get_user_error_message,
 )
-from alfred.agents.token_tracker import TokenTracker, estimate_cost
-
 
 # ── Prompt Injection Defense (6.9) ────────────────────────────────
 

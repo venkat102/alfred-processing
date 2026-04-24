@@ -91,7 +91,7 @@ class PlanDoc(BaseModel):
 		*,
 		parse_failed: bool = False,
 		parse_failure_detail: str | None = None,
-	) -> "PlanDoc":
+	) -> PlanDoc:
 		"""Build an empty fallback plan doc for error paths.
 
 		``parse_failed`` defaults to False so callers that build a stub

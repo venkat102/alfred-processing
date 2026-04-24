@@ -34,7 +34,6 @@ import pytest
 
 from alfred.api.websocket import _authenticate_handshake
 
-
 API_KEY = "test-secret-key-12345"
 SITE_ID = "test.frappe.cloud"
 USER = "admin@test.com"

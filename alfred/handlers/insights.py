@@ -46,7 +46,7 @@ _INSIGHTS_TOOL_BUDGET = 5
 
 async def handle_insights(
 	prompt: str,
-	conn: "ConnectionState",
+	conn: ConnectionState,
 	conversation_id: str,
 	user_context: dict,
 	event_callback=None,

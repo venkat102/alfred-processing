@@ -5,7 +5,6 @@ The ask_user tool sends questions to the user via the custom WebSocket channel
 """
 
 import asyncio
-import json
 import logging
 import uuid
 
@@ -82,7 +81,7 @@ class UserInteractionHandler:
 				msg_id, (response or "")[:80] if response else "",
 			)
 			return response
-		except asyncio.TimeoutError:
+		except TimeoutError:
 			logger.warning("User response timeout for question %s (after %ds)", msg_id, self._timeout)
 			raise TimeoutError(
 				f"User did not respond within {self._timeout} seconds. "

@@ -413,13 +413,13 @@ class ConnectionState:
 		self._expired_questions: dict[str, float] = {}
 		# MCP client: lets agents fetch live site data via the Client App's MCP server.
 		# Initialized after handshake in _authenticate_handshake.
-		self.mcp_client: "MCPClient | None" = None
+		self.mcp_client: MCPClient | None = None
 		# Active pipeline task for this conversation. Used to reject concurrent
 		# prompts and to cancel in-flight work when the WebSocket closes.
 		self.active_pipeline: asyncio.Task | None = None
 		# Context for the currently-running pipeline. Exposed so a user-initiated
 		# "cancel" message can flip should_stop without tearing down the connection.
-		self.active_pipeline_ctx: "PipelineContext | None" = None
+		self.active_pipeline_ctx: PipelineContext | None = None
 
 	async def send(self, message: dict):
 		"""Send a message over the WebSocket.
@@ -477,7 +477,7 @@ class ConnectionState:
 			await self.send(message)
 			response = await asyncio.wait_for(future, timeout=timeout)
 			return response
-		except asyncio.TimeoutError:
+		except TimeoutError:
 			# Remember this msg_id so a late-arriving answer (after the
 			# timeout fired but before the user gives up) can be acked
 			# back to the UI instead of silently dropped.
@@ -540,7 +540,7 @@ async def _authenticate_handshake(
 	try:
 		raw = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
 		handshake = json.loads(raw)
-	except asyncio.TimeoutError:
+	except TimeoutError:
 		try:
 			await websocket.close(code=WS_CLOSE_INVALID_HANDSHAKE, reason="Handshake timeout")
 		except Exception:
@@ -807,7 +807,8 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 		# Redis sliding-window implementation in middleware/rate_limit.py
 		# so REST and WS share one quota bucket per user.
 		from alfred.middleware.rate_limit import (
-			DEFAULT_MAX_TASKS_PER_HOUR, check_rate_limit,
+			DEFAULT_MAX_TASKS_PER_HOUR,
+			check_rate_limit,
 		)
 		max_per_hour = int(
 			conn.site_config.get("max_tasks_per_user_per_hour")
@@ -1017,6 +1018,7 @@ async def _dry_run_with_retry(
 
 	try:
 		from crewai import Crew, Process, Task
+
 		from alfred.agents.definitions import build_agents
 		from alfred.tools.mcp_tools import build_mcp_tools
 

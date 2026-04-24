@@ -20,14 +20,14 @@ class UnknownIntentError(KeyError):
 
 
 class IntentRegistry:
-	_instance: ClassVar["IntentRegistry | None"] = None
+	_instance: ClassVar[IntentRegistry | None] = None
 
 	def __init__(self, schemas: dict[str, dict]):
 		self._by_intent = schemas
 		self._by_doctype = {s["doctype"]: s for s in schemas.values()}
 
 	@classmethod
-	def load(cls) -> "IntentRegistry":
+	def load(cls) -> IntentRegistry:
 		if cls._instance is not None:
 			return cls._instance
 		schemas: dict[str, dict] = {}

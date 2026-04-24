@@ -15,7 +15,6 @@ import os
 
 import pytest
 
-
 TELEMETRY_OPTOUTS = (
 	"CREWAI_DISABLE_TELEMETRY",
 	"CREWAI_DISABLE_TRACKING",

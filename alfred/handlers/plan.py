@@ -134,7 +134,7 @@ def _validate_as_plan_doc(raw_obj: dict, user_prompt: str) -> dict:
 
 async def handle_plan(
 	prompt: str,
-	conn: "ConnectionState",
+	conn: ConnectionState,
 	conversation_id: str,
 	user_context: dict,
 	event_callback=None,
