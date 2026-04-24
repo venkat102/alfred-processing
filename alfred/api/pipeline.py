@@ -39,6 +39,9 @@ from typing import TYPE_CHECKING, Any, Callable
 
 import re as _re
 
+import redis.asyncio as aioredis
+from fastapi import WebSocketDisconnect
+
 from alfred.obs import tracer
 
 if TYPE_CHECKING:
@@ -181,7 +184,9 @@ def _parse_report_candidate_marker(prompt: str) -> dict | None:
 		parsed = json.loads(m.group(1))
 		if isinstance(parsed, dict):
 			return parsed
-	except Exception:  # noqa: BLE001
+	except json.JSONDecodeError:
+		# Marker content isn't valid JSON (client bug / half-formed).
+		# Fall back to the no-marker path; classify_intent runs normally.
 		pass
 	return None
 
@@ -401,7 +406,7 @@ def _detect_drift(result_text: str, user_prompt: str) -> str | None:
 			parsed = json.loads(stripped)
 			if isinstance(parsed, list):
 				return None
-		except Exception:  # noqa: BLE001
+		except json.JSONDecodeError:
 			# Malformed JSON falls through to drift checks below - if the
 			# agent tried to emit a changeset but wrote unparseable JSON,
 			# drift detection can still catch obvious prose mixed in.
@@ -592,7 +597,10 @@ def _summarise_probe_error(exc: Exception) -> str:
 	if isinstance(exc, _urllib_error.HTTPError):
 		try:
 			body = (exc.read() or b"").decode(errors="replace")[:200]
-		except Exception:  # noqa: BLE001
+		except (OSError, AttributeError):
+			# OSError on socket-side body-read failure; AttributeError
+			# if the HTTPError object has no readable body in this
+			# urllib path. Keep "HTTP {code}" without the body suffix.
 			body = ""
 		return f"HTTP {exc.code}: {body}" if body else f"HTTP {exc.code}"
 	return str(exc) or exc.__class__.__name__
@@ -687,7 +695,10 @@ class AgentPipeline:
 					"type": "run_cancelled",
 					"data": {"reason": error, **extra},
 				})
-			except Exception as e:  # noqa: BLE001
+			except (RuntimeError, WebSocketDisconnect, OSError) as e:
+				# WS already closed (RuntimeError), client gone
+				# (WebSocketDisconnect), or socket died (OSError). The
+				# cancellation still took effect server-side.
 				logger.warning("Failed to send cancellation message: %s", e)
 			return
 		try:
@@ -696,7 +707,8 @@ class AgentPipeline:
 				"type": "error",
 				"data": {"error": error, "code": code, **extra},
 			})
-		except Exception as e:  # noqa: BLE001
+		except (RuntimeError, WebSocketDisconnect, OSError) as e:
+			# Same shape as the cancel path above.
 			logger.warning("Failed to send error message: %s", e)
 
 	# ── Phases ───────────────────────────────────────────────────────
@@ -837,7 +849,12 @@ class AgentPipeline:
 				try:
 					await _do_probe(ollama_model, base_url)
 					return
-				except Exception as exc:  # noqa: BLE001 - rewrapped below
+				except (OSError, RuntimeError) as exc:
+					# OSError covers urllib URLError/HTTPError/TimeoutError
+					# (all OSError subclasses in Py 3.3+) plus raw socket
+					# failure. RuntimeError covers the SSRF-policy reject
+					# _do_probe raises for a bad base_url. Anything else
+					# is a logic bug — propagate.
 					last_exc = exc
 					if attempt + 1 < _PROBE_ATTEMPTS:
 						logger.info(
@@ -852,7 +869,7 @@ class AgentPipeline:
 							llm_errors_total.labels(
 								tier="warmup", error_type="probe_retry",
 							).inc()
-						except Exception:  # noqa: BLE001
+						except Exception:  # noqa: BLE001 — metrics best-effort; retry path must not crash on a broken metrics import
 							pass
 						await asyncio.sleep(_PROBE_RETRY_BACKOFF_S)
 			assert last_exc is not None
@@ -953,7 +970,7 @@ class AgentPipeline:
 			raw_mode = (plan_result.get("pipeline_mode") or "").lower()
 			if raw_mode in ("full", "lite"):
 				ctx.plan_pipeline_mode = raw_mode
-		except Exception as e:  # noqa: BLE001
+		except Exception as e:  # noqa: BLE001 — defensive wrapper; AdminClient.check_plan catches its own httpx/OSError internally and returns a dict-shape result even on failure, but result-dict access (KeyError, TypeError) or admin-client logic bugs must not block the pipeline
 			logger.warning("Plan check failed (allowing by default): %s", e)
 
 	async def _phase_orchestrate(self) -> None:
@@ -1007,7 +1024,10 @@ class AgentPipeline:
 					"confidence": decision.confidence,
 				},
 			})
-		except Exception as e:  # noqa: BLE001
+		except (RuntimeError, WebSocketDisconnect, OSError) as e:
+			# WS send pattern: closed / disconnected / socket error.
+			# Orchestrator decision is already recorded on ctx; UI
+			# will catch up from the regular agent_status stream.
 			logger.warning("mode_switch send failed: %s", e)
 
 		# Phase A: chat mode short-circuits here.
@@ -1042,7 +1062,7 @@ class AgentPipeline:
 				user_context=ctx.user_context,
 				site_config=ctx.conn.site_config or {},
 			)
-		except Exception as e:  # noqa: BLE001
+		except Exception as e:  # noqa: BLE001 — chat-handler boundary; handle_chat catches its own LLM failures and always returns a string, but a logic bug (new memory subclass misbehaving etc.) must not block the chat reply
 			logger.warning("Chat handler raised: %s", e, exc_info=True)
 			reply = (
 				"Hi! I had trouble generating a reply just now. "
@@ -1061,7 +1081,8 @@ class AgentPipeline:
 					"mode": "chat",
 				},
 			})
-		except Exception as e:  # noqa: BLE001
+		except (RuntimeError, WebSocketDisconnect, OSError) as e:
+			# WS send pattern; see _send_error for the same shape.
 			logger.warning("chat_reply send failed: %s", e)
 
 		# Persist conversation memory so follow-up turns see this exchange.
@@ -1073,7 +1094,7 @@ class AgentPipeline:
 					ctx.conversation_id,
 					ctx.conversation_memory,
 				)
-			except Exception as e:  # noqa: BLE001
+			except Exception as e:  # noqa: BLE001 — defensive double-catch; save_conversation_memory catches its own (aioredis.RedisError, TypeError, ValueError) internally, but a logic bug propagating through must not block the chat turn
 				logger.warning("chat memory save failed: %s", e)
 
 	async def _run_insights_short_circuit(self) -> None:
@@ -1097,7 +1118,8 @@ class AgentPipeline:
 					"type": "agent_status",
 					"data": {"event": event_type, **data},
 				})
-			except Exception as e:  # noqa: BLE001
+			except (RuntimeError, WebSocketDisconnect, OSError) as e:
+				# WS send pattern; see _send_error.
 				logger.warning("insights event_callback send failed: %s", e)
 
 		ctx.event_callback = _event_cb
@@ -1110,7 +1132,7 @@ class AgentPipeline:
 				user_context=ctx.user_context,
 				event_callback=_event_cb,
 			)
-		except Exception as e:  # noqa: BLE001
+		except Exception as e:  # noqa: BLE001 — insights-handler boundary; handle_insights catches its own CrewAI/LLM failures and always returns an InsightsResult, but a logic bug must degrade to the canned reply rather than crash insights mode
 			logger.warning("Insights handler raised: %s", e, exc_info=True)
 			from alfred.models.insights_result import InsightsResult
 			result = InsightsResult(reply=(
@@ -1134,7 +1156,8 @@ class AgentPipeline:
 					),
 				},
 			})
-		except Exception as e:  # noqa: BLE001
+		except (RuntimeError, WebSocketDisconnect, OSError) as e:
+			# WS send pattern.
 			logger.warning("insights_reply send failed: %s", e)
 
 		# Record the Q/A pair in conversation memory so later Plan/Dev turns
@@ -1142,7 +1165,10 @@ class AgentPipeline:
 		if ctx.conversation_memory is not None:
 			try:
 				ctx.conversation_memory.add_insights_query(ctx.prompt, reply)
-			except Exception as e:  # noqa: BLE001
+			except (AttributeError, TypeError, KeyError) as e:
+				# Memory mutation failure: AttributeError on unexpected
+				# memory shape, TypeError on bad argument types, KeyError
+				# on missing internal fields.
 				logger.warning("insights memory record failed: %s", e)
 
 		if ctx.conversation_memory is not None and ctx.store is not None:
@@ -1153,7 +1179,7 @@ class AgentPipeline:
 					ctx.conversation_id,
 					ctx.conversation_memory,
 				)
-			except Exception as e:  # noqa: BLE001
+			except Exception as e:  # noqa: BLE001 — defensive; save_conversation_memory catches its own internally. See _run_chat_short_circuit rationale.
 				logger.warning("insights memory save failed: %s", e)
 
 	# ── Plan -> Dev handoff helpers (Phase C) ───────────────────────
@@ -1212,7 +1238,9 @@ class AgentPipeline:
 				ctx.conversation_id,
 				(memory.active_plan or {}).get("title"),
 			)
-		except Exception as e:  # noqa: BLE001
+		except (AttributeError, TypeError, KeyError) as e:
+			# Memory mutation exception set; see insights handler for
+			# the matching shape.
 			logger.warning("Failed to mark active plan approved: %s", e)
 
 	def _mark_active_plan_built_if_any(self) -> None:
@@ -1228,7 +1256,8 @@ class AgentPipeline:
 			return
 		try:
 			memory.mark_active_plan_status("built")
-		except Exception as e:  # noqa: BLE001
+		except (AttributeError, TypeError, KeyError) as e:
+			# Same memory-mutation shape as _maybe_approve_active_plan.
 			logger.warning("Failed to mark active plan built: %s", e)
 
 	async def _run_plan_short_circuit(self) -> None:
@@ -1255,7 +1284,8 @@ class AgentPipeline:
 					"type": "agent_status",
 					"data": {"event": event_type, **data},
 				})
-			except Exception as e:  # noqa: BLE001
+			except (RuntimeError, WebSocketDisconnect, OSError) as e:
+				# WS send pattern.
 				logger.warning("plan event_callback send failed: %s", e)
 
 		ctx.event_callback = _event_cb
@@ -1268,7 +1298,7 @@ class AgentPipeline:
 				user_context=ctx.user_context,
 				event_callback=_event_cb,
 			)
-		except Exception as e:  # noqa: BLE001
+		except Exception as e:  # noqa: BLE001 — plan-handler boundary; handle_plan catches its own CrewAI/LLM failures and always returns a PlanDoc dict, but a logic bug must degrade to the stub rather than crash plan mode
 			logger.warning("Plan handler raised: %s", e, exc_info=True)
 			from alfred.models.plan_doc import PlanDoc
 
@@ -1292,7 +1322,8 @@ class AgentPipeline:
 					"mode": "plan",
 				},
 			})
-		except Exception as e:  # noqa: BLE001
+		except (RuntimeError, WebSocketDisconnect, OSError) as e:
+			# WS send pattern.
 			logger.warning("plan_doc send failed: %s", e)
 
 		# Record as a proposed plan. The user has NOT approved it yet -
@@ -1304,7 +1335,8 @@ class AgentPipeline:
 				ctx.conversation_memory.add_plan_document(
 					plan_dict, status="proposed"
 				)
-			except Exception as e:  # noqa: BLE001
+			except (AttributeError, TypeError, KeyError) as e:
+				# Memory mutation shape.
 				logger.warning("plan memory record failed: %s", e)
 
 		if ctx.conversation_memory is not None and ctx.store is not None:
@@ -1315,7 +1347,7 @@ class AgentPipeline:
 					ctx.conversation_id,
 					ctx.conversation_memory,
 				)
-			except Exception as e:  # noqa: BLE001
+			except Exception as e:  # noqa: BLE001 — defensive double-catch; save_conversation_memory has its own internal catches. See _run_chat_short_circuit.
 				logger.warning("plan memory save failed: %s", e)
 
 	async def _phase_classify_intent(self) -> None:
@@ -1471,13 +1503,16 @@ class AgentPipeline:
 		def _display(m: str) -> str:
 			try:
 				return registry.get(m).get("display_name", m)
-			except Exception:  # noqa: BLE001
+			except KeyError:
+				# ModuleRegistry raises UnknownModuleError (KeyError) for
+				# missing entries. Fall back to the raw name.
 				return m
 
 		def _family_display(f: str) -> str:
 			try:
 				return registry.get_family(f).get("display_name", f)
-			except Exception:  # noqa: BLE001
+			except KeyError:
+				# UnknownFamilyError inherits from KeyError; same pattern.
 				return f
 
 		# Primary context call (same as V2 path)
@@ -1489,7 +1524,7 @@ class AgentPipeline:
 				site_config=ctx.conn.site_config or {},
 				redis=redis,
 			)
-		except Exception as e:  # noqa: BLE001
+		except Exception as e:  # noqa: BLE001 — defensive wrapper; provide_context has its own broad catch (LLM + cache + registry layer; heterogeneous). Empty context is the safe degraded mode.
 			logger.warning(
 				"provide_module_context failed for conversation=%s module=%s: %s",
 				ctx.conversation_id, ctx.module, e,
@@ -1512,7 +1547,7 @@ class AgentPipeline:
 					site_config=ctx.conn.site_config or {},
 					redis=redis,
 				)
-			except Exception as e:  # noqa: BLE001
+			except Exception as e:  # noqa: BLE001 — defensive wrapper; provide_family_context has its own broad catch, same shape as provide_context above.
 				logger.warning(
 					"provide_family_context failed for conversation=%s family=%s: %s",
 					ctx.conversation_id, primary_family, e,
@@ -1532,7 +1567,7 @@ class AgentPipeline:
 					)
 					if snippet:
 						secondary_ctxs[m] = snippet
-				except Exception as e:  # noqa: BLE001
+				except Exception as e:  # noqa: BLE001 — defensive wrapper; provide_context has its own broad catch (LLM + cache + registry layer; heterogeneous). Empty context is the safe degraded mode.
 					logger.warning(
 						"secondary provide_context failed for %s: %s", m, e,
 					)
@@ -1618,7 +1653,10 @@ class AgentPipeline:
 					"type": "agent_status",
 					"data": {"event": event_type, **data},
 				})
-			except Exception as e:  # noqa: BLE001
+			except (RuntimeError, WebSocketDisconnect, OSError) as e:
+				# RuntimeError: WS closed under us. WebSocketDisconnect:
+				# client went away. OSError: underlying socket error.
+				# Clarifier may still be streaming when the client drops.
 				logger.warning("early event_callback send failed: %s", e)
 
 		ctx.early_event_callback = _early_cb
@@ -1703,7 +1741,7 @@ class AgentPipeline:
 		fkb_rendered: list[str] = []
 		try:
 			fkb_hits = _fkb.search_hybrid(source_prompt, k=3)
-		except Exception as e:  # noqa: BLE001
+		except Exception as e:  # noqa: BLE001 — 3rd-party ML boundary (sentence-transformers / torch). Raises a wide zoo (OOM, CUDA, safetensors, import-time). Fail open to keyword-only.
 			if span: span.set(fkb_error=f"fkb:{type(e).__name__}")
 			logger.warning("inject_kb: FKB search failed: %s", e)
 			fkb_hits = []
@@ -1748,7 +1786,7 @@ class AgentPipeline:
 						"get_site_customization_detail",
 						{"doctype": doctype},
 					)
-				except Exception as e:  # noqa: BLE001
+				except Exception as e:  # noqa: BLE001 — MCP tool boundary (HTTP/JSON-RPC to external Frappe app). Transport, server-side, and protocol errors all surface here; fail-open per-target keeps inject_kb degraded-but-alive.
 					logger.warning(
 						"inject_kb: site-detail call failed for %r: %s", doctype, e,
 					)
@@ -1874,7 +1912,10 @@ class AgentPipeline:
 				await ctx.store.delete_task_state(
 					ctx.conn.site_id, f"crew-state-{ctx.conversation_id}"
 				)
-			except Exception as e:  # noqa: BLE001
+			except (aioredis.RedisError, ValueError, TypeError) as e:
+				# StateStore.delete_task_state is thin: JSON shape guard
+				# (ValueError/TypeError) + Redis I/O. Anything else is a
+				# logic bug and should surface, not get swallowed here.
 				logger.debug("Failed to clear prior crew state (ignored): %s", e)
 
 		ctx.custom_tools = (
