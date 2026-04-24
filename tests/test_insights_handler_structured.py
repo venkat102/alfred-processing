@@ -47,7 +47,12 @@ def test_error_reply_returns_none():
 def test_time_range_only_produces_candidate():
 	c = extract_report_candidate(
 		prompt="list customers from last month",
-		reply="Here are the customers from last month: ...",
+		reply=(
+			"Here are the customers from last month:\n"
+			"1. ACME Corp\n"
+			"2. Globex Inc\n"
+			"3. Initech Ltd\n"
+		),
 	)
 	assert c is not None
 	assert c.target_doctype == "Customer"
@@ -58,7 +63,14 @@ def test_time_range_only_produces_candidate():
 def test_top_n_only_produces_candidate():
 	c = extract_report_candidate(
 		prompt="list the top 5 suppliers",
-		reply="Here are the top 5 suppliers by spend: ...",
+		reply=(
+			"Here are the top 5 suppliers by spend:\n"
+			"1. Alpha Supplies\n"
+			"2. Beta Traders\n"
+			"3. Gamma Imports\n"
+			"4. Delta Goods\n"
+			"5. Epsilon Ltd\n"
+		),
 	)
 	assert c is not None
 	assert c.target_doctype == "Supplier"
@@ -96,6 +108,16 @@ def test_plural_doctype_fallback():
 def test_suggested_name_without_time_range():
 	c = extract_report_candidate(
 		prompt="Show top 7 suppliers",
-		reply="Top 7 suppliers: ...",
+		reply=(
+			"Top 7 suppliers:\n"
+			"1. Alpha\n"
+			"2. Beta\n"
+			"3. Gamma\n"
+			"4. Delta\n"
+			"5. Epsilon\n"
+			"6. Zeta\n"
+			"7. Eta\n"
+		),
 	)
+	assert c is not None
 	assert c.suggested_name == "Top 7 Suppliers"
