@@ -555,10 +555,23 @@ async def _authenticate_handshake(
 			},
 		})
 
+	# Per-tool-call MCP timeout. Admin sets this via Alfred Settings ->
+	# MCP Tool Timeout; the field ships in site_config at handshake. We
+	# treat 0 / missing / negative / non-int the same way - fall back to
+	# the 30s default. Clamping here means a sloppy admin config doesn't
+	# disable timeouts entirely, which would hang pipelines on a dead
+	# MCP server indefinitely.
+	_cfg_timeout = site_config.get("mcp_timeout")
+	try:
+		_cfg_timeout = int(_cfg_timeout) if _cfg_timeout else 0
+	except (TypeError, ValueError):
+		_cfg_timeout = 0
+	mcp_timeout_s = _cfg_timeout if _cfg_timeout > 0 else 30
+
 	conn.mcp_client = MCPClient(
 		send_func=conn.send,
 		main_loop=asyncio.get_running_loop(),
-		timeout=int(site_config.get("mcp_timeout", 30)),
+		timeout=mcp_timeout_s,
 		on_call=_on_tool_call,
 	)
 
