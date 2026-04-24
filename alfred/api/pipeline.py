@@ -665,6 +665,58 @@ class AgentPipeline:
 		except Exception as e:
 			logger.warning("Failed to send error message: %s", e)
 
+	async def _save_memory_with_feedback(self) -> None:
+		"""Persist conversation memory and surface failures to the user.
+
+		All four chat / insights / plan / dev flows call this at the end
+		of their turn. Redis being unreachable or a serialisation glitch
+		must not crash the phase nor silently erase follow-up context -
+		we log, send a non-blocking info event so the user knows, and
+		return normally so the primary output (changeset / reply) still
+		reaches them.
+
+		No-ops when either ``store`` or ``conversation_memory`` is None
+		(e.g. Redis never connected, or the handler doesn't produce
+		memory-eligible output). The info event uses the same shape as
+		the CLARIFIER_LATE_RESPONSE code established in commit 31047c3,
+		so the frontend handles both with one code path.
+		"""
+		ctx = self.ctx
+		if ctx.conversation_memory is None or ctx.store is None:
+			return
+
+		from alfred.state.conversation_memory import save_conversation_memory
+
+		try:
+			await save_conversation_memory(
+				ctx.store, ctx.conn.site_id, ctx.conversation_id,
+				ctx.conversation_memory,
+			)
+		except Exception as e:
+			logger.warning(
+				"conversation memory save failed for %s@%s conversation=%s: %s",
+				ctx.conn.user, ctx.conn.site_id, ctx.conversation_id, e,
+			)
+			try:
+				await ctx.conn.send({
+					"msg_id": str(uuid.uuid4()),
+					"type": "info",
+					"data": {
+						"message": (
+							"Heads up: conversation memory couldn't be saved. "
+							"Follow-up prompts in this conversation may not "
+							"recall this turn's context."
+						),
+						"code": "MEMORY_SAVE_FAILED",
+					},
+				})
+			except Exception as send_err:
+				# If the WS is also down we're out of user-facing options.
+				# Log + return; don't raise.
+				logger.debug(
+					"could not send MEMORY_SAVE_FAILED info: %s", send_err,
+				)
+
 	# ── Phases ───────────────────────────────────────────────────────
 
 	async def _phase_sanitize(self) -> None:
@@ -982,7 +1034,6 @@ class AgentPipeline:
 		out the chat handler without patching the orchestrator decision.
 		"""
 		from alfred.handlers.chat import handle_chat
-		from alfred.state.conversation_memory import save_conversation_memory
 
 		ctx = self.ctx
 
@@ -1016,16 +1067,7 @@ class AgentPipeline:
 			logger.warning("chat_reply send failed: %s", e)
 
 		# Persist conversation memory so follow-up turns see this exchange.
-		if ctx.conversation_memory is not None and ctx.store is not None:
-			try:
-				await save_conversation_memory(
-					ctx.store,
-					ctx.conn.site_id,
-					ctx.conversation_id,
-					ctx.conversation_memory,
-				)
-			except Exception as e:
-				logger.warning("chat memory save failed: %s", e)
+		await self._save_memory_with_feedback()
 
 	async def _run_insights_short_circuit(self) -> None:
 		"""Run the insights handler inline and emit an insights_reply message.
@@ -1035,7 +1077,6 @@ class AgentPipeline:
 		markdown reply. Never produces a changeset, never writes to the DB.
 		"""
 		from alfred.handlers.insights import handle_insights
-		from alfred.state.conversation_memory import save_conversation_memory
 
 		ctx = self.ctx
 
@@ -1096,16 +1137,7 @@ class AgentPipeline:
 			except Exception as e:
 				logger.warning("insights memory record failed: %s", e)
 
-		if ctx.conversation_memory is not None and ctx.store is not None:
-			try:
-				await save_conversation_memory(
-					ctx.store,
-					ctx.conn.site_id,
-					ctx.conversation_id,
-					ctx.conversation_memory,
-				)
-			except Exception as e:
-				logger.warning("insights memory save failed: %s", e)
+		await self._save_memory_with_feedback()
 
 	# ── Plan -> Dev handoff helpers (Phase C) ───────────────────────
 
@@ -1192,7 +1224,6 @@ class AgentPipeline:
 		approves it.
 		"""
 		from alfred.handlers.plan import handle_plan
-		from alfred.state.conversation_memory import save_conversation_memory
 
 		ctx = self.ctx
 
@@ -1258,16 +1289,7 @@ class AgentPipeline:
 			except Exception as e:
 				logger.warning("plan memory record failed: %s", e)
 
-		if ctx.conversation_memory is not None and ctx.store is not None:
-			try:
-				await save_conversation_memory(
-					ctx.store,
-					ctx.conn.site_id,
-					ctx.conversation_id,
-					ctx.conversation_memory,
-				)
-			except Exception as e:
-				logger.warning("plan memory save failed: %s", e)
+		await self._save_memory_with_feedback()
 
 	async def _phase_classify_intent(self) -> None:
 		"""Classify the dev-mode prompt into a Builder specialist intent.
@@ -1906,7 +1928,6 @@ class AgentPipeline:
 			_dry_run_with_retry,
 		)
 		from alfred.agents.reflection import reflect_minimality
-		from alfred.state.conversation_memory import save_conversation_memory
 
 		ctx = self.ctx
 		result = ctx.crew_result or {}
@@ -2132,16 +2153,17 @@ class AgentPipeline:
 		)
 		ctx.changes = ctx.dry_run_result.pop("_final_changes", ctx.changes)
 
-		# Persist conversation memory
+		# Persist conversation memory. Even though we added the changeset
+		# items above unconditionally, the helper no-ops on missing store
+		# so an unreachable Redis degrades gracefully instead of crashing
+		# the phase.
 		if ctx.conversation_memory is not None:
 			ctx.conversation_memory.add_changeset_items(ctx.changes)
 			# Phase C: if this Dev run consumed an approved plan, flip
 			# the plan status to "built" so it doesn't get re-injected
 			# on the next Dev turn.
 			self._mark_active_plan_built_if_any()
-			await save_conversation_memory(
-				ctx.store, ctx.conn.site_id, ctx.conversation_id, ctx.conversation_memory
-			)
+		await self._save_memory_with_feedback()
 
 		# Send preview
 		await ctx.conn.send({
