@@ -1,0 +1,90 @@
+# CI for alfred_processing.
+#
+# Two jobs: lint (ruff, fast) and test (pytest against a Redis service
+# container). Runs on every push to master + every PR.
+#
+# Excluded from the test job: the 5 files that need network access
+# (Ollama, LLM endpoints) or a running pipeline state. Those get run
+# locally + in integration environments, not on CI.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install ruff
+        run: pip install ruff
+      - name: Ruff lint
+        run: ruff check alfred/ tests/
+      # Format check is deliberately NOT enforced on CI today. 88 of
+      # ~130 files would need reformatting; a repo-wide format pass
+      # would create a churn commit that obscures git blame for every
+      # file. Pre-commit hooks format staged files as they're touched,
+      # so the repo normalises organically. A future dedicated
+      # "chore: repo-wide ruff format" commit can sync the rest when
+      # convenient.
+
+  test:
+    name: Pytest
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Point the test suite at the CI Redis service. Code paths that
+      # treat Redis as optional (most of them) ignore this; the handful
+      # of tests that need Redis (test_state_store, rate_limit, etc.)
+      # pick it up via REDIS_URL.
+      REDIS_URL: redis://127.0.0.1:6379/0
+      # Tests override these per-case but env-level defaults prevent
+      # accidental real-network calls if a test forgets to mock.
+      FALLBACK_LLM_MODEL: ""
+      FALLBACK_LLM_BASE_URL: ""
+      API_SECRET_KEY: ci-test-secret-key-not-a-real-secret-1234567890
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev]"
+      # Skip the 5 test files that need live network (Ollama, external
+      # LLM, long-running pipeline state machine, benchmark suite). Same
+      # exclusion list used for local baseline snapshots.
+      - name: Run pytest
+        run: |
+          pytest tests/ -q --tb=short \
+            --ignore=tests/test_llm_client.py \
+            --ignore=tests/test_llm_integration.py \
+            --ignore=tests/test_ollama_probe_real.py \
+            --ignore=tests/test_pipeline_state_machine.py \
+            --ignore=tests/test_benchmark_pipeline.py

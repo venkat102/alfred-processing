@@ -1,0 +1,43 @@
+# Pre-commit hooks for alfred_processing.
+#
+# Install once per clone:
+#
+#   pip install pre-commit
+#   pre-commit install
+#
+# From then on, every `git commit` runs these hooks on staged files and
+# fails the commit if anything needs fixing. Run manually across the
+# whole tree with `pre-commit run --all-files`.
+#
+# Hooks here match the project's existing ruff configuration in
+# pyproject.toml so local dev, pre-commit, and CI agree byte-for-byte.
+# Do not add hooks that would need the Frappe bench - this repo is
+# deliberately bench-independent.
+
+repos:
+  # Ruff: linter + formatter. Reads pyproject.toml [tool.ruff] (line-length
+  # 110, py311, select F/E/W/I/UP/B). Format runs before check so a fresh
+  # format pass doesn't mask style violations.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff-format
+      - id: ruff
+        args: [--fix]
+
+  # Generic hygiene hooks from the upstream pre-commit library.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-merge-conflict
+      # Prevent committing a large accidental file (e.g. a data dump or
+      # a Vue build artefact). Cap at 1 MiB; override per-file with
+      # git commit --no-verify only when deliberately shipping something
+      # big.
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
