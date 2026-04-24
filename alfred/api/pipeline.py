@@ -1944,17 +1944,32 @@ class AgentPipeline:
 		)
 
 	async def _phase_post_crew(self) -> None:
-		"""Extract changeset, rescue if needed, reflect, dry-run, send preview."""
+		"""Extract changeset, rescue if needed, run safety nets, reflect,
+		dry-run, send preview.
+
+		TD-H1: the safety-net cluster (drift + rescue + backfill + report
+		handoff + module validation + empty-changeset error) lives in
+		``alfred.api.safety_nets`` so each concern is independently
+		testable. Order is load-bearing — do not reshuffle without reading
+		the concerns-list comment in docs/pending-tasks.md TD-H1.
+		"""
 		if self.ctx.mode != "dev":
 			return
 
 		from alfred.api.websocket import (
 			_extract_changes,
-			_rescue_regenerate_changeset,
 			_dry_run_with_retry,
 		)
 		from alfred.agents.reflection import reflect_minimality
 		from alfred.state.conversation_memory import save_conversation_memory
+		from alfred.api.safety_nets import (
+			apply_defaults_backfill,
+			apply_module_validation,
+			apply_report_handoff_safety_net,
+			apply_rescue_if_empty,
+			detect_drift_with_metric,
+			emit_empty_changeset_error,
+		)
 
 		ctx = self.ctx
 		result = ctx.crew_result or {}
@@ -1968,12 +1983,9 @@ class AgentPipeline:
 
 		ctx.result_text = result.get("result", "") or ""
 
-		# Emit a tight "crew completed" status. Do NOT leak result_text
-		# here - if the crew drifted into prose (e.g. training-data
-		# Sales Order documentation), sending result_text[:2000] would
-		# show the drift to the user even when the rescue path later
-		# succeeds. The preview panel is the canonical place for the
-		# final changeset; result_text stays server-side for logs.
+		# Tight "crew completed" status. Do NOT leak result_text here —
+		# if the crew drifted into prose, that string would show drift
+		# to the user even when rescue later succeeds.
 		await ctx.conn.send({
 			"msg_id": str(uuid.uuid4()),
 			"type": "agent_status",
@@ -1988,267 +2000,15 @@ class AgentPipeline:
 			ctx.conversation_id, ctx.result_text[:500],
 		)
 
-		# Drift detection: qwen2.5-coder:32b sometimes slips out of the
-		# task structure and regurgitates training-data Frappe docs
-		# (typically a full Sales Order schema dump). If the Developer's
-		# output is clearly off-topic, fail loudly instead of streaming
-		# the garbage to the UI or feeding it into rescue which itself
-		# would just drift in sympathy.
-		drift_reason = _detect_drift(ctx.result_text, ctx.prompt)
-		if drift_reason:
-			# Counter: quantify how often the framework-quirk tax fires.
-			try:
-				from alfred.obs.metrics import crew_drift_total
-				crew_drift_total.labels(reason=drift_reason).inc()
-			except Exception:  # noqa: BLE001
-				pass
-
-		# Extract
+		# ── Safety-net chain ──────────────────────────────────
+		drift_reason = detect_drift_with_metric(ctx)
 		ctx.changes = _extract_changes(ctx.result_text) if not drift_reason else []
+		await apply_rescue_if_empty(ctx, drift_reason)
+		apply_defaults_backfill(ctx)
+		apply_report_handoff_safety_net(ctx)
+		await apply_module_validation(ctx)
 
-		# Rescue path: if the crew drifted into prose, regenerate from the
-		# original prompt in one focused LLM call.
-		if not ctx.changes:
-			logger.info(
-				"First-pass extraction empty (drift=%s) - attempting rescue "
-				"regeneration from original prompt",
-				drift_reason or "no",
-			)
-			ctx.changes = await _rescue_regenerate_changeset(
-				ctx.enhanced_prompt, ctx.result_text,
-				ctx.conn.site_config, ctx.event_callback,
-				user_prompt=ctx.prompt,
-				drift_reason=drift_reason,
-			)
-			# Counter: did rescue actually recover a changeset, or are we
-			# just burning tokens on a lost cause?
-			try:
-				from alfred.obs.metrics import crew_rescue_total
-				crew_rescue_total.labels(
-					outcome="produced" if ctx.changes else "empty",
-				).inc()
-			except Exception:  # noqa: BLE001
-				pass
-
-		# Per-intent defaults backfill. Only runs when
-		# ALFRED_PER_INTENT_BUILDERS=1; otherwise a no-op. Fills any missing
-		# shape-defining registry fields on dev-mode changesets and annotates
-		# ctx.changes[i]["field_defaults_meta"] so the client review UI can
-		# render defaults as editable pills. Runs after the rescue path so
-		# whichever path produced the changeset gets the same treatment.
-		# See docs/specs/2026-04-21-doctype-builder-specialist.md.
-		settings = _get_settings()
-		if ctx.changes and settings.ALFRED_PER_INTENT_BUILDERS:
-			from alfred.handlers.post_build.backfill_defaults import (
-				backfill_defaults_raw,
-			)
-			try:
-				module_arg = (
-					ctx.module
-					if settings.ALFRED_MODULE_SPECIALISTS
-					else None
-				)
-				secondary_arg = (
-					ctx.secondary_modules
-					if settings.ALFRED_MULTI_MODULE
-					else []
-				)
-				ctx.changes = backfill_defaults_raw(
-					ctx.changes,
-					module=module_arg,
-					secondary_modules=secondary_arg,
-				)
-			except Exception as e:  # noqa: BLE001
-				# Safety net: never let backfill crash the pipeline. Log and
-				# carry the original changes forward so the user still sees
-				# something (even if defaults aren't labelled).
-				logger.warning(
-					"Defaults backfill failed for conversation=%s: %s",
-					ctx.conversation_id, e, exc_info=True,
-				)
-
-		# V4 deterministic safety net: Insights-to-Report handoff carries a
-		# suggested_name in the structured candidate. If the Report Builder
-		# specialist skipped populating report_name (Frappe requires it;
-		# Report autoname is field:report_name), derive it from the handoff
-		# candidate here so the dry-run doesn't fail on a missing required
-		# field. Only fires when intent=create_report and we have a
-		# candidate - safe no-op otherwise.
-		if (
-			ctx.changes
-			and ctx.intent == "create_report"
-			and isinstance(ctx.report_candidate, dict)
-		):
-			candidate = ctx.report_candidate
-			suggested_name = candidate.get("suggested_name")
-			cand_report_type = candidate.get("report_type")
-			cand_query = candidate.get("query")
-			cand_target = candidate.get("target_doctype")
-			cand_aggregation = candidate.get("aggregation")
-			cand_filters = candidate.get("filters") or []
-			for item in ctx.changes:
-				if item.get("doctype") != "Report":
-					continue
-				data = item.setdefault("data", {})
-				meta = item.setdefault("field_defaults_meta", {})
-				if suggested_name and not data.get("report_name"):
-					data["report_name"] = suggested_name
-					meta["report_name"] = {
-						"source": "default",
-						"rationale": (
-							"Filled from the Insights-to-Report handoff's "
-							"suggested_name because the specialist's output "
-							"omitted it. Edit before deploy if you want a "
-							"different report title."
-						),
-					}
-				# Aggregation-shape handoff: the extractor already rendered a
-				# Query Report SQL body. Force report_type + ref_doctype +
-				# query to match the handoff so the specialist can't downgrade
-				# an aggregation prompt to Report Builder (which can't do
-				# GROUP BY + SUM) and end up with a flat list export.
-				# We OVERWRITE (not backfill) the three aggregation-critical
-				# fields because the specialist has proven it cannot reliably
-				# emit GROUP BY SQL - the handoff's pre-rendered query is
-				# authoritative. Users edit at deploy-preview time.
-				if cand_aggregation and cand_query:
-					if data.get("report_type") != "Query Report":
-						data["report_type"] = "Query Report"
-						meta["report_type"] = {
-							"source": "default",
-							"rationale": (
-								"Aggregation prompt (top N by <metric>) requires "
-								"Query Report; Report Builder cannot express "
-								"GROUP BY + SUM. Forced by handoff safety net."
-							),
-						}
-					if data.get("query") != cand_query:
-						data["query"] = cand_query
-						meta["query"] = {
-							"source": "default",
-							"rationale": (
-								"Copied verbatim from the Insights-to-Report "
-								"handoff's pre-rendered aggregation SQL "
-								"(authoritative - specialist-emitted SQL for "
-								"GROUP BY aggregations has proven unreliable). "
-								"Edit before deploy if the date range or metric "
-								"needs adjusting."
-							),
-						}
-					if cand_target and data.get("ref_doctype") != cand_target:
-						data["ref_doctype"] = cand_target
-						meta["ref_doctype"] = {
-							"source": "default",
-							"rationale": (
-								"Set to the metric's source DocType (e.g. Sales "
-								"Invoice for revenue) since the aggregation lives "
-								"on that table, not on the group-by entity."
-							),
-						}
-					if not data.get("is_standard"):
-						data["is_standard"] = "No"
-						meta["is_standard"] = {
-							"source": "default",
-							"rationale": (
-								"Handoff-generated reports default to site-local "
-								"(is_standard=No) so they don't need "
-								"developer_mode + Administrator at save time."
-							),
-						}
-					# TD-M7: forward candidate.filters → data.filters_json so
-					# the Query Report opens with the date-range filter
-					# defaults pre-filled. User can change the window at
-					# runtime without editing the SQL.
-					if cand_filters and not data.get("filters_json"):
-						data["filters_json"] = json.dumps(cand_filters)
-						meta["filters_json"] = {
-							"source": "default",
-							"rationale": (
-								"Filters for the %(from_date)s / %(to_date)s "
-								"placeholders in the SQL. Defaults came from the "
-								"Insights prompt's time range; user can change "
-								"at runtime to re-run for a different window."
-							),
-						}
-
-		# V2 + V3: module specialist validation pass. Primary keeps full
-		# severity; secondary modules (V3) get their blockers capped to
-		# warning so only primary-module notes can gate deploy.
-		if (
-			ctx.changes
-			and ctx.module
-			and settings.ALFRED_PER_INTENT_BUILDERS
-			and settings.ALFRED_MODULE_SPECIALISTS
-		):
-			from alfred.agents.specialists.module_specialist import (
-				cap_secondary_severity,
-				validate_output,
-			)
-			try:
-				primary_notes = await validate_output(
-					module=ctx.module,
-					intent=ctx.intent or "unknown",
-					changes=ctx.changes,
-					site_config=ctx.conn.site_config or {},
-				)
-				secondary_notes: list = []
-				if settings.ALFRED_MULTI_MODULE:
-					for m in ctx.secondary_modules:
-						try:
-							notes = await validate_output(
-								module=m,
-								intent=ctx.intent or "unknown",
-								changes=ctx.changes,
-								site_config=ctx.conn.site_config or {},
-							)
-							secondary_notes.extend(cap_secondary_severity(notes))
-						except Exception as e:  # noqa: BLE001
-							logger.warning(
-								"secondary validate for %s failed: %s", m, e,
-							)
-				all_notes = primary_notes + secondary_notes
-				ctx.module_validation_notes = [n.model_dump() for n in all_notes]
-			except Exception as e:  # noqa: BLE001
-				logger.warning(
-					"validate_output failed for conversation=%s module=%s: %s",
-					ctx.conversation_id, ctx.module, e,
-				)
-				ctx.module_validation_notes = []
-
-		if not ctx.changes:
-			logger.warning(
-				"Pipeline completed but extraction + rescue both returned "
-				"empty. Drift=%s. Result text (first 500): %r",
-				drift_reason or "no",
-				ctx.result_text[:500],
-			)
-			if drift_reason:
-				reason_slug = "drift_detected"
-				user_message = (
-					f"Alfred's output was off-topic ({drift_reason}). "
-					"The rescue path also couldn't produce a valid changeset. "
-					"Please rephrase with the exact DocType name and the exact "
-					"rule, e.g. \"On Employee DocType, before insert, throw an "
-					"error if age is less than 24.\""
-				)
-			else:
-				reason_slug = "agent_returned_text"
-				user_message = (
-					"Alfred couldn't turn this request into a deployable change. "
-					"The agent produced text instead of a structured changeset, "
-					"which usually means the customization type isn't supported "
-					"yet or the request needs rephrasing. Try restating with the "
-					"exact DocType name and action, or check the docs for "
-					"supported capabilities."
-				)
-			agent_output_preview = (ctx.result_text or "").strip()[:400]
-			self._send_error_later(
-				user_message,
-				"EMPTY_CHANGESET",
-				drift_reason=drift_reason or "",
-				reason=reason_slug,
-				agent_output_preview=agent_output_preview,
-			)
+		if emit_empty_changeset_error(self, drift_reason):
 			return
 
 		# Phase 3 #13 minimality reflection

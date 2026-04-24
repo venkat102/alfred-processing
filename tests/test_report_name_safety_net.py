@@ -24,27 +24,15 @@ def _ctx_with_report_candidate(suggested_name):
 
 
 def _apply_safety_net(ctx):
-	"""Mirror the post_crew safety-net block inline for direct testing."""
-	if not ctx.changes:
-		return
-	if ctx.intent != "create_report":
-		return
-	if not isinstance(ctx.report_candidate, dict):
-		return
-	suggested_name = ctx.report_candidate.get("suggested_name")
-	if not suggested_name:
-		return
-	for item in ctx.changes:
-		if item.get("doctype") != "Report":
-			continue
-		data = item.setdefault("data", {})
-		if not data.get("report_name"):
-			data["report_name"] = suggested_name
-			meta = item.setdefault("field_defaults_meta", {})
-			meta["report_name"] = {
-				"source": "default",
-				"rationale": "filled-from-handoff",
-			}
+	"""Thin adapter calling the real production function (TD-H9).
+
+	Before TD-H1/H9 this helper was a COPY of the production block —
+	test/prod drift waiting to happen. Now it delegates to the real
+	``apply_report_handoff_safety_net`` so a behavioural change in
+	production automatically flows through these tests.
+	"""
+	from alfred.api.safety_nets import apply_report_handoff_safety_net
+	apply_report_handoff_safety_net(ctx)
 
 
 def test_fills_report_name_when_missing():
@@ -137,35 +125,15 @@ def _ctx_with_aggregation_candidate(query: str = "SELECT 1"):
 
 
 def _apply_aggregation_safety_net(ctx):
-	"""Mirror the aggregation block of the post_crew safety net."""
-	if not ctx.changes:
-		return
-	if ctx.intent != "create_report":
-		return
-	if not isinstance(ctx.report_candidate, dict):
-		return
-	candidate = ctx.report_candidate
-	cand_query = candidate.get("query")
-	cand_target = candidate.get("target_doctype")
-	cand_aggregation = candidate.get("aggregation")
-	for item in ctx.changes:
-		if item.get("doctype") != "Report":
-			continue
-		data = item.setdefault("data", {})
-		meta = item.setdefault("field_defaults_meta", {})
-		if cand_aggregation and cand_query:
-			if data.get("report_type") != "Query Report":
-				data["report_type"] = "Query Report"
-				meta["report_type"] = {"source": "default", "rationale": "forced"}
-			if data.get("query") != cand_query:
-				data["query"] = cand_query
-				meta["query"] = {"source": "default", "rationale": "forced"}
-			if cand_target and data.get("ref_doctype") != cand_target:
-				data["ref_doctype"] = cand_target
-				meta["ref_doctype"] = {"source": "default", "rationale": "forced"}
-			if not data.get("is_standard"):
-				data["is_standard"] = "No"
-				meta["is_standard"] = {"source": "default", "rationale": "forced"}
+	"""Thin adapter calling the real production function (TD-H9).
+
+	Before TD-H1/H9 this helper was a copy of the production block; now
+	it delegates to ``apply_report_handoff_safety_net`` which handles
+	both report_name AND aggregation in one pass (the production path
+	always did; the test was the outlier).
+	"""
+	from alfred.api.safety_nets import apply_report_handoff_safety_net
+	apply_report_handoff_safety_net(ctx)
 
 
 def test_aggregation_overwrites_report_type_from_report_builder():
