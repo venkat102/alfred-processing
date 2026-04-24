@@ -39,7 +39,10 @@ def test_user_values_preserved_and_flagged_as_user_source():
 
 
 def test_unknown_doctype_passes_through():
-	changes = [{"op": "create", "doctype": "Custom Field", "data": {"fieldname": "x"}}]
+	# The registry has grown over time (per-intent builders added
+	# entries for Custom Field, Server Script, Notification, ...) so
+	# pick a DocType that definitely has no registered defaults.
+	changes = [{"op": "create", "doctype": "Nonexistent Type", "data": {"fieldname": "x"}}]
 	out = backfill_defaults_raw(changes)
 	assert out == changes
 	assert "field_defaults_meta" not in out[0]
@@ -50,9 +53,11 @@ def test_empty_input_returns_empty_list():
 
 
 def test_multiple_items_handled_independently():
+	# Server Script now has registered defaults, so use a DocType
+	# that definitely has no registry entry for the "untouched" slot.
 	changes = [
 		_doctype_change({"name": "Book", "module": "Custom"}),
-		{"op": "create", "doctype": "Server Script", "data": {"name": "x"}},
+		{"op": "create", "doctype": "Nonexistent Type", "data": {"name": "x"}},
 	]
 	out = backfill_defaults_raw(changes)
 	assert "field_defaults_meta" in out[0]

@@ -51,6 +51,11 @@ async def app():
 			await test_app.state.redis.delete(*keys)
 		await test_app.state.redis.aclose()
 
+	# Drop the Settings snapshot we populated above so unrelated test
+	# modules that read Settings (through any code path) see a fresh
+	# read against their own env, not this fixture's fake-key state.
+	get_settings.cache_clear()
+
 
 @pytest.fixture
 async def client(app):

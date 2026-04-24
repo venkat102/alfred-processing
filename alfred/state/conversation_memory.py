@@ -301,10 +301,7 @@ async def load_conversation_memory(
 		return empty
 	try:
 		data = await store.get_task_state(site_id, _memory_key(conversation_id))
-	except (aioredis.RedisError, ValueError, TypeError) as e:
-		# RedisError covers connection/auth/timeout; ValueError comes from
-		# the store's id-validator + JSON decode; TypeError from a
-		# malformed deserialise. Anything else is a real bug — propagate.
+	except Exception as e:  # noqa: BLE001 — store-boundary contract (see test_load_tolerates_store_errors): any exception from the store must degrade to an empty memory, not crash the pipeline. Mocked stores in tests inject arbitrary exceptions (RuntimeError, etc.) to exercise this tolerance.
 		logger.warning("conversation memory load failed for %s: %s", conversation_id, e)
 		return empty
 	if not data:
@@ -331,10 +328,7 @@ async def save_conversation_memory(
 			"Saved conversation memory: site=%s, conversation=%s, items=%d",
 			site_id, conversation_id, len(memory.items),
 		)
-	except (aioredis.RedisError, TypeError, ValueError) as e:
-		# RedisError = network/auth/timeout. TypeError = JSON serialize
-		# failure on a non-serialisable item slipping into memory.
-		# ValueError = id validator on a bad conversation_id.
+	except Exception as e:  # noqa: BLE001 — store-boundary contract (see test_save_tolerates_store_errors): memory save is best-effort and must never block the pipeline. Mocked stores in tests inject arbitrary exceptions (RuntimeError, etc.) to exercise this.
 		logger.warning(
 			"conversation memory save failed for %s/%s: %s",
 			site_id, conversation_id, e,

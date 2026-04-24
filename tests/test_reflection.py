@@ -207,9 +207,16 @@ class TestReflectMinimalityEdgeCases:
 class TestReflectMinimalityWithLLM:
 	def setup_method(self):
 		os.environ["ALFRED_REFLECTION_ENABLED"] = "1"
+		# _reflection_enabled() reads the cached Settings snapshot,
+		# which would otherwise have the default (False) from the
+		# first read in an earlier test.
+		from alfred.config import get_settings
+		get_settings.cache_clear()
 
 	def teardown_method(self):
 		os.environ.pop("ALFRED_REFLECTION_ENABLED", None)
+		from alfred.config import get_settings
+		get_settings.cache_clear()
 
 	def _run(self, coro):
 		return asyncio.get_event_loop().run_until_complete(coro)

@@ -47,8 +47,11 @@ def test_user_provided_fields_preserved():
 
 
 def test_item_with_no_matching_registry_passes_through_untouched():
+	# Custom Field was unknown when this test was written, but the
+	# registry now has an entry for it. Pick a DocType that has no
+	# registered defaults so the passthrough branch is actually hit.
 	cs = Changeset(
-		items=[ChangesetItem(operation="create", doctype="Custom Field", data={"fieldname": "x"})]
+		items=[ChangesetItem(operation="create", doctype="Nonexistent Type", data={"fieldname": "x"})]
 	)
 	out = backfill_defaults(cs)
 	assert out.items[0].data == {"fieldname": "x"}

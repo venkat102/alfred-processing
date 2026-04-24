@@ -57,11 +57,19 @@ _MEMORY_CONTEXT_CHAR_CAP = 1000
 def is_enabled() -> bool:
 	"""Feature-flag check for the mode orchestrator.
 
-	Default is True (see alfred.config.Settings). Pydantic coerces
-	"1"/"true"/"yes"/"on" to True; anything else to False.
+	Default is False (see alfred.config.Settings). Pydantic coerces
+	"1"/"true"/"yes"/"on" to True; anything else — including garbage
+	strings like "maybe" or empty "" that would otherwise raise
+	ValidationError at Settings construction — is treated as disabled.
 	"""
+	from pydantic import ValidationError
 	from alfred.config import get_settings
-	return get_settings().ALFRED_ORCHESTRATOR_ENABLED
+	try:
+		return get_settings().ALFRED_ORCHESTRATOR_ENABLED
+	except ValidationError:
+		# Malformed flag value in the env should never crash the
+		# pipeline; default to the safe off state.
+		return False
 
 # Exact-match greetings and short conversational turns. Hit here means no
 # LLM call. Keep this set small and obvious - anything borderline should

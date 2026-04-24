@@ -455,6 +455,16 @@ class TestClassifyMode:
 
 
 class TestIsEnabled:
+	@pytest.fixture(autouse=True)
+	def _reset_settings_cache(self):
+		# is_enabled() reads Settings via @lru_cache; each test in this
+		# class flips ALFRED_ORCHESTRATOR_ENABLED via monkeypatch and
+		# needs a fresh read.
+		from alfred.config import get_settings
+		get_settings.cache_clear()
+		yield
+		get_settings.cache_clear()
+
 	def test_unset_is_disabled(self, monkeypatch):
 		monkeypatch.delenv("ALFRED_ORCHESTRATOR_ENABLED", raising=False)
 		assert is_enabled() is False

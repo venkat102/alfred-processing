@@ -178,9 +178,7 @@ def _context_cache_set_inmem(key: tuple[str, str, str], value: str) -> None:
 async def _context_cache_get_redis(redis, key_str: str) -> str | None:
 	try:
 		return await redis.get(key_str)
-	except (aioredis.RedisError, OSError) as e:
-		# Cache miss on connection / auth / timeout — degrade to the
-		# in-memory cache + LLM call, never crash the pipeline.
+	except Exception as e:  # noqa: BLE001 — cache-boundary contract (test_provide_context_redis_failure_falls_back_to_llm_and_inmem): any Redis read failure must degrade to the LLM path; tests inject RuntimeError via AsyncMock to exercise exactly this tolerance.
 		logger.debug("Module context cache Redis read failed: %s", e)
 		return None
 
@@ -188,8 +186,7 @@ async def _context_cache_get_redis(redis, key_str: str) -> str | None:
 async def _context_cache_set_redis(redis, key_str: str, value: str) -> None:
 	try:
 		await redis.setex(key_str, _CONTEXT_CACHE_TTL_SECONDS, value)
-	except (aioredis.RedisError, OSError) as e:
-		# Cache write best-effort — next request just recomputes.
+	except Exception as e:  # noqa: BLE001 — same cache-boundary contract: Redis writes are best-effort and must never block the pipeline. Tests inject RuntimeError to force this fallthrough.
 		logger.debug("Module context cache Redis write failed: %s", e)
 
 
