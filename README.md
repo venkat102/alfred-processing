@@ -154,9 +154,17 @@ workflows against a live customer site over MCP.
 
 ```bash
 cp .env.example .env
-# Edit .env: set API_SECRET_KEY and LLM configuration
+# Generate a strong API_SECRET_KEY (rotation script also works for existing .env):
+python scripts/rotate_api_secret_key.py
+# Then fill in LLM configuration in .env.
 docker compose up -d
 ```
+
+The processing app refuses to boot when `API_SECRET_KEY` is shorter than
+32 characters or matches a known-weak placeholder (`secret`, `changeme`,
+`dev`, `test`, `your-secret-key`, ...). The rotation script generates a
+compliant key, backs up the old `.env`, and prints the follow-up steps
+(update Alfred Settings on the Frappe site, restart the app).
 
 ## Development
 
@@ -173,6 +181,22 @@ docker compose up -d
 # Standalone LLM connectivity check
 .venv/bin/python test_llm.py
 ```
+
+### CI + pre-commit
+
+- GitHub Actions runs `ruff check` and the fast pytest suite (Redis
+  service container) on every PR and push to `master`. Five
+  network-dependent test files are excluded from CI (see
+  `.github/workflows/ci.yml` for the list). Lint failures and test
+  failures block merges.
+- `pre-commit` hooks run `ruff format` + `ruff check` on staged Python
+  files plus trailing-whitespace / EOF / YAML / JSON sanity checks.
+  Install locally with:
+  ```bash
+  pip install pre-commit
+  pre-commit install
+  ```
+  First-time run touches every file; subsequent runs are staged-only.
 
 ## Feature Flags (environment variables)
 
