@@ -187,6 +187,7 @@ docker compose up -d
 | `ALFRED_TRACING_ENABLED` | off | none | Enable structured pipeline tracing |
 | `ALFRED_TRACE_PATH` | `./alfred_trace.jsonl` | `ALFRED_TRACING_ENABLED=1` | JSONL output path. Validated against a permitted-root whitelist (CWD, $HOME, `tempfile.gettempdir()`, `/tmp`, `/var/tmp`); paths with `..` or outside the whitelist log a WARNING and fall back to the default. |
 | `ALFRED_TRACE_STDOUT` | off | `ALFRED_TRACING_ENABLED=1` | Also emit a stderr summary per span |
+| `ALFRED_FKB_DIR` | auto-detected | none | Override the path to the shared Frappe knowledge base (`frappe_kb/`) directory. Normally auto-located by walking from `alfred_processing/alfred/knowledge/fkb.py` up to `bench/apps/alfred_client/alfred_client/data/frappe_kb`. Set this when running CI or non-standard bench layouts where the auto-locate walk doesn't find the sibling app. |
 | `ALFRED_PHASE1_DISABLED` | off | none | Disable the Phase 1 MCP tracking state (benchmark use only) |
 
 ### Specialist-feature flag stack
