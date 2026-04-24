@@ -14,6 +14,7 @@ URL versioning (TD-M9):
 
 import uuid
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from alfred import __version__
@@ -51,7 +52,9 @@ async def health_check(request: Request):
 		try:
 			await request.app.state.redis.ping()
 			redis_status = "connected"
-		except Exception:  # noqa: BLE001
+		except (aioredis.RedisError, OSError):
+			# Same shape as state.store.is_healthy. Health endpoint
+			# never raises; surface "error" to the probe instead.
 			redis_status = "error"
 
 	return {"status": "ok", "version": __version__, "redis": redis_status}
