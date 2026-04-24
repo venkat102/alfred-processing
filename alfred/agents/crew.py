@@ -15,6 +15,8 @@ import json
 import logging
 import os
 import time
+
+import redis.asyncio as aioredis
 from typing import Any
 
 from crewai import Agent, Crew, Process, Task
@@ -310,7 +312,10 @@ async def save_crew_state(store, site_id: str, conversation_id: str, state: Crew
 	try:
 		await store.set_task_state(site_id, key, state.to_dict())
 		logger.debug("Saved crew state for %s/%s", site_id, conversation_id)
-	except Exception as e:  # noqa: BLE001
+	except (aioredis.RedisError, TypeError, ValueError) as e:
+		# Same shape as conversation_memory save: RedisError = network/
+		# auth/timeout, TypeError = JSON serialise of an item that
+		# slipped into state, ValueError = id-validator on bad inputs.
 		logger.error("Failed to save crew state: %s (crew will continue but resume won't work)", e)
 
 

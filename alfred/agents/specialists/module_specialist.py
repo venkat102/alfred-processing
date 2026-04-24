@@ -22,6 +22,8 @@ import json
 import logging
 import time
 
+import redis.asyncio as aioredis
+
 from alfred.llm_client import ollama_chat as _ollama_chat
 from alfred.models.agent_outputs import ValidationNote
 from alfred.registry.module_loader import ModuleRegistry, UnknownModuleError
@@ -77,7 +79,7 @@ def run_rule_validation(
 						fix=rule.get("fix"),
 						changeset_index=idx,
 					))
-			except Exception as e:  # noqa: BLE001
+			except Exception as e:  # noqa: BLE001 — rule body is YAML-derived eval; broad catch isolates one bad rule from skipping the whole validation pass
 				logger.warning(
 					"Module rule %s failed while evaluating change %d: %s",
 					rule.get("id", "<unknown>"), idx, e,
@@ -113,7 +115,9 @@ def _parse_llm_note_list(raw: str) -> list[dict] | None:
 		parsed = json.loads(cleaned)
 		if isinstance(parsed, list):
 			return parsed
-	except Exception:  # noqa: BLE001
+	except json.JSONDecodeError:
+		# LLM wrapped the array in prose; fall through to the
+		# balanced-block scan below.
 		pass
 
 	decoder = json.JSONDecoder()
@@ -124,7 +128,8 @@ def _parse_llm_note_list(raw: str) -> list[dict] | None:
 			parsed, _ = decoder.raw_decode(cleaned[idx:])
 			if isinstance(parsed, list):
 				return parsed
-		except Exception:  # noqa: BLE001
+		except json.JSONDecodeError:
+			# This `[` didn't open a valid array — keep scanning.
 			continue
 	return None
 
@@ -173,7 +178,9 @@ def _context_cache_set_inmem(key: tuple[str, str, str], value: str) -> None:
 async def _context_cache_get_redis(redis, key_str: str) -> str | None:
 	try:
 		return await redis.get(key_str)
-	except Exception as e:  # noqa: BLE001
+	except (aioredis.RedisError, OSError) as e:
+		# Cache miss on connection / auth / timeout — degrade to the
+		# in-memory cache + LLM call, never crash the pipeline.
 		logger.debug("Module context cache Redis read failed: %s", e)
 		return None
 
@@ -181,7 +188,8 @@ async def _context_cache_get_redis(redis, key_str: str) -> str | None:
 async def _context_cache_set_redis(redis, key_str: str, value: str) -> None:
 	try:
 		await redis.setex(key_str, _CONTEXT_CACHE_TTL_SECONDS, value)
-	except Exception as e:  # noqa: BLE001
+	except (aioredis.RedisError, OSError) as e:
+		# Cache write best-effort — next request just recomputes.
 		logger.debug("Module context cache Redis write failed: %s", e)
 
 
@@ -215,7 +223,8 @@ def _family_cache_set_inmem(key: tuple[str, str], value: str) -> None:
 async def _family_cache_get_redis(redis, key_str: str) -> str | None:
 	try:
 		return await redis.get(key_str)
-	except Exception as e:  # noqa: BLE001
+	except (aioredis.RedisError, OSError) as e:
+		# Same rationale as the module-context cache above.
 		logger.debug("Family context cache Redis read failed: %s", e)
 		return None
 
@@ -223,7 +232,8 @@ async def _family_cache_get_redis(redis, key_str: str) -> str | None:
 async def _family_cache_set_redis(redis, key_str: str, value: str) -> None:
 	try:
 		await redis.setex(key_str, _FAMILY_CONTEXT_CACHE_TTL_SECONDS, value)
-	except Exception as e:  # noqa: BLE001
+	except (aioredis.RedisError, OSError) as e:
+		# Cache write best-effort; next request just recomputes.
 		logger.debug("Family context cache Redis write failed: %s", e)
 
 
@@ -306,7 +316,7 @@ async def provide_family_context(
 				family, intent,
 			)
 		return result
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — provide_family_context wrapper; LLM, registry, cache layers can each raise heterogeneously. Empty context is the safe degraded mode (pipeline runs without family hints).
 		logger.warning("Family specialist provide_family_context failed (%s): %s", family, e)
 		return ""
 
@@ -392,7 +402,7 @@ async def provide_context(
 				module, intent, target_doctype,
 			)
 		return result
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — provide_context wrapper; same shape as provide_family_context above. Empty context = degraded but functional.
 		logger.warning("Module specialist provide_context failed (%s): %s", module, e)
 		return ""
 
@@ -438,7 +448,7 @@ async def validate_output(
 			max_tokens=600,
 			temperature=0.1,
 		)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — LLM-boundary contract (same as orchestrator classifier wrappers); any backend failure returns the rule-only notes rather than crash validation
 		logger.warning("Module specialist validate_output LLM failed (%s): %s", module, e)
 		return notes
 
@@ -473,7 +483,11 @@ async def validate_output(
 				fix=entry.get("fix"),
 			))
 			llm_added += 1
-		except Exception as e:  # noqa: BLE001
+		except (KeyError, TypeError, ValueError, AttributeError) as e:
+			# LLM emitted a note that's not the expected dict shape:
+			# KeyError (missing required), TypeError (wrong type at
+			# construction), AttributeError (entry isn't a dict),
+			# ValueError (ValidationNote rejects a field value).
 			logger.debug("Dropping malformed LLM note %r: %s", entry, e)
 
 	logger.info(

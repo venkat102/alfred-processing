@@ -236,6 +236,6 @@ async def reflect_minimality(
 			[(r["index"], r["reason"]) for r in removed],
 		)
 		return kept, removed
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — module-level fail-safe contract per docstring: "on any parse error, timeout, or LLM failure the changeset passes through unchanged". Tests inject RuntimeError to verify the broad guarantee.
 		logger.warning("Reflection step failed, changeset passes through: %s", e)
 		return changeset, []
