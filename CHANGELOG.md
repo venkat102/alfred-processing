@@ -43,6 +43,33 @@ starting at 0.2.0.
   Alfred doesn't expose).
 
 ### Added
+- **Structured JSON logging with context propagation** (TD-M3). New
+  module `alfred/obs/logging_setup.py` bridges stdlib `logging` through
+  structlog so existing `logging.getLogger(...)` calls gain JSON output
+  (production) or console output (dev) without being rewritten.
+  `bind_request_context(site_id=…, user=…, conversation_id=…)` runs on
+  WebSocket auth; `clear_request_context()` runs on disconnect. Every
+  log line in the connection's scope auto-carries those fields.
+  Redaction is reapplied via a stdlib `Filter` and structlog processors
+  so both `logger.info("x=%s", {...})` and native `log.info("...", k=v)`
+  styles are scrubbed.
+- **Mypy clean baseline** (TD-L2). Every file under `alfred/`
+  (79 source files) passes a stock mypy run. CI gates against
+  regressions via a blocking `mypy` job. Config under `[tool.mypy]` in
+  `pyproject.toml` with `ignore_missing_imports = true` for CrewAI /
+  LiteLLM / ollama / httpx-ws (no stubs). No per-file ignores — every
+  genuine type issue was fixed instead.
+- **Unified error response shape** (TD-M2). Global `HTTPException`
+  handler rewrites every error body to the canonical
+  `{error, code, details}` shape defined by `ErrorResponse`. Callers
+  use `alfred.api.errors.raise_error(...)` for new code; legacy
+  string-detail exceptions and third-party middleware are wrapped by
+  the same handler so all clients branch on a single JSON shape.
+- **LLM dedicated thread pool** (TD-H6 phase 1). `alfred/llm_client.py`
+  now uses a module-level `ThreadPoolExecutor(max_workers=LLM_POOL_SIZE)`
+  (default 16) with `alfred-llm-*` thread prefix, instead of the
+  shared default executor. Prevents a spike of concurrent LLM calls
+  from starving heartbeats / health checks / admin calls.
 - **CI/CD pipeline** (TD-C4). `.github/workflows/ci.yml` with lint (ruff,
   informational), test (pytest + coverage + Redis service), security
   (pip-audit, blocking), docker (build + boot smoke, blocking), and a
@@ -67,6 +94,30 @@ starting at 0.2.0.
   Redis growth and silent maxmemory-policy eviction of in-flight state.
 
 ### Changed
+- **`_phase_post_crew` decomposed into `safety_nets/` package** (TD-H1).
+  The 351-line god-method now orchestrates seven standalone helpers
+  (drift detection, rescue, backfill, report-handoff, module
+  validation, empty-changeset error). No behavior change — pure
+  extraction, every existing test passes against the new shape.
+- **Single-worker default per container** (TD-H7, Option A).
+  `Settings.WORKERS: int = 1`, `Dockerfile ENV WORKERS=1`,
+  `docker-compose.yml` default, `.env.example`. Startup logs a
+  WARNING if the operator overrides it higher, naming the state
+  (`ConnectionState`, MCP pending futures, `_pending_questions`) that
+  will be lost on a LB reconnect. Scale via container replicas with
+  sticky WebSocket routing at the LB instead.
+- **Broad exceptions narrowed across `alfred/`** (TD-H3 phase 2).
+  119 grandfathered `# noqa: BLE001` sites were worked down to 53.
+  Every remaining broad catch now carries a rationale comment
+  identifying the boundary (LLM, CrewAI, MCP, 3rd-party ML, metrics
+  best-effort, handler wrapper, or test contract). `tests/` is fully
+  narrowed (no `# noqa: BLE001` remaining there).
+- **JWT issuer / audience claims** (TD-M1). `verify_jwt_token` now
+  accepts optional `issuer` and `audience` arguments; when
+  `JWT_ISSUER` / `JWT_AUDIENCE` settings are set, the values are
+  enforced against the token's `iss` / `aud` claims. Backward-
+  compatible: empty settings skip enforcement so existing tokens
+  keep working.
 - **Config unification** (TD-H4). All `ALFRED_*` feature flags moved into
   `Settings` as typed fields. `get_settings()` now `@lru_cache`d so hot-path
   reads don't re-validate Pydantic per call. One exception: `alfred.security.
@@ -87,6 +138,20 @@ starting at 0.2.0.
   docstring documents the convention for future additions.
 
 ### Fixed
+- **`_run_insights_short_circuit` NameError**. The conversation-memory
+  write referenced an undefined `reply` (rename regression) — crashed
+  every insights-mode turn that had `conversation_memory` set. Now
+  uses `result.reply` consistently.
+- **`INSIGHTS_TASK_DESCRIPTION.format(...)` KeyError**. The template
+  contains literal JSON examples like `{"disabled": 0}` that `.format`
+  treated as format keys and crashed the whole insights-crew build.
+  Switched to two targeted `str.replace` calls for the two real
+  placeholders (`{prompt}`, `{user_context}`).
+- **Test/production code drift closed** (TD-H9). The
+  `_apply_safety_net` and `_apply_aggregation_safety_net` helpers in
+  `tests/test_report_name_safety_net.py` are now thin adapters that
+  call the real production functions from
+  `alfred/api/safety_nets/report_handoff.py` — bundled with TD-H1.
 - **Analytics-shape prompts routed correctly in Dev mode**. Hybrid
   redirect: Dev + analytics-shape → Insights with `source=analytics_redirect`.
   User can override via `force_dev_override=true` from UI banner.
@@ -99,11 +164,14 @@ starting at 0.2.0.
   the aggregation detector supports.
 
 ### Follow-ups tracked
-- TD-H1: decompose `_phase_post_crew` (351-line god-method).
-- TD-H2: split mega-files (`pipeline.py`, `websocket.py`, `orchestrator.py`, `crew.py`).
-- TD-H3: replace 109 broad `except Exception:` blocks with specific ones.
-- TD-H6: dedicated LLM thread pool (pool-exhaustion risk at scale).
-- TD-H7: multi-worker state story (single-worker-per-container or Redis-backed).
-- TD-H8 / #19: coordinated crewai + litellm bump to retire the CVE ignore-list.
-- TD-M1/M2/M3/M5, TD-L2/L3/L4: see `docs/tech-debt-backlog.md` for the
-  full 31-task backlog + sequencing.
+- TD-H2: split mega-files (`pipeline.py`, `websocket.py`,
+  `orchestrator.py`, `crew.py`). Pure refactor, four PRs.
+- TD-H6 Phase 2: migrate LLM client to `httpx.AsyncClient`. Gated on
+  reproducing the historical httpcore read-timeout bug against
+  current versions before ripping out the thread pool.
+- TD-M5: secrets manager integration (AWS Secrets Manager / Vault /
+  Doppler). Needs deploy-target decision first.
+- TD-L4: admin service key rotation. Needs admin-portal-side JWT
+  issuance to coordinate with.
+- #19: coordinated crewai + litellm bump to retire the CVE
+  ignore-list. Deliberate coordinated work per the pyproject comment.
