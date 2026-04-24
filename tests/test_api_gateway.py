@@ -429,3 +429,95 @@ class TestWebSocket:
 
 				assert resp["type"] == "error"
 				assert resp["data"]["code"] == "INVALID_JSON"
+
+	async def test_ws_prompt_rate_limit_rejects(self, app):
+		"""When check_rate_limit returns False, a prompt message should be
+		rejected with a RATE_LIMIT error carrying the documented fields
+		(retry_after, limit). The check sits between the clarifier-answer
+		fast-path and the PIPELINE_BUSY check so neither of those fires
+		first."""
+		try:
+			from httpx_ws import aconnect_ws
+			from httpx_ws.transport import ASGIWebSocketTransport
+		except ImportError:
+			pytest.skip("httpx_ws not installed")
+
+		from unittest.mock import AsyncMock, patch
+
+		# Force the rate-limit middleware to deny. The WS prompt handler
+		# imports the check at the call site, so we patch there.
+		with patch(
+			"alfred.middleware.rate_limit.check_rate_limit",
+			new=AsyncMock(return_value=(False, 0, 42)),
+		):
+			async with AsyncClient(
+				transport=ASGIWebSocketTransport(app=app),
+				base_url="http://test",
+			) as ws_client:
+				async with aconnect_ws("/ws/test-conv-ratelimit", ws_client) as ws:
+					# Use a tiny explicit cap so the error message
+					# echoes it back deterministically.
+					await ws.send_json({
+						"api_key": API_KEY,
+						"jwt_token": _make_jwt(),
+						"site_config": {"max_tasks_per_user_per_hour": 5},
+					})
+					auth = json.loads(await ws.receive_text())
+					assert auth["type"] == "auth_success"
+
+					await ws.send_json({
+						"msg_id": "prompt-1",
+						"type": "prompt",
+						"data": {"text": "Create a Book DocType"},
+					})
+
+					# Skip ping frames.
+					resp = json.loads(await ws.receive_text())
+					while resp.get("type") == "ping":
+						resp = json.loads(await ws.receive_text())
+
+					assert resp["type"] == "error"
+					assert resp["data"]["code"] == "RATE_LIMIT"
+					assert resp["data"]["retry_after"] == 42
+					assert resp["data"]["limit"] == 5
+					assert "5/hour" in resp["data"]["error"]
+
+	async def test_ws_prompt_rate_limit_allows_when_under_cap(self, app):
+		"""When check_rate_limit allows, no RATE_LIMIT error fires. We stop
+		the pipeline before it actually runs by patching _run_agent_pipeline
+		to a no-op - we only care that the rate-limit check didn't reject."""
+		try:
+			from httpx_ws import aconnect_ws
+			from httpx_ws.transport import ASGIWebSocketTransport
+		except ImportError:
+			pytest.skip("httpx_ws not installed")
+
+		from unittest.mock import AsyncMock, patch
+
+		with patch(
+			"alfred.middleware.rate_limit.check_rate_limit",
+			new=AsyncMock(return_value=(True, 19, 0)),
+		), patch(
+			"alfred.api.websocket._run_agent_pipeline",
+			new=AsyncMock(return_value=None),
+		) as run_pipeline:
+			async with AsyncClient(
+				transport=ASGIWebSocketTransport(app=app),
+				base_url="http://test",
+			) as ws_client:
+				async with aconnect_ws("/ws/test-conv-rateok", ws_client) as ws:
+					await ws.send_json({"api_key": API_KEY, "jwt_token": _make_jwt()})
+					auth = json.loads(await ws.receive_text())
+					assert auth["type"] == "auth_success"
+
+					await ws.send_json({
+						"msg_id": "prompt-1",
+						"type": "prompt",
+						"data": {"text": "Create a Book DocType"},
+					})
+
+					# Give the scheduled pipeline task a tick to run so the
+					# mock gets awaited before we assert.
+					import asyncio as _asyncio
+					await _asyncio.sleep(0.05)
+					assert run_pipeline.await_count == 1

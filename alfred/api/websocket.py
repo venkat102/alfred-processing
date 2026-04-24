@@ -649,7 +649,9 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 		# If the pipeline is paused waiting for a clarification answer, route
 		# this prompt to the oldest pending question instead of starting a new
 		# pipeline. This lets the user just type their answer in the chat box
-		# without any special UI state - the frontend stays simple.
+		# without any special UI state - the frontend stays simple. Answers
+		# do NOT count against the rate limit (they're continuation of a
+		# running task, not a new one).
 		if conn._pending_questions:
 			oldest_id = next(iter(conn._pending_questions))
 			logger.info(
@@ -657,6 +659,45 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 				oldest_id, conn.user, conn.site_id,
 			)
 			await conn.resolve_question(oldest_id, prompt_text)
+			return
+
+		# Rate limit: mirror the REST /api/v1/tasks behaviour. The REST path
+		# caps prompts at `max_tasks_per_user_per_hour` per (site_id, user);
+		# WS had no equivalent until this check, so an authenticated user
+		# could open many conversations and burn LLM quota. Reuses the same
+		# Redis sliding-window implementation in middleware/rate_limit.py
+		# so REST and WS share one quota bucket per user.
+		from alfred.middleware.rate_limit import (
+			DEFAULT_MAX_TASKS_PER_HOUR, check_rate_limit,
+		)
+		max_per_hour = int(
+			conn.site_config.get("max_tasks_per_user_per_hour")
+			or DEFAULT_MAX_TASKS_PER_HOUR
+		)
+		allowed, remaining, retry_after = await check_rate_limit(
+			websocket.app.state.redis,
+			conn.site_id,
+			conn.user,
+			max_per_hour=max_per_hour,
+		)
+		if not allowed:
+			logger.warning(
+				"WS rate limit exceeded for %s@%s: retry_after=%ds",
+				conn.user, conn.site_id, retry_after,
+			)
+			await websocket.send_json({
+				"msg_id": str(uuid.uuid4()),
+				"type": "error",
+				"data": {
+					"error": (
+						f"You've hit the task rate limit ({max_per_hour}/hour). "
+						f"Try again in {retry_after}s."
+					),
+					"code": "RATE_LIMIT",
+					"retry_after": retry_after,
+					"limit": max_per_hour,
+				},
+			})
 			return
 
 		# Reject concurrent prompts on the same conversation. Two parallel
