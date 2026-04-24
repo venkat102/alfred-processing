@@ -7,6 +7,7 @@ import jwt
 import pytest
 import redis.asyncio as aioredis
 from httpx import ASGITransport, AsyncClient
+from httpx_ws import WebSocketDisconnect
 
 from alfred.main import create_app
 from alfred.middleware.auth import create_jwt_token, verify_jwt_token
@@ -36,7 +37,7 @@ async def app():
 		pool = aioredis.ConnectionPool.from_url(REDIS_URL, max_connections=5, decode_responses=True)
 		test_app.state.redis = aioredis.Redis(connection_pool=pool)
 		await test_app.state.redis.ping()
-	except Exception:  # noqa: BLE001
+	except (aioredis.RedisError, OSError):
 		test_app.state.redis = None
 
 	yield test_app
@@ -209,7 +210,7 @@ class TestJWT:
 		}
 		try:
 			unsigned = jwt.encode(payload, "", algorithm="none")
-		except Exception:  # noqa: BLE001
+		except (jwt.InvalidAlgorithmError, NotImplementedError):
 			# Newer PyJWT refuses to encode with alg=none. That's even safer.
 			return
 		with pytest.raises(ValueError):
@@ -450,7 +451,7 @@ class TestWebSocketRateLimit:
 					for _ in range(5):
 						try:
 							frame = json.loads(await ws.receive_text())
-						except Exception:  # noqa: BLE001
+						except (WebSocketDisconnect, json.JSONDecodeError, RuntimeError):
 							break
 						if frame.get("type") == "error" and frame.get("data", {}).get("code") == "RATE_LIMITED":
 							rate_limited = True

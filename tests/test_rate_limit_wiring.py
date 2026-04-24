@@ -93,7 +93,7 @@ async def test_counter_increments_on_block_with_source_label():
 	def _val():
 		try:
 			return rate_limit_block_total.labels(source="websocket")._value.get()
-		except Exception:  # noqa: BLE001
+		except (KeyError, AttributeError):
 			return 0
 
 	before = _val()
@@ -115,7 +115,7 @@ async def test_counter_does_not_increment_on_allow():
 	def _val():
 		try:
 			return rate_limit_block_total.labels(source="websocket")._value.get()
-		except Exception:  # noqa: BLE001
+		except (KeyError, AttributeError):
 			return 0
 
 	before = _val()
@@ -136,7 +136,7 @@ async def test_counter_distinguishes_rest_vs_websocket_source():
 	def _val(source):
 		try:
 			return rate_limit_block_total.labels(source=source)._value.get()
-		except Exception:  # noqa: BLE001
+		except (KeyError, AttributeError):
 			return 0
 
 	rest_before = _val("rest")

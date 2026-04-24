@@ -280,7 +280,7 @@ def test_counter_increments_on_block():
 	def _val(reason):
 		try:
 			return ssrf_block_total.labels(reason=reason)._value.get()
-		except Exception:  # noqa: BLE001
+		except (KeyError, AttributeError):
 			return 0
 
 	before = _val("private_ip")
@@ -296,7 +296,7 @@ def test_counter_reason_labels_distinct():
 	def _val(reason):
 		try:
 			return ssrf_block_total.labels(reason=reason)._value.get()
-		except Exception:  # noqa: BLE001
+		except (KeyError, AttributeError):
 			return 0
 
 	scheme_before = _val("bad_scheme")
@@ -321,7 +321,7 @@ def test_counter_does_not_increment_on_allowed():
 	def _val(reason):
 		try:
 			return ssrf_block_total.labels(reason=reason)._value.get()
-		except Exception:  # noqa: BLE001
+		except (KeyError, AttributeError):
 			return 0
 
 	before_private = _val("private_ip")
