@@ -296,3 +296,123 @@ class TestHandlePlan:
 		validated = PlanDoc.model_validate(out)
 		assert validated is not None
 		assert "crew state went bad" in out["summary"] or "incomplete" in out["title"].lower()
+
+
+# ── #FLOW4: parse_failed flag is set on every stub path ──────────────
+
+
+class TestParseFailedFlag:
+	"""Every stub-returning path must set parse_failed=True so the UI can
+	tell a real plan apart from an error-fallback. A real plan has
+	parse_failed=False (default from the model)."""
+
+	def test_successful_plan_has_parse_failed_false(self):
+		conn = _make_conn()
+
+		async def fake_run(**kwargs):
+			return {"status": "completed", "result": json.dumps(VALID_PLAN)}
+
+		with patch("alfred.tools.mcp_tools.build_mcp_tools", return_value={}), \
+			 patch("alfred.tools.mcp_tools.init_run_state"), \
+			 patch("alfred.agents.plan_crew.build_plan_crew", return_value=(MagicMock(), MagicMock())), \
+			 patch("alfred.agents.crew.run_crew", side_effect=fake_run):
+			out = _run(
+				handle_plan(
+					prompt="q",
+					conn=conn,
+					conversation_id="conv-1",
+					user_context={"user": "tester"},
+				)
+			)
+		assert out["parse_failed"] is False
+		assert out["parse_failure_detail"] is None
+
+	def test_json_parse_failure_sets_flag_and_detail(self):
+		conn = _make_conn()
+
+		async def fake_run(**kwargs):
+			return {"status": "completed", "result": "this is not json at all {{{{"}
+
+		with patch("alfred.tools.mcp_tools.build_mcp_tools", return_value={}), \
+			 patch("alfred.tools.mcp_tools.init_run_state"), \
+			 patch("alfred.agents.plan_crew.build_plan_crew", return_value=(MagicMock(), MagicMock())), \
+			 patch("alfred.agents.crew.run_crew", side_effect=fake_run):
+			out = _run(
+				handle_plan(
+					prompt="q",
+					conn=conn,
+					conversation_id="conv-1",
+					user_context={"user": "tester"},
+				)
+			)
+		assert out["parse_failed"] is True
+		assert "JSON parse failed" in out["parse_failure_detail"]
+		assert "this is not json" in out["parse_failure_detail"]
+
+	def test_schema_validation_failure_sets_flag_and_detail(self):
+		# _validate_as_plan_doc gets a dict that parses as JSON but
+		# doesn't match PlanDoc shape - missing required fields.
+		out = _validate_as_plan_doc(
+			{"some_random_key": "nope"}, user_prompt="q",
+		)
+		assert out["parse_failed"] is True
+		assert "Schema validation failed" in out["parse_failure_detail"]
+
+	def test_crew_run_exception_sets_flag_and_detail(self):
+		conn = _make_conn()
+
+		async def boom(**kwargs):
+			raise RuntimeError("crew exploded")
+
+		with patch("alfred.tools.mcp_tools.build_mcp_tools", return_value={}), \
+			 patch("alfred.tools.mcp_tools.init_run_state"), \
+			 patch("alfred.agents.plan_crew.build_plan_crew", return_value=(MagicMock(), MagicMock())), \
+			 patch("alfred.agents.crew.run_crew", side_effect=boom):
+			out = _run(
+				handle_plan(
+					prompt="q",
+					conn=conn,
+					conversation_id="conv-1",
+					user_context={"user": "tester"},
+				)
+			)
+		assert out["parse_failed"] is True
+		assert "crew exploded" in out["parse_failure_detail"]
+
+	def test_non_completed_status_sets_flag(self):
+		conn = _make_conn()
+
+		async def failed_run(**kwargs):
+			return {"status": "failed", "error": "crew died"}
+
+		with patch("alfred.tools.mcp_tools.build_mcp_tools", return_value={}), \
+			 patch("alfred.tools.mcp_tools.init_run_state"), \
+			 patch("alfred.agents.plan_crew.build_plan_crew", return_value=(MagicMock(), MagicMock())), \
+			 patch("alfred.agents.crew.run_crew", side_effect=failed_run):
+			out = _run(
+				handle_plan(
+					prompt="q",
+					conn=conn,
+					conversation_id="conv-1",
+					user_context={"user": "tester"},
+				)
+			)
+		assert out["parse_failed"] is True
+		assert "crew died" in out["parse_failure_detail"]
+
+	def test_build_crew_failure_sets_flag(self):
+		conn = _make_conn()
+
+		with patch("alfred.tools.mcp_tools.build_mcp_tools", return_value={}), \
+			 patch("alfred.tools.mcp_tools.init_run_state"), \
+			 patch("alfred.agents.plan_crew.build_plan_crew", side_effect=ValueError("bad builder")):
+			out = _run(
+				handle_plan(
+					prompt="q",
+					conn=conn,
+					conversation_id="conv-1",
+					user_context={"user": "tester"},
+				)
+			)
+		assert out["parse_failed"] is True
+		assert "bad builder" in out["parse_failure_detail"]

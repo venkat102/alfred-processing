@@ -63,8 +63,45 @@ class PlanDoc(BaseModel):
 	estimated_items: int = Field(
 		0, description="Rough count of changeset items a Dev-mode run will produce"
 	)
+	parse_failed: bool = Field(
+		False,
+		description=(
+			"True when the plan document is a stub produced because the "
+			"planning agents' output could not be parsed, validated, or "
+			"the crew did not complete. UI should disable Approve / Build "
+			"buttons when this flag is set - approving a stub would try to "
+			"build placeholder steps that were never real."
+		),
+	)
+	parse_failure_detail: str | None = Field(
+		None,
+		description=(
+			"When parse_failed is True, carries a human-readable reason "
+			"(e.g. 'JSON parse failed', 'schema validation failed') plus "
+			"up to 500 chars of the raw agent output for debugging. Null "
+			"when parse_failed is False."
+		),
+	)
 
 	@classmethod
-	def stub(cls, title: str = "Plan", summary: str = "") -> "PlanDoc":
-		"""Build an empty fallback plan doc for error paths."""
-		return cls(title=title, summary=summary or "No plan could be generated.")
+	def stub(
+		cls,
+		title: str = "Plan",
+		summary: str = "",
+		*,
+		parse_failed: bool = False,
+		parse_failure_detail: str | None = None,
+	) -> "PlanDoc":
+		"""Build an empty fallback plan doc for error paths.
+
+		``parse_failed`` defaults to False so callers that build a stub
+		for non-parse reasons (e.g. MCP unreachable) don't tag the plan
+		as parse_failed incorrectly. Set it explicitly for JSON / schema
+		failures so the UI can render the error state.
+		"""
+		return cls(
+			title=title,
+			summary=summary or "No plan could be generated.",
+			parse_failed=parse_failed,
+			parse_failure_detail=parse_failure_detail,
+		)
