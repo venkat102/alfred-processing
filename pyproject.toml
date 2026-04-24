@@ -37,6 +37,13 @@ dependencies = [
 	"pydantic-settings>=2.0,<3.0",
 	"pyjwt>=2.8,<3.0",
 	"prometheus-client>=0.20,<1.0",
+	# TD-M3: structured (JSON) logging with contextvars. Bridged to the
+	# stdlib ``logging`` module via structlog.stdlib.ProcessorFormatter,
+	# so existing ``logging.getLogger(...).info(...)`` calls still work;
+	# structured context (site_id, user, conversation_id) is bound per
+	# request/WS connection and emitted on every log line produced
+	# inside that context.
+	"structlog>=24.1,<26.0",
 ]
 
 [project.optional-dependencies]

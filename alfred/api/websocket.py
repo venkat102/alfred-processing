@@ -1257,6 +1257,17 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 	if conn is None:
 		return
 
+	# TD-M3: bind structured context for the life of this connection so
+	# every log line from the pipeline / handlers / tools carries
+	# site_id, user, conversation_id without the caller having to pass
+	# them explicitly.
+	from alfred.obs.logging_setup import bind_request_context, clear_request_context
+	bind_request_context(
+		site_id=conn.site_id,
+		user=conn.user,
+		conversation_id=conversation_id,
+	)
+
 	logger.info("WebSocket authenticated: user=%s, site=%s, conversation=%s", conn.user, conn.site_id, conversation_id)
 
 	# Register connection
@@ -1312,3 +1323,8 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 				await conn.active_pipeline
 			except (asyncio.CancelledError, Exception):  # noqa: BLE001 — intentional double-catch: CancelledError is expected after .cancel(); any other Exception from the pipeline's own error handling must not block disconnect cleanup. CancelledError is explicit because it's a BaseException subclass in Py 3.8+ and wouldn't be caught by Exception alone.
 				pass
+
+		# TD-M3: drop the bound structured-log context so a later
+		# connection on the same asyncio task doesn't inherit stale
+		# site_id / user / conversation_id.
+		clear_request_context()

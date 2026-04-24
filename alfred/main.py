@@ -6,10 +6,9 @@ Receives tasks from client apps via WebSocket and REST API.
 
 import logging
 import os
-import sys
 from contextlib import asynccontextmanager
 
-from alfred.obs.log_redaction import RedactingFormatter
+from alfred.obs.logging_setup import configure_logging, default_log_format
 
 # Resolve log level from env before Settings is loaded, so import-time
 # log lines in other modules respect the level. Default INFO in
@@ -18,21 +17,13 @@ from alfred.obs.log_redaction import RedactingFormatter
 _LOG_LEVEL_NAME = os.environ.get("LOG_LEVEL", "INFO").upper()
 _LOG_LEVEL = getattr(logging, _LOG_LEVEL_NAME, logging.INFO)
 
-# Attach the redacting formatter to a single stdout handler and
-# install it as the root handler. basicConfig is a no-op if handlers
-# already exist, so we configure explicitly.
-_root_handler = logging.StreamHandler(stream=sys.stdout)
-_root_handler.setFormatter(RedactingFormatter(
-	fmt="%(asctime)s %(name)s %(levelname)s: %(message)s",
-))
-logging.root.handlers = [_root_handler]
-logging.root.setLevel(_LOG_LEVEL)
-
-# Alfred loggers follow the root level; library loggers stay quiet.
-logging.getLogger("alfred").setLevel(_LOG_LEVEL)
-logging.getLogger("websockets").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("LiteLLM").setLevel(logging.WARNING)  # Silence cost calculator spam for Ollama
+# TD-M3: structured logging. ``configure_logging`` installs structlog
+# as the stdlib root handler's formatter so existing ``logging.
+# getLogger(...).info(...)`` calls automatically gain JSON output +
+# contextvars (site_id / user / conversation_id bound per request).
+# Redaction is preserved via a structlog processor that re-uses the
+# same sensitive-key rules as the old ``RedactingFormatter``.
+configure_logging(_LOG_LEVEL, log_format=default_log_format())
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
