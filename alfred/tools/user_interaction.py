@@ -63,10 +63,24 @@ class UserInteractionHandler:
 
 		try:
 			await self._send(message)
-			logger.info("Question sent to user: %s (id=%s)", question[:80], msg_id)
+			# Question text + user response text come from (or derive from)
+			# the user's prompt context. Logging 80 chars of either at INFO
+			# leaked them into whatever logging pipeline production ships to.
+			# Keep INFO for metadata-only (msg_id + length) so dashboards
+			# still see activity; put the actual text at DEBUG for local
+			# troubleshooting only.
+			logger.info("Question sent to user: id=%s chars=%d", msg_id, len(question or ""))
+			logger.debug("Question text (id=%s): %s", msg_id, (question or "")[:80])
 
 			response = await asyncio.wait_for(future, timeout=self._timeout)
-			logger.info("User responded to %s: %s", msg_id, response[:80] if response else "")
+			logger.info(
+				"User responded to %s: chars=%d",
+				msg_id, len(response or "") if response else 0,
+			)
+			logger.debug(
+				"User response text (id=%s): %s",
+				msg_id, (response or "")[:80] if response else "",
+			)
 			return response
 		except asyncio.TimeoutError:
 			logger.warning("User response timeout for question %s (after %ds)", msg_id, self._timeout)

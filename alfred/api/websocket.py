@@ -1038,7 +1038,12 @@ async def _clarify_requirements(
 			num_ctx_override=8192,
 			timeout=int(site_config.get("llm_timeout") or 60),
 		)
-		logger.info("Clarify pass result (first 500): %r", (raw or "")[:500])
+		# Clarify LLM output is derived from the user's prompt and typically
+		# contains user context (field names, entity names, values). Logging
+		# 500 chars at INFO leaks that content; keep length at INFO for
+		# dashboard activity, verbatim at DEBUG for local troubleshooting.
+		logger.info("Clarify pass result: chars=%d", len(raw or ""))
+		logger.debug("Clarify pass result (first 500): %r", (raw or "")[:500])
 
 		questions = []
 		try:
