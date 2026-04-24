@@ -370,12 +370,36 @@ _connections: dict[str, "ConnectionState"] = {}
 class ConnectionState:
 	"""Per-connection state for an authenticated WebSocket session."""
 
-	def __init__(self, websocket: WebSocket, site_id: str, user: str, roles: list[str], site_config: dict):
+	# Message types we don't persist to the resume stream. Ack, ping, and
+	# mcp_response are transport/meta events with no user-facing meaning;
+	# echo is a test-only response. Everything else lands in the stream so
+	# a reconnecting client can replay what it missed (see `resume`
+	# handler in _handle_custom_message).
+	_STREAM_SKIP_TYPES: frozenset[str] = frozenset({
+		"ack", "ping", "mcp_response", "echo",
+	})
+
+	def __init__(
+		self,
+		websocket: WebSocket,
+		site_id: str,
+		user: str,
+		roles: list[str],
+		site_config: dict,
+		conversation_id: str | None = None,
+		store: "StateStore | None" = None,
+	):
 		self.websocket = websocket
 		self.site_id = site_id
 		self.user = user
 		self.roles = roles
 		self.site_config = site_config
+		# conversation_id + store are set at handshake time so ``send``
+		# can persist each user-visible message to the Redis stream.
+		# They're optional because some tests construct ConnectionState
+		# without a handshake - the persist path is a no-op in that case.
+		self.conversation_id: str | None = conversation_id
+		self.store = store
 		self.last_acked_msg_id: str | None = None
 		self.pending_acks: dict[str, dict] = {}
 		# For human_input: map of question msg_id -> asyncio.Future
@@ -405,8 +429,32 @@ class ConnectionState:
 		`on_call` activity-stream callback) should wrap this in try/except -
 		we don't swallow here because top-level pipeline steps need to know
 		when delivery failed so they can exit cleanly.
+
+		After a successful WS write, user-visible messages are persisted
+		to the conversation's Redis stream so a reconnecting client can
+		replay what it missed via ``resume``. Transport / meta messages
+		(ack / ping / mcp_response / echo) are skipped - see
+		_STREAM_SKIP_TYPES. Persist failures are logged at DEBUG and
+		silently swallowed; an event not making it to the stream is
+		tolerable, but propagating a Redis exception up into the
+		pipeline's send path would cause phase-level failures.
 		"""
 		await self.websocket.send_json(message)
+
+		if self.store is None or not self.conversation_id:
+			return
+		msg_type = message.get("type")
+		if not msg_type or msg_type in self._STREAM_SKIP_TYPES:
+			return
+		try:
+			await self.store.push_event(
+				self.site_id, self.conversation_id, message,
+			)
+		except Exception as e:
+			logger.debug(
+				"push_event for type=%s conv=%s failed: %s",
+				msg_type, self.conversation_id, e,
+			)
 
 	async def ask_human(self, question: str, choices: list[str] | None = None, timeout: int = 900) -> str:
 		"""Send a question to the user and wait for their response.
@@ -529,12 +577,23 @@ async def _authenticate_handshake(
 
 	site_config = handshake.get("site_config", {})
 
+	# Attach the state store if Redis is configured. ConnectionState.send
+	# uses it to mirror user-visible events into the resume stream, and
+	# the `resume` message handler reads from it.
+	redis = getattr(websocket.app.state, "redis", None)
+	store = None
+	if redis is not None:
+		from alfred.state.store import StateStore
+		store = StateStore(redis)
+
 	conn = ConnectionState(
 		websocket=websocket,
 		site_id=jwt_payload["site_id"],
 		user=jwt_payload["user"],
 		roles=jwt_payload["roles"],
 		site_config=site_config,
+		conversation_id=conversation_id,
+		store=store,
 	)
 
 	# Wire the MCP client so agents can call live Client App tools.
@@ -623,6 +682,73 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 		return
 
 	if msg_type == "resume":
+		# Client reconnected after a WS drop. Replay every user-visible
+		# event from the Redis stream that landed AFTER the last_msg_id
+		# the client acknowledged receiving. Events in the stream are
+		# serialised in the order they went out, so a simple linear
+		# scan finds the right starting point.
+		#
+		# Contract: client MAY receive duplicates if it resumes with
+		# last_msg_id=<something it already saw but never ack'd>. The
+		# UI layer dedupes by msg_id, which is already guaranteed
+		# unique per WS message by the server.
+		last_msg_id = (data.get("data") or {}).get("last_msg_id")
+		if not last_msg_id:
+			# No anchor - nothing to replay. Could replay everything
+			# but that's almost certainly not what the client wants
+			# (would dump thousands of historical events on an open
+			# tab). Silent no-op matches the old behaviour.
+			return
+		if conn.store is None or not conn.conversation_id:
+			# Redis not configured or conn missing context. Can't
+			# replay; silent no-op so the client's reconnect UX isn't
+			# blocked on infra state.
+			return
+
+		try:
+			events = await conn.store.get_events(
+				conn.site_id, conn.conversation_id, since_id="0",
+			)
+		except Exception as e:
+			logger.warning(
+				"Resume replay for %s@%s conv=%s failed at get_events: %s",
+				conn.user, conn.site_id, conversation_id, e,
+			)
+			return
+
+		# Find the stream entry whose msg_id matches what the client
+		# last saw. Start replay from the NEXT one.
+		replay_start = None
+		for idx, entry in enumerate(events):
+			if entry["data"].get("msg_id") == last_msg_id:
+				replay_start = idx + 1
+				break
+
+		if replay_start is None:
+			# last_msg_id not in the stream window (either too old -
+			# TTL or maxlen trimmed it - or never existed). Replay the
+			# whole remaining window; the client will dedupe.
+			replay_start = 0
+
+		to_replay = events[replay_start:]
+		logger.info(
+			"Resume replay for %s@%s conv=%s: %d events after msg_id=%s",
+			conn.user, conn.site_id, conversation_id,
+			len(to_replay), last_msg_id,
+		)
+
+		# Send via the raw WS, NOT via conn.send(), so we don't
+		# re-push events to the stream (that would duplicate every
+		# replay into the stream).
+		for entry in to_replay:
+			try:
+				await websocket.send_json(entry["data"])
+			except Exception as e:
+				logger.warning(
+					"Resume replay send for %s@%s failed partway: %s",
+					conn.user, conn.site_id, e,
+				)
+				return
 		return
 
 	if msg_type == "user_response":
