@@ -63,41 +63,62 @@ validation, empty-changeset error) lives in its own file under
 
 ---
 
-## TD-H2 — Split mega-files (pipeline, websocket, orchestrator, crew)
+## TD-H2 — Split mega-files (pipeline, websocket, orchestrator, crew) ⏳ IN PROGRESS (2 of 4 PRs shipped)
 
-**Why pending:** L-sized pure refactor. Four files to split; each is
-> 1000 LOC. Biggest risk: a stray import reorder breaks a module
-that imports from one of these and the test suite doesn't catch it
-until a production-only path runs.
+Progress so far on `refactor/decompose-post-crew`:
 
-**Blocking factors:** best done *after* TD-H1 lands so
-`_phase_post_crew` isn't at 351 lines inside the split target.
+  - ✅ PR 1 — `alfred/orchestrator.py` (1069 LOC) → package
+    (`__init__`/`mode`/`intent`/`module`, commit `1ea1edf`).
+    All 4 files under 500 LOC. Lazy-import pattern established for
+    tests that patch private names at the package path
+    (`patch("alfred.orchestrator._classify_X_llm", ...)`).
+  - ✅ PR 2 — `alfred/api/websocket.py` (1330 LOC) → package
+    (`__init__`/`extract`/`connection`/`pipeline_stages`, commit
+    `30f9311`). Every file under 550 LOC.
 
-**Rough effort:** L (3–5 d).
+**Still pending:**
 
-**Before-work checklist:**
-- [ ] Read `tech-debt-backlog.md` TD-H2 for the proposed package
-  shapes. They mirror natural seams already present in the
-  docstrings, so don't invent new structure.
-- [ ] Map every external import of each file via grep first:
+  - ⏳ PR 3 — `alfred/api/pipeline.py` (2129 LOC). Biggest and
+    trickiest: `AgentPipeline` is a single ~1500-LOC class with 20+
+    `_phase_*` methods, so a naive file split leaves one oversized
+    `runner.py`. Options under consideration:
+      (a) split the class via mixins, one module per concern group
+          (setup/orchestrate, dev-mode phases, resolve+build+run,
+          post-crew). Keeps MRO simple; each mixin ≤ 600 LOC.
+      (b) extract each phase body as a module-level function taking
+          the context, leave `_phase_X` methods as thin shims. More
+          mechanical churn but cleaner call graph.
+    Either way, plan first: draft the target structure on paper,
+    grep every `self.ctx.*` and `self._*` access in the class to
+    confirm what state each phase mutates, and only then start
+    writing files.
+
+  - ⏳ PR 4 — `alfred/agents/crew.py` (1080 LOC). Backlog flags this
+    as defer-worthy — concerns are tightly coupled (Crew / Task /
+    Agent definitions + state serialization + `run_crew`
+    orchestration). A naive split might move lines around without
+    actually improving navigation. Revisit only if pipeline.py PR
+    surfaces a natural seam.
+
+**Before-work checklist for PR 3:**
+- [ ] Read `tech-debt-backlog.md` TD-H2 for the proposed pipeline
+  package shape (extractors / context / runner / phases/).
+- [ ] Map every external import:
   ```
-  grep -rn 'from alfred.api.pipeline import\|from alfred.api.websocket import\|from alfred.orchestrator import\|from alfred.agents.crew import' alfred/ tests/
+  grep -rn 'from alfred.api.pipeline import' alfred/ tests/
   ```
-  The new `__init__.py` must re-export every named callable/class
-  currently imported from outside. Breaking re-exports = silent test
-  failures on things that import lazily.
-- [ ] Decide whether to split `crew.py` or leave it as one file. It's
-  1069 LOC but the concerns (Crew / Task / Agent definitions, state
-  serialization, `run_crew` orchestration) are tightly coupled. Might
-  not win much by splitting. Consider deferring.
+  The `__init__.py` must re-export every named callable/class
+  (`AgentPipeline`, `PipelineContext`, `StopSignal`, `_detect_drift`,
+  `_parse_report_candidate_marker`, `_extract_target_doctypes`).
+- [ ] Tests patch `alfred.api.pipeline._WARMUP_CACHE`,
+  `alfred.api.pipeline._INJECT_SITE_BUDGET`, `alfred.api.pipeline.
+  _PROBE_ATTEMPTS`, `alfred.api.pipeline._PROBE_RETRY_BACKOFF_S`, and
+  module-level constants — re-export those too.
 
-**Scope discipline:**
-- **One file at a time**, one PR each. Four PRs, not one.
+**Scope discipline** (inherited from backlog):
+- **One file at a time**, one PR each.
 - **No API changes, no behavior changes, no new abstractions.** If a
   test file needs changes, something's wrong.
-- **Keep the old file as a re-export shim** for the first release.
-  Downstream code (the Frappe client, any external integrations) may
-  import specific symbols; a hard rename breaks them.
 
 ---
 
