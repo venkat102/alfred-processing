@@ -291,12 +291,23 @@ def _parse_classifier_output(text: str) -> tuple[str | None, str, str]:
 	try:
 		parsed = json.loads(cleaned)
 	except Exception:
+		# Classifier LLM returned non-JSON. Two recovery paths below.
+		# Log once so prompt regressions are visible - the fallback
+		# path silently picked "low" confidence for weeks before.
 		match = _JSON_OBJECT_RE.search(cleaned)
 		if not match:
+			logger.warning(
+				"mode classifier JSON parse failed, no object match in output: %r",
+				cleaned[:160],
+			)
 			return None, "", "low"
 		try:
 			parsed = json.loads(match.group(0))
 		except Exception:
+			logger.warning(
+				"mode classifier JSON parse failed on regex-extracted object: %r",
+				match.group(0)[:160],
+			)
 			return None, "", "low"
 
 	if not isinstance(parsed, dict):
