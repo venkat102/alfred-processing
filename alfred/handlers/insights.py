@@ -105,7 +105,7 @@ async def handle_insights(
 			site_config=conn.site_config or {},
 			insights_tools=insights_tools,
 		)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — CrewAI builder boundary; internal raises (LLM init, tool wiring, agent factory) are 3rd-party and we must degrade rather than crash the chat
 		logger.warning("Failed to build insights crew: %s", e, exc_info=True)
 		return InsightsResult(reply=(
 			"I wasn't able to spin up the Insights agent just now. "
@@ -121,7 +121,7 @@ async def handle_insights(
 			conversation_id=conversation_id,
 			event_callback=event_callback,
 		)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — CrewAI run_crew boundary; LLM / tool / Redis / crewai-internal raises must degrade to a user-visible apology rather than propagate
 		logger.warning("Insights crew run raised: %s", e, exc_info=True)
 		return InsightsResult(reply=(
 			"I hit an error while looking that up on your site. "
@@ -167,7 +167,11 @@ async def handle_insights(
 		from alfred.handlers.insights_candidate import extract_report_candidate
 		try:
 			report_candidate = extract_report_candidate(prompt=prompt, reply=reply)
-		except Exception as e:  # noqa: BLE001
+		except (ValueError, KeyError, AttributeError, OSError) as e:
+			# extract_report_candidate uses regex (ValueError on bad
+			# pattern at runtime), dict access (KeyError on a malformed
+			# registry hit), and ModuleRegistry file load (OSError).
+			# Anything else is a logic bug — let it surface.
 			logger.warning(
 				"report_candidate extraction failed: %s", e, exc_info=True,
 			)

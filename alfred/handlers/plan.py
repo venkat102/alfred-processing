@@ -27,6 +27,8 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
 if TYPE_CHECKING:
 	from alfred.api.websocket import ConnectionState
 
@@ -74,7 +76,9 @@ def _parse_plan_doc_json(raw: str) -> dict | None:
 		parsed = json.loads(cleaned)
 		if isinstance(parsed, dict):
 			return parsed
-	except Exception:  # noqa: BLE001
+	except json.JSONDecodeError:
+		# Local model wrapped JSON in prose — fall through to the
+		# balanced-block scan below.
 		pass
 
 	# Fallback: find the first balanced { ... } block via JSONDecoder.
@@ -86,7 +90,8 @@ def _parse_plan_doc_json(raw: str) -> dict | None:
 			parsed, _end = decoder.raw_decode(cleaned[idx:])
 			if isinstance(parsed, dict):
 				return parsed
-		except Exception:  # noqa: BLE001
+		except json.JSONDecodeError:
+			# This `{` didn't open a valid JSON object — keep scanning.
 			continue
 	return None
 
@@ -102,7 +107,10 @@ def _validate_as_plan_doc(raw_obj: dict, user_prompt: str) -> dict:
 	try:
 		plan = PlanDoc.model_validate(raw_obj)
 		return plan.model_dump()
-	except Exception as e:  # noqa: BLE001
+	except ValidationError as e:
+		# Pydantic schema mismatch — fall back to the stub plan rather
+		# than surface a 30-line traceback to the user. Other Exception
+		# types here would be a logic bug; let them propagate.
 		logger.warning(
 			"Plan doc validation failed: %s. Raw keys=%s",
 			e,
@@ -183,7 +191,7 @@ async def handle_plan(
 			site_config=conn.site_config or {},
 			custom_tools=custom_tools,
 		)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — CrewAI builder boundary; same as handlers/insights.py for build_insights_crew. 3rd-party agent factory; degrade to stub plan.
 		logger.warning("Failed to build plan crew: %s", e, exc_info=True)
 		return PlanDoc.stub(
 			title="Plan unavailable",
@@ -202,7 +210,7 @@ async def handle_plan(
 			conversation_id=conversation_id,
 			event_callback=event_callback,
 		)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — CrewAI run_crew boundary; same as handlers/insights.py. LLM/tool/Redis raises must degrade to a stub plan rather than crash the chat.
 		logger.warning("Plan crew run raised: %s", e, exc_info=True)
 		return PlanDoc.stub(
 			title="Plan crew failed",
