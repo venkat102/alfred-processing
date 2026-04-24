@@ -69,6 +69,21 @@ logger = logging.getLogger("alfred.pipeline")
 # truly sick Ollama still surfaces an error - we just stop paying the
 # transient-reload tax on every prompt.
 _WARMUP_CACHE: dict[tuple[str, str], float] = {}
+
+# Deliberately shorter than the 10-minute `keep_alive` we send to Ollama
+# (line ~818). Those two values serve different purposes and must not
+# be conflated:
+#   - keep_alive=10m is an Ollama-side lever: "keep this model loaded in
+#     VRAM for 10 minutes after the last request". It bounds when the
+#     NEXT request pays the reload cost.
+#   - _WARMUP_CACHE_TTL=120s is a pipeline-side lever: "trust our last
+#     successful probe for 2 minutes before re-probing". It bounds how
+#     stale a liveness signal can be.
+# A shorter cache TTL means we re-probe more often, which catches
+# Ollama-server restarts / crashes / model evictions within 2 minutes
+# instead of waiting up to 10. That's the right trade - the probe is
+# ~100ms and the cost of NOT catching a restart is a failed prompt at
+# the user's expense. Do not bump this to match keep_alive.
 _WARMUP_CACHE_TTL = 120.0
 _PROBE_ATTEMPTS = 2
 _PROBE_RETRY_BACKOFF_S = 3.0
