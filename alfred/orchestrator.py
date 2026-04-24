@@ -288,13 +288,15 @@ def _parse_classifier_output(text: str) -> tuple[str | None, str, str]:
 
 	try:
 		parsed = json.loads(cleaned)
-	except Exception:  # noqa: BLE001
+	except json.JSONDecodeError:
+		# Local model wrapped JSON in prose; try the first balanced
+		# {...} block in the cleaned text.
 		match = _JSON_OBJECT_RE.search(cleaned)
 		if not match:
 			return None, "", "low"
 		try:
 			parsed = json.loads(match.group(0))
-		except Exception:  # noqa: BLE001
+		except json.JSONDecodeError:
 			return None, "", "low"
 
 	if not isinstance(parsed, dict):
@@ -350,7 +352,7 @@ async def _classify_with_llm(
 		)
 		logger.debug("Orchestrator classifier raw output: %r", raw[:300])
 		return _parse_classifier_output(raw)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — LLM-boundary contract; tests (test_llm_fallbacks etc) mock ollama_chat with RuntimeError to verify any backend failure falls back to low-confidence rather than crashing the orchestrator
 		logger.warning("Orchestrator classifier call failed: %s: %s", type(e).__name__, e)
 		return None, "", "low"
 
@@ -386,7 +388,7 @@ async def classify_mode(
 			orchestrator_decisions_total.labels(
 				source=decision.source, mode=decision.mode,
 			).inc()
-		except Exception:  # noqa: BLE001
+		except Exception:  # noqa: BLE001 — metrics best-effort; must not block the mode decision from reaching the caller
 			pass
 		return decision
 
@@ -434,7 +436,7 @@ async def classify_mode(
 	if memory is not None:
 		try:
 			memory_context = memory.render_for_prompt()
-		except Exception as e:  # noqa: BLE001
+		except Exception as e:  # noqa: BLE001 — memory is a duck-typed input (test_memory_render_failure_does_not_crash uses a custom class that raises RuntimeError); render must never crash classify_mode regardless of which subclass the caller provided
 			logger.warning("memory.render_for_prompt failed: %s", e)
 			memory_context = ""
 
@@ -442,7 +444,7 @@ async def classify_mode(
 		mode, reason, confidence = await _classify_with_llm(
 			prompt, memory_context, site_config or {}
 		)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — defensive; _classify_with_llm catches its own LLM/network exceptions and never raises in normal use, but a logic bug here must not crash the whole mode decision
 		logger.warning("Orchestrator classifier wrapper raised: %s", e)
 		mode, reason, confidence = None, "", "low"
 
@@ -863,7 +865,7 @@ async def classify_intent(prompt: str, site_config: dict) -> IntentDecision:
 			confidence="medium" if tag != "unknown" else "low",
 			source="classifier",
 		)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — LLM-boundary contract; tests (test_classify_intent.test_classifier_failure_falls_back_to_unknown) inject RuntimeError to verify any backend failure degrades to fallback rather than crashing the dispatcher
 		logger.warning("Intent classifier failed: %s", e)
 		return IntentDecision(
 			intent="unknown",
@@ -968,7 +970,7 @@ async def detect_module(
 			confidence="medium",
 			source="classifier",
 		)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — LLM-boundary contract; pipeline tests inject arbitrary exceptions into ollama_chat to verify any backend failure falls back to no-module rather than crashing classify_module
 		logger.warning("Module classifier failed: %s", e)
 		return ModuleDecision(
 			module=None,
@@ -1047,7 +1049,7 @@ async def detect_modules(
 			reason=f"LLM classifier returned {tag}",
 			confidence="medium", source="classifier",
 		)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — LLM-boundary contract; same as classify_module — any backend failure degrades to no-module rather than crash primary + secondary detection
 		logger.warning("Multi-module classifier failed: %s", e)
 		return ModulesDecision(
 			module=None, secondary_modules=[],

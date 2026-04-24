@@ -56,9 +56,7 @@ def _get_llm_executor() -> concurrent.futures.ThreadPoolExecutor:
 		try:
 			from alfred.config import get_settings
 			size = get_settings().LLM_POOL_SIZE
-		except Exception:  # noqa: BLE001
-			# Settings load failed - use a safe default so offline
-			# utility scripts / early imports don't break.
+		except Exception:  # noqa: BLE001 — fail-open boot path; ImportError, pydantic.ValidationError, AttributeError, or any Settings-load failure should fall back to the safe default rather than block offline utility scripts
 			size = 16
 		_llm_executor = concurrent.futures.ThreadPoolExecutor(
 			max_workers=size,
@@ -203,7 +201,7 @@ def ollama_chat_sync(
             llm_errors_total.labels(
                 tier=tier or "default", error_type=error_type,
             ).inc()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — metrics best-effort; must never shadow the actual LLM error from the caller
             pass
 
     try:
@@ -213,7 +211,9 @@ def ollama_chat_sync(
         body = ""
         try:
             body = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:  # noqa: BLE001
+        except (OSError, AttributeError):
+            # OSError on socket-side body-read failure; AttributeError
+            # if the HTTPError has no readable body in this urllib path.
             pass
         _record_error("http_error")
         raise OllamaError(
