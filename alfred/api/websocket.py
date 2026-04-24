@@ -72,7 +72,7 @@ def _describe_tool_call(tool_name: str, arguments: dict) -> str:
 		return f"Running {tool_name}"
 	try:
 		return formatter(arguments or {})
-	except Exception:  # noqa: BLE001
+	except Exception:  # noqa: BLE001 — formatter lambdas are user-replaceable (test injects ZeroDivisionError via test_unknown_tool_with_crashing_formatter); any formatter crash must degrade to the generic description rather than break the activity ticker
 		return f"Running {tool_name}"
 
 
@@ -443,16 +443,25 @@ async def _authenticate_handshake(
 	except asyncio.TimeoutError:
 		try:
 			await websocket.close(code=WS_CLOSE_INVALID_HANDSHAKE, reason="Handshake timeout")
-		except Exception:  # noqa: BLE001
+		except (RuntimeError, WebSocketDisconnect, OSError):
+			# starlette raises RuntimeError on close-after-close;
+			# WebSocketDisconnect if the client already went away;
+			# OSError on socket-level failure. None of those should
+			# propagate out of the timeout-handler.
 			pass
 		return None
 	except WebSocketDisconnect:
 		logger.debug("Client disconnected before handshake: conversation=%s", conversation_id)
 		return None
-	except Exception as e:  # noqa: BLE001
+	except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+		# Handshake is a single JSON frame. JSONDecodeError = malformed
+		# JSON body. UnicodeDecodeError = non-UTF8 bytes. ValueError is
+		# the JSONDecodeError base class (defensive). TimeoutError and
+		# WebSocketDisconnect are already handled above.
 		try:
 			await websocket.close(code=WS_CLOSE_INVALID_HANDSHAKE, reason=f"Invalid handshake: {e}")
-		except Exception:  # noqa: BLE001
+		except (RuntimeError, WebSocketDisconnect, OSError):
+			# Same close-attempt failure modes as the timeout path above.
 			pass
 		return None
 
@@ -770,7 +779,7 @@ async def _dry_run_with_retry(
 					}],
 				}
 			return result
-		except Exception as e:  # noqa: BLE001
+		except Exception as e:  # noqa: BLE001 — MCP tool call boundary; tool runs on the client side and can raise anything (user-supplied Frappe code, transient network, tool-specific errors). Surface as a warning-shaped issue so dry-run keeps flowing.
 			logger.warning("Dry-run MCP call failed: %s", e)
 			return {
 				"valid": False, "validated": 0,
@@ -989,7 +998,9 @@ async def _clarify_requirements(
 				parsed = json.loads(match.group())
 				if isinstance(parsed, list):
 					questions = [q for q in parsed if isinstance(q, dict) and q.get("question")]
-		except Exception as e:  # noqa: BLE001
+		except json.JSONDecodeError as e:
+			# Regex picked up text that wasn't valid JSON. Proceed
+			# without clarifications — the user still sees the prompt.
 			logger.warning("Clarify pass: failed to parse questions: %s", e)
 			questions = []
 
@@ -1014,7 +1025,7 @@ async def _clarify_requirements(
 			})
 			try:
 				answer = await conn.ask_human(question_text, choices=choices, timeout=900)
-			except Exception as e:  # noqa: BLE001
+			except Exception as e:  # noqa: BLE001 — WebSocket-boundary; ask_human can raise on disconnect, timeout, or malformed client response. Degrade to "[no response]" rather than abort the clarify pass entirely.
 				logger.warning("ask_human failed for question %r: %s", question_text, e)
 				answer = "[no response]"
 
@@ -1034,7 +1045,7 @@ async def _clarify_requirements(
 		})
 
 		return clarified, qa_pairs
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — clarify pass is opportunistic; any failure anywhere in the LLM + question-loop + event-callback chain must degrade to the original prompt rather than block the pipeline
 		logger.warning("Clarify pass crashed, proceeding with original prompt: %s", e, exc_info=True)
 		return enhanced_prompt, []
 
@@ -1185,7 +1196,7 @@ async def _rescue_regenerate_changeset(
 				"message": "Rescue pass produced no changeset - request may be out of scope.",
 			})
 		return changes
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — LLM-boundary contract; rescue call fails → empty changeset → pipeline emits EMPTY_CHANGESET error with drift context. Must never propagate.
 		logger.warning("Rescue regeneration failed: %s", e, exc_info=True)
 		return []
 
@@ -1232,7 +1243,7 @@ async def _heartbeat_loop(websocket: WebSocket, interval: int = 30):
 		while True:
 			await asyncio.sleep(interval)
 			await websocket.send_json({"msg_id": str(uuid.uuid4()), "type": "ping", "data": {}})
-	except Exception:  # noqa: BLE001
+	except Exception:  # noqa: BLE001 — heartbeat is pure best-effort; any failure (send on closed socket, cancellation, RuntimeError) just ends the loop. Outer handler cancels the task on disconnect anyway.
 		pass
 
 
@@ -1282,7 +1293,7 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 
 	except WebSocketDisconnect:
 		logger.info("WebSocket disconnected: user=%s, conversation=%s", conn.user, conversation_id)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:  # noqa: BLE001 — top-level WebSocket endpoint; any unhandled exception that bubbles up to uvicorn would kill the connection without logging. Log and let the finally clean up state.
 		logger.error("WebSocket error: user=%s, conversation=%s, error=%s", conn.user, conversation_id, e)
 	finally:
 		_connections.pop(conversation_id, None)
@@ -1299,5 +1310,5 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 			conn.active_pipeline.cancel()
 			try:
 				await conn.active_pipeline
-			except (asyncio.CancelledError, Exception):  # noqa: BLE001
+			except (asyncio.CancelledError, Exception):  # noqa: BLE001 — intentional double-catch: CancelledError is expected after .cancel(); any other Exception from the pipeline's own error handling must not block disconnect cleanup. CancelledError is explicit because it's a BaseException subclass in Py 3.8+ and wouldn't be caught by Exception alone.
 				pass
