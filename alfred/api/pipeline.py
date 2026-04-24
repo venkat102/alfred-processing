@@ -2006,6 +2006,7 @@ class AgentPipeline:
 				)
 				ctx.changes = backfill_defaults_raw(
 					ctx.changes,
+					intent=ctx.intent,
 					module=module_arg,
 					secondary_modules=secondary_arg,
 				)
