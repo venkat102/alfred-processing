@@ -125,9 +125,12 @@ workflows against a live customer site over MCP.
 - **Phase 3 tracing** (`alfred/obs/tracer.py`, enabled via
   `ALFRED_TRACING_ENABLED`) - zero-dep async-safe span tracer. Writes one
   JSONL object per finished phase to `ALFRED_TRACE_PATH` (default
-  `./alfred_trace.jsonl`). Optional stderr summary via `ALFRED_TRACE_STDOUT`.
-  Call-site API matches OpenTelemetry's context manager so switching to a
-  real OTel SDK later is mechanical.
+  `./alfred_trace.jsonl`). Output path is validated against a permitted-root
+  whitelist (CWD, $HOME, tempfile dir, `/tmp`, `/var/tmp`); `..` traversal
+  and paths outside the whitelist fall back to the default with a WARNING.
+  Optional stderr summary via `ALFRED_TRACE_STDOUT`. Call-site API matches
+  OpenTelemetry's context manager so switching to a real OTel SDK later is
+  mechanical.
 - **Pre-preview dry-run** - after the crew produces a changeset, the pipeline
   calls `dry_run_changeset` via MCP to validate everything against the live
   DB. DDL-triggering doctypes (DocType, Custom Field, Workflow, Property
@@ -182,7 +185,7 @@ docker compose up -d
 | `ALFRED_REPORT_HANDOFF` | off | `ALFRED_PER_INTENT_BUILDERS=1` | Insights handler emits a structured `report_candidate` for report-shaped queries; client renders a "Save as Report" button; pipeline short-circuits intent classification to `create_report` on handoff. Also tightens mode classifier fast-path so analytics verbs route to Insights. |
 | `ALFRED_REFLECTION_ENABLED` | off | none | Enable the minimality reflection step |
 | `ALFRED_TRACING_ENABLED` | off | none | Enable structured pipeline tracing |
-| `ALFRED_TRACE_PATH` | `./alfred_trace.jsonl` | `ALFRED_TRACING_ENABLED=1` | JSONL output path |
+| `ALFRED_TRACE_PATH` | `./alfred_trace.jsonl` | `ALFRED_TRACING_ENABLED=1` | JSONL output path. Validated against a permitted-root whitelist (CWD, $HOME, `tempfile.gettempdir()`, `/tmp`, `/var/tmp`); paths with `..` or outside the whitelist log a WARNING and fall back to the default. |
 | `ALFRED_TRACE_STDOUT` | off | `ALFRED_TRACING_ENABLED=1` | Also emit a stderr summary per span |
 | `ALFRED_PHASE1_DISABLED` | off | none | Disable the Phase 1 MCP tracking state (benchmark use only) |
 
