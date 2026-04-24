@@ -39,8 +39,12 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # curl is already installed in the image (Dockerfile:7). The inline
+    # Python healthcheck used to work but spins up a Python interpreter
+    # every 30s just to do an HTTP GET - wasteful, inconsistent with the
+    # other services in this compose file which use curl.
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 5s
       retries: 3
