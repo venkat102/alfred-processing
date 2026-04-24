@@ -9,6 +9,16 @@ import os
 import sys
 from contextlib import asynccontextmanager
 
+# Belt-and-braces: disable CrewAI + OTel telemetry before any import that
+# transitively pulls in `crewai`. Docker and .env.example already set these
+# (see Dockerfile lines 40-42, .env.example lines 64-66), but a local dev
+# .env that omits them would silently phone agent metadata home to CrewAI's
+# SaaS endpoint every run. setdefault respects an explicit operator
+# override (export CREWAI_DISABLE_TELEMETRY=false to opt back in).
+os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
+os.environ.setdefault("CREWAI_DISABLE_TRACKING", "true")
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+
 # Configure application loggers to show in Docker logs
 logging.basicConfig(
 	level=logging.DEBUG,
