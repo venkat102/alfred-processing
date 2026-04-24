@@ -20,6 +20,7 @@ import hmac
 import json
 import logging
 import re
+import time
 import uuid
 from typing import TYPE_CHECKING
 
@@ -355,6 +356,13 @@ WS_CLOSE_RATE_LIMIT = 4002
 WS_CLOSE_INVALID_HANDSHAKE = 4003
 WS_CLOSE_HEARTBEAT_TIMEOUT = 4004
 
+# How long a timed-out clarifier question remains eligible for a
+# late-response acknowledgement. After this window the msg_id is
+# garbage-collected and a later reply just falls through silently
+# again - at that point it's almost certainly the user typing in a
+# new session, not a genuinely late answer.
+_EXPIRED_Q_TTL_SECONDS = 3600
+
 # Active connections: conversation_id -> ConnectionState
 _connections: dict[str, "ConnectionState"] = {}
 
@@ -372,6 +380,13 @@ class ConnectionState:
 		self.pending_acks: dict[str, dict] = {}
 		# For human_input: map of question msg_id -> asyncio.Future
 		self._pending_questions: dict[str, asyncio.Future] = {}
+		# Recently-expired question msg_ids, mapped to the expiry timestamp.
+		# When a user's response lands after the Future timed out, the
+		# Future + entry in _pending_questions are already gone, so without
+		# this side table resolve_question() would silently drop the
+		# answer and the user would never know the pipeline proceeded
+		# without them. Entries are GC'd after _EXPIRED_Q_TTL_SECONDS.
+		self._expired_questions: dict[str, float] = {}
 		# MCP client: lets agents fetch live site data via the Client App's MCP server.
 		# Initialized after handshake in _authenticate_handshake.
 		self.mcp_client: "MCPClient | None" = None
@@ -415,15 +430,59 @@ class ConnectionState:
 			response = await asyncio.wait_for(future, timeout=timeout)
 			return response
 		except asyncio.TimeoutError:
+			# Remember this msg_id so a late-arriving answer (after the
+			# timeout fired but before the user gives up) can be acked
+			# back to the UI instead of silently dropped.
+			self._expired_questions[msg_id] = time.time()
+			self._gc_expired_questions()
 			return "[TIMEOUT] User did not respond. Consider escalating to a human operator."
 		finally:
 			self._pending_questions.pop(msg_id, None)
 
-	def resolve_question(self, msg_id: str, answer: str):
-		"""Resolve a pending question with the user's answer."""
+	def _gc_expired_questions(self) -> None:
+		"""Drop entries older than the TTL. Called on every add so the map
+		stays bounded even if the user never replies to any question."""
+		cutoff = time.time() - _EXPIRED_Q_TTL_SECONDS
+		stale = [k for k, ts in self._expired_questions.items() if ts < cutoff]
+		for k in stale:
+			self._expired_questions.pop(k, None)
+
+	async def resolve_question(self, msg_id: str, answer: str) -> bool:
+		"""Resolve a pending question with the user's answer.
+
+		Returns True if the answer was delivered to a waiting Future.
+		Returns False if the question is unknown OR if the question
+		timed out recently (answer arrived late) - in the late case, an
+		info message is sent back so the user knows the pipeline already
+		proceeded without them.
+		"""
 		future = self._pending_questions.get(msg_id)
 		if future and not future.done():
 			future.set_result(answer)
+			return True
+
+		if msg_id in self._expired_questions:
+			# Answer landed after the Future timed out. Tell the user so
+			# they don't sit confused while the pipeline appears to ignore
+			# them. GC the entry so the ack fires exactly once.
+			self._expired_questions.pop(msg_id, None)
+			try:
+				await self.send({
+					"msg_id": str(uuid.uuid4()),
+					"type": "info",
+					"data": {
+						"message": (
+							"Your response arrived after the clarifier timed out; "
+							"the pipeline had to proceed without it. If you'd like "
+							"to incorporate this answer, send it as a new prompt."
+						),
+						"code": "CLARIFIER_LATE_RESPONSE",
+						"response_to": msg_id,
+					},
+				})
+			except Exception as e:
+				logger.debug("Failed to send late-clarifier info for %s: %s", msg_id, e)
+		return False
 
 
 async def _authenticate_handshake(
@@ -557,7 +616,7 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 		# User responding to a question from an agent
 		response_to = data.get("data", {}).get("response_to", msg_id)
 		answer = data.get("data", {}).get("text", "")
-		conn.resolve_question(response_to, answer)
+		await conn.resolve_question(response_to, answer)
 		return
 
 	if msg_type == "cancel":
@@ -597,7 +656,7 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 				"Routing prompt as answer to pending question %s for %s@%s",
 				oldest_id, conn.user, conn.site_id,
 			)
-			conn.resolve_question(oldest_id, prompt_text)
+			await conn.resolve_question(oldest_id, prompt_text)
 			return
 
 		# Reject concurrent prompts on the same conversation. Two parallel
