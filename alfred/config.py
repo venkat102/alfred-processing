@@ -18,7 +18,11 @@ class Settings(BaseSettings):
 	# Server
 	HOST: str = "0.0.0.0"
 	PORT: int = 8000
-	WORKERS: int = 4
+	# TD-H7: default 1 because per-connection state lives in worker
+	# memory; scaling via uvicorn --workers >1 silently loses WebSocket
+	# state on LB reconnect. Scale via container replicas instead.
+	# ``main.py`` logs a WARNING on boot if this is overridden higher.
+	WORKERS: int = 1
 	DEBUG: bool = False
 
 	# Logging

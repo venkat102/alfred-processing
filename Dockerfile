@@ -58,7 +58,15 @@ sys.exit(0 if urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\"
     || exit 1
 
 # Runtime defaults — override via docker compose env vars.
-ENV WORKERS=2
+# TD-H7 Option A: single uvicorn worker per container. WebSocket state
+# (ConnectionState, mcp_client._pending_futures, conn._pending_questions)
+# lives in process memory and is NOT shared across workers; WORKERS>1
+# means a load-balancer reconnect to a different worker loses all
+# per-connection state and orphans the pipeline. Scale horizontally via
+# replicas + sticky WS routing at the LB, not via threads inside a
+# single container. alfred/main.py logs a WARNING on startup if this
+# default is overridden.
+ENV WORKERS=1
 ENV HOST=0.0.0.0
 ENV PORT=8000
 

@@ -84,6 +84,23 @@ async def lifespan(app: FastAPI):
 		_flag("ALFRED_MULTI_MODULE"),
 	)
 
+	# TD-H7: warn if the operator has scaled uvicorn beyond a single
+	# worker. WebSocket-scoped state (ConnectionState, mcp_client
+	# pending-response futures, conn._pending_questions) lives in
+	# process memory; WORKERS>1 means a load-balancer reconnect onto
+	# a different worker silently loses state and orphans the
+	# pipeline. Scale by running multiple container replicas instead.
+	if settings.WORKERS > 1:
+		logger.warning(
+			"WORKERS=%d detected. Alfred WebSocket state (ConnectionState "
+			"/ pending MCP futures / pending-question callbacks) lives in "
+			"each worker's memory and is NOT shared, so a LB reconnect to "
+			"a different worker loses session state. Use WORKERS=1 per "
+			"container and scale via replicas with sticky WebSocket "
+			"routing. See TD-H7 in docs/tech-debt-backlog.md.",
+			settings.WORKERS,
+		)
+
 	logger.info("Alfred Processing App ready on %s:%d", settings.HOST, settings.PORT)
 
 	yield

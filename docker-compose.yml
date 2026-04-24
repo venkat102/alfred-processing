@@ -25,7 +25,11 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8000
-      - WORKERS=${WORKERS:-2}
+      # TD-H7: WORKERS=1 per container (per-connection state is in-process
+      # memory). Scale via multiple container replicas behind a sticky
+      # WebSocket LB, not by bumping this number. See Dockerfile comment
+      # for the full rationale.
+      - WORKERS=${WORKERS:-1}
       - API_SECRET_KEY=${API_SECRET_KEY:?Set API_SECRET_KEY in .env}
       # JWT_SIGNING_KEY empty = legacy shared-key mode with deprecation
       # warning at boot. Set to a distinct 32+ byte secret (TD-C2).
