@@ -166,8 +166,12 @@ def _resolve_host(host: str) -> str:
 	if not infos:
 		raise OSError(f"getaddrinfo returned no results for {host!r}")
 	# infos[i] == (family, type, proto, canonname, sockaddr)
-	# sockaddr[0] is the IP string.
-	return infos[0][4][0]
+	# sockaddr[0] is the IP string. Cast: sockaddr tuple shapes vary
+	# between AF_INET (host,port) and AF_INET6 (host,port,flow,scope) but
+	# index 0 is always the address string; mypy sees the union as
+	# (str | int).
+	addr = infos[0][4][0]
+	return str(addr)
 
 
 def validate_llm_url(url: str) -> None:

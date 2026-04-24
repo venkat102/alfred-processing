@@ -101,7 +101,7 @@ async def lifespan(app: FastAPI):
 	app.state.shutting_down = True
 
 	deadline = settings.GRACEFUL_SHUTDOWN_TIMEOUT
-	waited = 0
+	waited = 0.0
 	poll_interval = 0.5
 	while app.state.active_pipelines > 0 and waited < deadline:
 		logger.info(

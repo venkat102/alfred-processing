@@ -959,7 +959,10 @@ async def detect_module(
 		return ModuleDecision(
 			module=module_key,
 			reason=f"matched heuristic ({confidence}) for {module_key}",
-			confidence=confidence,
+			# ``detect`` only returns confidence=None when module_key is
+			# also None (see module_loader.detect), so the cast is safe
+			# in this branch.
+			confidence=confidence or "",
 			source="heuristic",
 		)
 

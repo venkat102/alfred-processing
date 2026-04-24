@@ -38,6 +38,24 @@ jobs:
       - name: Ruff format check
         run: ruff format --check alfred/ tests/
 
+  # ── Type check (blocking) ──────────────────────────────────────
+  # TD-L2: mypy against alfred/. Every current file is clean; CI
+  # gates against regressions. Config lives in pyproject.toml under
+  # [tool.mypy]. When an import genuinely needs a stub, prefer
+  # adding a types-* dependency over widening the ignore.
+  mypy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install dev deps
+        run: pip install -e ".[dev]"
+      - name: mypy
+        run: mypy
+
   # ── .env.example drift check (blocking) ─────────────────────────
   # TD-M10: adding a field to Settings without updating .env.example
   # silently ships an undocumented config knob. Script fails the

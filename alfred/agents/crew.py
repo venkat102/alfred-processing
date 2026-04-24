@@ -706,7 +706,7 @@ def build_alfred_crew(
 
 	# Create tasks - skip already completed ones on resume
 	tasks = []
-	task_map = {}
+	task_map: dict[str, Task] = {}
 
 	# Pydantic output models - kept for reference and downstream parsing,
 	# but NOT wired into CrewAI's output_json because local models (Ollama)

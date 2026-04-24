@@ -1975,6 +1975,12 @@ class AgentPipeline:
 		from alfred.agents.crew import run_crew
 
 		ctx = self.ctx
+		# _phase_build_crew populates both unconditionally when mode=dev;
+		# run_crew is gated on that phase having run, so the pipeline
+		# never reaches this point with crew_state=None. The asserts
+		# make the guarantee explicit for type-checkers.
+		assert ctx.crew is not None
+		assert ctx.crew_state is not None
 		timeout = ctx.conn.site_config.get("task_timeout_seconds", 300)
 		ctx.crew_result = await asyncio.wait_for(
 			run_crew(
@@ -2079,6 +2085,7 @@ class AgentPipeline:
 			})
 
 		# Dry-run validation
+		assert ctx.crew_state is not None  # build_crew ran before post_crew
 		ctx.dry_run_result = await _dry_run_with_retry(
 			ctx.conn, ctx.crew_state, ctx.changes,
 			ctx.conn.site_config, ctx.event_callback,

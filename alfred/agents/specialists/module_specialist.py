@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from typing import Any
 
 import redis.asyncio as aioredis
 
@@ -40,7 +41,7 @@ def _rule_applies(when: dict, item: dict) -> bool:
 	  {"doctype": "DocType", "data.is_submittable": 1} -> both must hold.
 	"""
 	for key, expected in when.items():
-		actual = item
+		actual: Any = item
 		for part in key.split("."):
 			if not isinstance(actual, dict):
 				return False

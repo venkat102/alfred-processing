@@ -186,4 +186,7 @@ def get_settings() -> Settings:
 	slow. Tests that monkeypatch env vars after boot MUST call
 	``get_settings.cache_clear()`` to see the change.
 	"""
-	return Settings()
+	# pydantic-settings fills required fields from the environment
+	# (API_SECRET_KEY, REDIS_URL), so the zero-arg call is correct at
+	# runtime even though mypy sees them as missing positional args.
+	return Settings()  # type: ignore[call-arg]

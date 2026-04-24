@@ -61,6 +61,12 @@ dev = [
 	# pip-audit: supply-chain CVE scan; invoked in CI but useful locally
 	# (`.venv/bin/pip-audit --desc`) for a quick pre-commit check.
 	"pip-audit>=2.7",
+	# TD-L2: mypy type-check discipline. Baseline is `ignore_missing_imports`
+	# (CrewAI / LiteLLM / ollama stubs don't exist). Every file in
+	# alfred/ currently type-checks clean; CI gates against regression.
+	"mypy>=1.10,<2.0",
+	# Type stubs for libraries used by alfred.knowledge.fkb and similar.
+	"types-PyYAML>=6.0",
 ]
 
 [build-system]
@@ -95,3 +101,25 @@ indent-style = "tab"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+# TD-L2: mypy configuration.
+#
+# Scope: alfred/ only — tests/ and scripts/ excluded for now, same
+# rationale as ruff (test code uses MagicMock + duck-typing heavily;
+# strict checking there produces mostly noise).
+#
+# Policy: every current file in alfred/ passes a default-strictness
+# mypy run (no `--strict`, just stock checks). When the strict knob
+# flips on in a future pass, per-file overrides go in
+# ``[[tool.mypy.overrides]]`` blocks below.
+[tool.mypy]
+python_version = "3.11"
+files = ["alfred"]
+# CrewAI, LiteLLM, ollama, httpx-ws, redis etc. don't ship stubs.
+# Rather than flag every import, suppress the noise globally and rely
+# on explicit annotations for their public surface where we use it.
+ignore_missing_imports = true
+# Keep the defaults reasonable:
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true

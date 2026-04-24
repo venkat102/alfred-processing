@@ -61,7 +61,7 @@ class PlanDoc(BaseModel):
 		description="Questions the user should answer before the plan is executed",
 	)
 	estimated_items: int = Field(
-		0, description="Rough count of changeset items a Dev-mode run will produce"
+		default=0, description="Rough count of changeset items a Dev-mode run will produce"
 	)
 
 	@classmethod

@@ -126,7 +126,7 @@ def reset_for_tests() -> None:
 		ssrf_block_total,
 	):
 		try:
-			m._metrics.clear()  # type: ignore[attr-defined]
+			m._metrics.clear()
 		except AttributeError:
 			# prometheus_client renamed/removed the private _metrics dict
 			# in this version. Test reset is best-effort; let metrics
