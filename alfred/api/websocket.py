@@ -16,6 +16,7 @@ Protocol:
 
 import ast
 import asyncio
+import hmac
 import json
 import logging
 import re
@@ -450,7 +451,11 @@ async def _authenticate_handshake(
 
 	api_key = handshake.get("api_key", "")
 	expected_key = websocket.app.state.settings.API_SECRET_KEY
-	if api_key != expected_key:
+	# Constant-time comparison defeats timing attacks - a naive != leaks the
+	# prefix match length via response latency. hmac.compare_digest accepts
+	# str/str or bytes/bytes, but TypeErrors on mismatched types if the
+	# client sent a non-string, so we coerce both sides to str first.
+	if not hmac.compare_digest(str(api_key), str(expected_key)):
 		logger.warning("WS auth failed: invalid API key for conversation=%s", conversation_id)
 		await websocket.close(code=WS_CLOSE_AUTH_FAILED, reason="Invalid API key")
 		return None

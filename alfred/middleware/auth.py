@@ -5,6 +5,7 @@ JWT verification is required for WebSocket connections to extract user identity
 and site_id for namespace isolation.
 """
 
+import hmac
 import logging
 import time
 
@@ -46,7 +47,9 @@ async def verify_api_key(
 	api_key = credentials.credentials
 	expected_key = _get_api_secret_key(request)
 
-	if api_key != expected_key:
+	# Constant-time comparison defeats timing attacks that probe the secret
+	# one character at a time by measuring response latency.
+	if not hmac.compare_digest(api_key, expected_key):
 		logger.warning("Invalid API key from %s", request.client.host if request.client else "unknown")
 		raise HTTPException(
 			status_code=401,

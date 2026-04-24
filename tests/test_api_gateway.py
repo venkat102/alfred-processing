@@ -328,6 +328,30 @@ class TestWebSocket:
 				assert resp["data"]["user"] == USER
 				assert resp["data"]["site_id"] == SITE_ID
 
+	async def test_ws_rejects_same_length_wrong_key(self, app):
+		# Constant-time comparison defeats prefix-leaking timing attacks. This
+		# test can't measure the timing, but it locks in the behaviour that a
+		# same-length wrong key is rejected exactly like any other bad key
+		# (would regress if someone swapped back to == and a subtle prefix
+		# bypass crept in).
+		try:
+			from httpx_ws import aconnect_ws
+			from httpx_ws.transport import ASGIWebSocketTransport
+		except ImportError:
+			pytest.skip("httpx_ws not installed")
+
+		wrong_key = "X" * len(API_KEY)  # same length, entirely different
+		async with AsyncClient(
+			transport=ASGIWebSocketTransport(app=app),
+			base_url="http://test",
+		) as ws_client:
+			with pytest.raises(Exception):  # close frame or disconnect
+				async with aconnect_ws("/ws/test-conv-timing", ws_client) as ws:
+					await ws.send_json({"api_key": wrong_key, "jwt_token": _make_jwt(), "site_config": {}})
+					# If auth erroneously passed, we'd get auth_success; force a
+					# receive so the test fails loudly instead of silently.
+					await ws.receive_text()
+
 	async def test_ws_message_routing_custom(self, app):
 		try:
 			from httpx_ws import aconnect_ws
