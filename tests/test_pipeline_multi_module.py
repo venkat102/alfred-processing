@@ -5,6 +5,14 @@ import pytest
 from alfred.api.pipeline import AgentPipeline, PipelineContext
 
 
+@pytest.fixture(autouse=True)
+def _reset_settings_cache():
+	from alfred.config import get_settings
+	get_settings.cache_clear()
+	yield
+	get_settings.cache_clear()
+
+
 def _ctx(prompt: str) -> PipelineContext:
 	conn = MagicMock()
 	conn.site_config = {}
@@ -29,7 +37,7 @@ async def test_classify_module_v3_flag_on_populates_secondaries(monkeypatch):
 async def test_classify_module_v3_flag_off_keeps_v2_single_module(monkeypatch):
 	monkeypatch.setenv("ALFRED_PER_INTENT_BUILDERS", "1")
 	monkeypatch.setenv("ALFRED_MODULE_SPECIALISTS", "1")
-	monkeypatch.delenv("ALFRED_MULTI_MODULE", raising=False)
+	monkeypatch.setenv("ALFRED_MULTI_MODULE", "0")
 	c = _ctx("Sales Invoice that auto-creates a project task")
 	p = AgentPipeline(c)
 	await p._phase_classify_module()
@@ -104,7 +112,7 @@ async def test_provide_module_context_secondary_failure_silent(monkeypatch):
 async def test_provide_module_context_flag_off_does_not_fan_out(monkeypatch):
 	monkeypatch.setenv("ALFRED_PER_INTENT_BUILDERS", "1")
 	monkeypatch.setenv("ALFRED_MODULE_SPECIALISTS", "1")
-	monkeypatch.delenv("ALFRED_MULTI_MODULE", raising=False)
+	monkeypatch.setenv("ALFRED_MULTI_MODULE", "0")
 	c = _ctx("prompt")
 	c.module = "accounts"
 	c.secondary_modules = ["projects"]  # populated by something else; should be ignored
@@ -208,7 +216,7 @@ async def test_provide_module_context_family_section_in_v2_fallback(monkeypatch)
 	benefit from cross-module invariants."""
 	monkeypatch.setenv("ALFRED_PER_INTENT_BUILDERS", "1")
 	monkeypatch.setenv("ALFRED_MODULE_SPECIALISTS", "1")
-	monkeypatch.delenv("ALFRED_MULTI_MODULE", raising=False)
+	monkeypatch.setenv("ALFRED_MULTI_MODULE", "0")
 	c = _ctx("prompt")
 	c.module = "payroll"  # People family
 	c.intent = "create_doctype"
