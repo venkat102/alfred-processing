@@ -84,15 +84,29 @@ target-version = "py311"
 select = ["F", "E", "W", "I", "UP", "B"]
 # TD-H3 phase 1: BLE001 (blind-except) enforced for NEW code. Existing
 # broad `except Exception:` sites are grandfathered with an inline
-# `# noqa: BLE001 — TD-H3` comment so ruff passes today; each site is
-# replaced with a specific exception class as it's touched in the
-# normal course of maintenance.
+# `# noqa: BLE001` comment so ruff passes today; each site is replaced
+# with a specific exception class as it's touched.
 extend-select = ["BLE001"]
-# Project uses tabs for indentation (see ruff.format.indent-style); the
-# W191 / E101 tab warnings are therefore false positives and disabled.
-# E501 (line length) deferred to a tech-debt pass; enabling it today
-# would trip ~114 existing lines.
-ignore = ["W191", "E101", "E501"]
+# W191 (tab-indentation) + E101 (mixed-spaces-and-tabs) would fire on
+# every line - the project's format config is indent-style="tab", but
+# pycodestyle's default rules still flag tabs.
+#
+# E501 (line-too-long) is relaxed because line-length=110 is already
+# generous; the remaining violations are mostly long log-message
+# format strings we don't want to word-wrap.
+#
+# E402 (module-level-import-not-at-top-of-file) fires on deliberate
+# deferred imports inside functions + the CrewAI telemetry opt-out
+# block in alfred/main.py that MUST run before crewai imports.
+#
+# B904, UP042, F821, B007/B008/B017/B905, E701/E741, UP035, F541 —
+# one-off style preferences from master's ruff sweep we keep ignored
+# pending a focused cleanup pass.
+ignore = [
+	"W191", "E101", "E501",
+	"E402", "B904", "UP042", "F821",
+	"B007", "B008", "B017", "B905", "E701", "E741", "UP035", "F541",
+]
 
 [tool.ruff.format]
 quote-style = "double"

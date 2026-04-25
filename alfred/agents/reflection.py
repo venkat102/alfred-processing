@@ -33,12 +33,10 @@ Not in scope:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 import re
-from typing import Any
 
 logger = logging.getLogger("alfred.reflection")
 
@@ -202,7 +200,12 @@ async def reflect_minimality(
 			num_ctx_override=8192,
 			timeout=int(site_config.get("llm_timeout") or 30),
 		)
-		logger.info("Reflection raw response (first 300): %r", (raw or "")[:300])
+		# Reflection LLM output is derived from the user's changeset, which
+		# is derived from their prompt - logging 300 chars at INFO leaks
+		# user context into whatever logging pipeline production ships to.
+		# Lengths at INFO, verbatim at DEBUG.
+		logger.info("Reflection raw response: chars=%d", len(raw or ""))
+		logger.debug("Reflection raw response (first 300): %r", (raw or "")[:300])
 
 		indices, reasons = _parse_indices_strict(raw, len(changeset))
 		if not indices:

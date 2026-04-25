@@ -156,3 +156,52 @@ class AgentPipeline(
 		except (RuntimeError, WebSocketDisconnect, OSError) as e:
 			# Same shape as the cancel path above.
 			logger.warning("Failed to send error message: %s", e)
+
+	async def _save_memory_with_feedback(self) -> None:
+		"""Persist conversation memory and surface failures to the user.
+
+		Ported from master commit f8b0810. All four chat / insights /
+		plan / dev flows call this at the end of their turn. Redis being
+		unreachable or a serialisation glitch must not crash the phase
+		nor silently erase follow-up context — log, send a non-blocking
+		info event so the user knows, and return normally so the primary
+		output reaches them.
+
+		No-ops when ``store`` or ``conversation_memory`` is None. Info
+		event uses the same ``{type: info, data: {code, message}}``
+		shape as CLARIFIER_LATE_RESPONSE (master 31047c3).
+		"""
+		ctx = self.ctx
+		if ctx.conversation_memory is None or ctx.store is None:
+			return
+
+		from alfred.state.conversation_memory import save_conversation_memory
+
+		try:
+			await save_conversation_memory(
+				ctx.store, ctx.conn.site_id, ctx.conversation_id,
+				ctx.conversation_memory,
+			)
+		except Exception as e:  # noqa: BLE001 — store-boundary best-effort: we deliberately surface every failure as a user-visible info toast rather than crashing the phase
+			logger.warning(
+				"conversation memory save failed for %s@%s conversation=%s: %s",
+				ctx.conn.user, ctx.conn.site_id, ctx.conversation_id, e,
+			)
+			try:
+				await ctx.conn.send({
+					"msg_id": str(uuid.uuid4()),
+					"type": "info",
+					"data": {
+						"message": (
+							"Heads up: conversation memory couldn't be saved. "
+							"Follow-up prompts in this conversation may not "
+							"recall this turn's context."
+						),
+						"code": "MEMORY_SAVE_FAILED",
+					},
+				})
+			except (RuntimeError, WebSocketDisconnect, OSError) as send_err:
+				# WS also down — out of user-facing options.
+				logger.debug(
+					"MEMORY_SAVE_FAILED info send also failed: %s", send_err,
+				)

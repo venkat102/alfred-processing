@@ -34,7 +34,7 @@ class UnknownFamilyError(KeyError):
 
 
 class ModuleRegistry:
-	_instance: ClassVar["ModuleRegistry | None"] = None
+	_instance: ClassVar[ModuleRegistry | None] = None
 
 	def __init__(self, kbs: dict[str, dict], families: dict[str, dict]):
 		self._by_module = kbs
@@ -45,7 +45,7 @@ class ModuleRegistry:
 				self._by_target_doctype[dt] = kb
 
 	@classmethod
-	def load(cls) -> "ModuleRegistry":
+	def load(cls) -> ModuleRegistry:
 		if cls._instance is not None:
 			return cls._instance
 		kbs: dict[str, dict] = {}

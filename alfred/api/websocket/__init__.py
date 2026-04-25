@@ -38,7 +38,6 @@ from alfred.api.websocket.extract import (  # noqa: E402 (re-export block)
 	_validate_changeset_shape,
 )
 from alfred.api.websocket.connection import (  # noqa: E402
-	SERVER_DEFAULT_RATE_LIMIT,
 	WS_CLOSE_AUTH_FAILED,
 	WS_CLOSE_HEARTBEAT_TIMEOUT,
 	WS_CLOSE_INVALID_HANDSHAKE,
@@ -63,5 +62,4 @@ from alfred.api.websocket.pipeline_stages import (  # noqa: E402
 __all__ = [
 	"ws_router",
 	"ConnectionState",
-	"SERVER_DEFAULT_RATE_LIMIT",
 ]

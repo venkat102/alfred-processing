@@ -11,7 +11,7 @@ Spec: docs/specs/2026-04-22-insights-to-report-handoff.md.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -37,18 +37,18 @@ class ReportCandidate(BaseModel):
 	columns: list[dict[str, Any]] = Field(default_factory=list)
 	filters: list[dict[str, Any]] = Field(default_factory=list)
 	sort: list[dict[str, Any]] = Field(default_factory=list)
-	limit: Optional[int] = None
-	time_range: Optional[dict[str, Any]] = None
-	suggested_name: Optional[str] = None
+	limit: int | None = None
+	time_range: dict[str, Any] | None = None
+	suggested_name: str | None = None
 	# Query Report SQL body, pre-rendered when the extractor detected an
 	# aggregation pattern. None for simple list-shape (Report Builder) reports.
-	query: Optional[str] = None
+	query: str | None = None
 	# Metadata describing the aggregation:
 	#   source_doctype, metric_field, metric_fn, metric_label,
 	#   group_by_field, group_by_label
 	# Carried alongside ``query`` so the specialist (and UI preview) can
 	# describe what was built without re-parsing the SQL.
-	aggregation: Optional[dict[str, Any]] = None
+	aggregation: dict[str, Any] | None = None
 
 	def to_handoff_prompt(self) -> str:
 		"""Render the candidate as a human-readable block for a Dev prompt.
@@ -117,4 +117,4 @@ class InsightsResult(BaseModel):
 	"""
 
 	reply: str
-	report_candidate: Optional[ReportCandidate] = None
+	report_candidate: ReportCandidate | None = None

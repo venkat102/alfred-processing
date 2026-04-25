@@ -6,10 +6,11 @@ the crew (that needs a live LLM) - those are manual-QA smoke tests.
 """
 
 import os
+
 import pytest
 from crewai import Process
 
-from alfred.agents.crew import build_lite_crew, LITE_TASK_DESCRIPTION
+from alfred.agents.crew import LITE_TASK_DESCRIPTION, build_lite_crew
 
 
 @pytest.fixture(autouse=True)

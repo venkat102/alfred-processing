@@ -278,7 +278,7 @@ class ConversationMemory:
 		}
 
 	@classmethod
-	def from_dict(cls, data: dict[str, Any]) -> "ConversationMemory":
+	def from_dict(cls, data: dict[str, Any]) -> ConversationMemory:
 		raw_plan = data.get("active_plan")
 		return cls(
 			conversation_id=str(data.get("conversation_id", "")),

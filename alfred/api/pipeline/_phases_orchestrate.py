@@ -108,7 +108,6 @@ class _PhasesOrchestrateMixin:
 		out the chat handler without patching the orchestrator decision.
 		"""
 		from alfred.handlers.chat import handle_chat
-		from alfred.state.conversation_memory import save_conversation_memory
 
 		ctx = self.ctx
 
@@ -143,16 +142,9 @@ class _PhasesOrchestrateMixin:
 			logger.warning("chat_reply send failed: %s", e)
 
 		# Persist conversation memory so follow-up turns see this exchange.
-		if ctx.conversation_memory is not None and ctx.store is not None:
-			try:
-				await save_conversation_memory(
-					ctx.store,
-					ctx.conn.site_id,
-					ctx.conversation_id,
-					ctx.conversation_memory,
-				)
-			except Exception as e:  # noqa: BLE001 — defensive double-catch; save_conversation_memory catches its own (aioredis.RedisError, TypeError, ValueError) internally, but a logic bug propagating through must not block the chat turn
-				logger.warning("chat memory save failed: %s", e)
+		# Master f8b0810: surfaces failure to user via info event rather
+		# than silently log-and-continue.
+		await self._save_memory_with_feedback()  # type: ignore[attr-defined]
 
 	async def _run_insights_short_circuit(self) -> None:
 		"""Run the insights handler inline and emit an insights_reply message.
@@ -162,7 +154,6 @@ class _PhasesOrchestrateMixin:
 		markdown reply. Never produces a changeset, never writes to the DB.
 		"""
 		from alfred.handlers.insights import handle_insights
-		from alfred.state.conversation_memory import save_conversation_memory
 
 		ctx = self.ctx
 
@@ -228,16 +219,8 @@ class _PhasesOrchestrateMixin:
 				# on missing internal fields.
 				logger.warning("insights memory record failed: %s", e)
 
-		if ctx.conversation_memory is not None and ctx.store is not None:
-			try:
-				await save_conversation_memory(
-					ctx.store,
-					ctx.conn.site_id,
-					ctx.conversation_id,
-					ctx.conversation_memory,
-				)
-			except Exception as e:  # noqa: BLE001 — defensive; save_conversation_memory catches its own internally. See _run_chat_short_circuit rationale.
-				logger.warning("insights memory save failed: %s", e)
+		# Master f8b0810: surface save failures to user via info event.
+		await self._save_memory_with_feedback()  # type: ignore[attr-defined]
 
 	# ── Plan -> Dev handoff helpers (Phase C) ───────────────────────
 
@@ -327,7 +310,6 @@ class _PhasesOrchestrateMixin:
 		approves it.
 		"""
 		from alfred.handlers.plan import handle_plan
-		from alfred.state.conversation_memory import save_conversation_memory
 
 		ctx = self.ctx
 
@@ -396,14 +378,6 @@ class _PhasesOrchestrateMixin:
 				# Memory mutation shape.
 				logger.warning("plan memory record failed: %s", e)
 
-		if ctx.conversation_memory is not None and ctx.store is not None:
-			try:
-				await save_conversation_memory(
-					ctx.store,
-					ctx.conn.site_id,
-					ctx.conversation_id,
-					ctx.conversation_memory,
-				)
-			except Exception as e:  # noqa: BLE001 — defensive double-catch; save_conversation_memory has its own internal catches. See _run_chat_short_circuit.
-				logger.warning("plan memory save failed: %s", e)
+		# Master f8b0810: surface save failures to user via info event.
+		await self._save_memory_with_feedback()  # type: ignore[attr-defined]
 

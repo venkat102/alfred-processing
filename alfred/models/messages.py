@@ -5,7 +5,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ── Message Type Constants ────────────────────────────────────────
 
 class MessageType(str, Enum):

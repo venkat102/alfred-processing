@@ -51,7 +51,8 @@ async def verify_api_key(
 	# which leaks key-byte positions via response-latency timing. Attacker
 	# with network access can brute-force the key one byte at a time. Use
 	# hmac.compare_digest so the comparison runs in O(len(input)) regardless
-	# of where the mismatch is.
+	# of where the mismatch is. Encode to bytes explicitly so the compare
+	# is byte-level rather than relying on str-level Unicode equivalence.
 	if not hmac.compare_digest(
 		api_key.encode("utf-8"), expected_key.encode("utf-8"),
 	):

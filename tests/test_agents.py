@@ -2,11 +2,8 @@
 
 import os
 
-import pytest
-
 from alfred.agents import backstories
-from alfred.agents.definitions import build_agents, check_llm_health, _resolve_llm
-from alfred.agents.tool_stubs import TOOL_ASSIGNMENTS
+from alfred.agents.definitions import _resolve_llm, build_agents, check_llm_health
 
 
 class TestAgentInstantiation:

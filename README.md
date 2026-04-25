@@ -125,9 +125,12 @@ workflows against a live customer site over MCP.
 - **Phase 3 tracing** (`alfred/obs/tracer.py`, enabled via
   `ALFRED_TRACING_ENABLED`) - zero-dep async-safe span tracer. Writes one
   JSONL object per finished phase to `ALFRED_TRACE_PATH` (default
-  `./alfred_trace.jsonl`). Optional stderr summary via `ALFRED_TRACE_STDOUT`.
-  Call-site API matches OpenTelemetry's context manager so switching to a
-  real OTel SDK later is mechanical.
+  `./alfred_trace.jsonl`). Output path is validated against a permitted-root
+  whitelist (CWD, $HOME, tempfile dir, `/tmp`, `/var/tmp`); `..` traversal
+  and paths outside the whitelist fall back to the default with a WARNING.
+  Optional stderr summary via `ALFRED_TRACE_STDOUT`. Call-site API matches
+  OpenTelemetry's context manager so switching to a real OTel SDK later is
+  mechanical.
 - **Pre-preview dry-run** - after the crew produces a changeset, the pipeline
   calls `dry_run_changeset` via MCP to validate everything against the live
   DB. DDL-triggering doctypes (DocType, Custom Field, Workflow, Property
@@ -151,9 +154,17 @@ workflows against a live customer site over MCP.
 
 ```bash
 cp .env.example .env
-# Edit .env: set API_SECRET_KEY and LLM configuration
+# Generate a strong API_SECRET_KEY (rotation script also works for existing .env):
+python scripts/rotate_api_secret_key.py
+# Then fill in LLM configuration in .env.
 docker compose up -d
 ```
+
+The processing app refuses to boot when `API_SECRET_KEY` is shorter than
+32 characters or matches a known-weak placeholder (`secret`, `changeme`,
+`dev`, `test`, `your-secret-key`, ...). The rotation script generates a
+compliant key, backs up the old `.env`, and prints the follow-up steps
+(update Alfred Settings on the Frappe site, restart the app).
 
 ## Development
 
@@ -180,6 +191,22 @@ docker compose up -d
 .venv/bin/pre-commit install
 ```
 
+### CI + pre-commit
+
+- GitHub Actions runs `ruff check` and the fast pytest suite (Redis
+  service container) on every PR and push to `master`. Five
+  network-dependent test files are excluded from CI (see
+  `.github/workflows/ci.yml` for the list). Lint failures and test
+  failures block merges.
+- `pre-commit` hooks run `ruff format` + `ruff check` on staged Python
+  files plus trailing-whitespace / EOF / YAML / JSON sanity checks.
+  Install locally with:
+  ```bash
+  pip install pre-commit
+  pre-commit install
+  ```
+  First-time run touches every file; subsequent runs are staged-only.
+
 ## Feature Flags (environment variables)
 
 | Variable | Default | Depends on | Effect |
@@ -191,8 +218,9 @@ docker compose up -d
 | `ALFRED_REPORT_HANDOFF` | off | `ALFRED_PER_INTENT_BUILDERS=1` | Insights handler emits a structured `report_candidate` for report-shaped queries; client renders a "Save as Report" button; pipeline short-circuits intent classification to `create_report` on handoff. Also tightens mode classifier fast-path so analytics verbs route to Insights. |
 | `ALFRED_REFLECTION_ENABLED` | off | none | Enable the minimality reflection step |
 | `ALFRED_TRACING_ENABLED` | off | none | Enable structured pipeline tracing |
-| `ALFRED_TRACE_PATH` | `./alfred_trace.jsonl` | `ALFRED_TRACING_ENABLED=1` | JSONL output path |
+| `ALFRED_TRACE_PATH` | `./alfred_trace.jsonl` | `ALFRED_TRACING_ENABLED=1` | JSONL output path. Validated against a permitted-root whitelist (CWD, $HOME, `tempfile.gettempdir()`, `/tmp`, `/var/tmp`); paths with `..` or outside the whitelist log a WARNING and fall back to the default. |
 | `ALFRED_TRACE_STDOUT` | off | `ALFRED_TRACING_ENABLED=1` | Also emit a stderr summary per span |
+| `ALFRED_FKB_DIR` | auto-detected | none | Override the path to the shared Frappe knowledge base (`frappe_kb/`) directory. Normally auto-located by walking from `alfred_processing/alfred/knowledge/fkb.py` up to `bench/apps/alfred_client/alfred_client/data/frappe_kb`. Set this when running CI or non-standard bench layouts where the auto-locate walk doesn't find the sibling app. |
 | `ALFRED_PHASE1_DISABLED` | off | none | Disable the Phase 1 MCP tracking state (benchmark use only) |
 
 ### Specialist-feature flag stack

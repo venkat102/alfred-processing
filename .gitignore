@@ -6,6 +6,8 @@ build/
 .eggs/
 *.egg
 .env
+# Timestamped .env backups created by scripts/rotate_api_secret_key.py
+.env.bak.*
 .venv/
 venv/
 *.pyc

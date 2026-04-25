@@ -5,10 +5,9 @@ Models serve as documentation, validation, and contract between agents.
 """
 
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-
 
 # ── Shared Enums ─────────────────────────────────────────────────
 
@@ -171,7 +170,7 @@ class FieldMeta(BaseModel):
 	"""
 
 	source: Literal["user", "default"]
-	rationale: Optional[str] = None
+	rationale: str | None = None
 
 
 class ChangesetItem(BaseModel):
@@ -179,7 +178,7 @@ class ChangesetItem(BaseModel):
 	operation: ChangeOperation
 	doctype: str = Field(..., description="Frappe document type")
 	data: dict[str, Any] = Field(..., description="Complete document definition")
-	field_defaults_meta: Optional[dict[str, FieldMeta]] = Field(
+	field_defaults_meta: dict[str, FieldMeta] | None = Field(
 		None,
 		description=(
 			"Per-key provenance for values inside ``data``: which came from "
@@ -208,9 +207,9 @@ class ValidationNote(BaseModel):
 	severity: Literal["advisory", "warning", "blocker"]
 	source: str
 	issue: str
-	field: Optional[str] = None
-	fix: Optional[str] = None
-	changeset_index: Optional[int] = None
+	field: str | None = None
+	fix: str | None = None
+	changeset_index: int | None = None
 
 
 # ── Task 3.5: Tester Agent Output ────────────────────────────────

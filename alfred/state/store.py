@@ -20,6 +20,13 @@ logger = logging.getLogger("alfred.state")
 # Maximum events per conversation stream to prevent unbounded growth
 DEFAULT_STREAM_MAXLEN = 10_000
 
+# Default key-level TTL for event streams. Refreshed on every push, so an
+# active conversation's stream stays indefinitely while a conversation
+# idle for >7 days auto-expires. Caps Redis memory against the pathology
+# of "every conversation ever created, kept forever even after abandoned"
+# - maxlen alone only bounds entries-per-stream, not stream count.
+DEFAULT_STREAM_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
 # Regex for valid identifiers (alphanumeric, hyphens, dots, underscores)
 _VALID_ID = re.compile(r"^[a-zA-Z0-9._-]+$")
 
@@ -40,9 +47,18 @@ class StateStore:
 	isolation between customer sites.
 	"""
 
-	def __init__(self, redis: aioredis.Redis, stream_maxlen: int = DEFAULT_STREAM_MAXLEN):
+	def __init__(
+		self,
+		redis: aioredis.Redis,
+		stream_maxlen: int = DEFAULT_STREAM_MAXLEN,
+		stream_ttl_seconds: int = DEFAULT_STREAM_TTL_SECONDS,
+	):
 		self._redis = redis
 		self._stream_maxlen = stream_maxlen
+		# TTL of 0 disables auto-expiry (opt-out for tests or specialised
+		# deployments that want permanent event retention); negative values
+		# are treated the same. Normal runs use the 7-day default.
+		self._stream_ttl_seconds = stream_ttl_seconds if stream_ttl_seconds > 0 else 0
 
 	def _key(self, site_id: str, *parts: str) -> str:
 		"""Build a namespaced Redis key."""
@@ -146,6 +162,20 @@ class StateStore:
 			{"data": event_json},
 			maxlen=self._stream_maxlen,
 		)
+		# Refresh key-level TTL on every push. An active conversation that
+		# keeps emitting events stays alive; a stream that goes silent for
+		# stream_ttl_seconds gets reaped automatically. Cheap second call
+		# to the same Redis node; no pipelining to avoid tangling the
+		# xadd return value we just promised the caller.
+		if self._stream_ttl_seconds > 0:
+			try:
+				await self._redis.expire(key, self._stream_ttl_seconds)
+			except Exception as e:
+				# Expiry refresh is best-effort; a Redis hiccup here must
+				# not fail the event push itself. Worst case the stream
+				# keeps the previous TTL (or none), which is the
+				# pre-feature behaviour.
+				logger.debug("Failed to refresh stream TTL for %s: %s", key, e)
 		logger.debug("Pushed event to %s: id=%s", key, entry_id)
 		return entry_id
 

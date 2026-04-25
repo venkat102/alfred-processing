@@ -13,13 +13,11 @@ Covers:
 
 import json
 
-import pytest
-
 from alfred.agents.condenser import (
+	_MAX_FALLBACK_CHARS,
 	_find_outermost_json,
 	condense_raw_output,
 	make_condenser_callback,
-	_MAX_FALLBACK_CHARS,
 )
 
 

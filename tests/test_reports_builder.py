@@ -8,7 +8,6 @@ from alfred.agents.builders.reports_builder import (
 )
 from alfred.registry.loader import IntentRegistry
 
-
 # ── Intent set ────────────────────────────────────────────────
 
 def test_reports_intents_cover_the_family():
@@ -184,7 +183,11 @@ def test_checklist_exposes_needs_clarification_source():
 def test_old_report_builder_api_still_works():
 	from alfred.agents.builders.report_builder import (
 		build_report_builder_agent,
+	)
+	from alfred.agents.builders.report_builder import (
 		enhance_generate_changeset_description as legacy_enhance,
+	)
+	from alfred.agents.builders.report_builder import (
 		render_registry_checklist as legacy_render,
 	)
 	agent = build_report_builder_agent(site_config={}, custom_tools=None)

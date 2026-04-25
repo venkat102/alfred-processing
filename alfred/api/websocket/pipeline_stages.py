@@ -1,20 +1,5 @@
 """Pipeline stages invoked from the WebSocket handler (TD-H2 split from
 ``alfred/api/websocket.py``).
-
-Three self-contained stages:
-  - ``_dry_run_with_retry`` — run dry-run validation, self-heal once if
-    it fails by re-running just the Developer agent with the issues as
-    context.
-  - ``_clarify_requirements`` — optional interactive clarification pass
-    run after prompt-enhance; produces Q/A pairs to append to the
-    prompt.
-  - ``_rescue_regenerate_changeset`` — catch-all regeneration path when
-    the primary Developer output produced zero changeset items
-    (drift / non-JSON / empty).
-
-Each is patched individually by the test suite; keeping them in their
-own module documents the seams and keeps the parent
-``alfred.api.websocket.connection`` module under 800 LOC.
 """
 
 from __future__ import annotations
@@ -50,24 +35,43 @@ async def _dry_run_with_retry(
 	Returns a dict shaped like:
 		{
 			"valid": bool,
+			"status": "ok" | "invalid" | "infra_error" | "skipped",
 			"issues": list[dict],
 			"validated": int,
 			"_final_changes": list[dict]   # the changeset to actually show the user
 		}
 
-	Never raises - on any failure (MCP call failed, retry crashed, etc.) it
-	returns a best-effort result so the pipeline can still send a preview.
+	``status`` distinguishes three cases the UI must render differently:
+
+	  - ``ok``         - validation ran, changeset is valid. Deploy safe.
+	  - ``invalid``    - validation ran, changeset has real content issues.
+	                     UI shows the issue list; user can approve anyway
+	                     but knows what's wrong.
+	  - ``infra_error`` - validation DID NOT run (MCP call failed, permission
+	                     denied, Frappe internal error). UI MUST NOT treat
+	                     this as "changeset is fine" - the user is flying
+	                     blind if they approve. Recommended UI: disable the
+	                     Approve button and show a retry-or-cancel banner.
+	  - ``skipped``    - no MCP client on the connection (dev without a bench).
+
+	Never raises - on any failure the function returns a best-effort dict
+	carrying the right ``status`` flag.
 	"""
 	if not conn.mcp_client:
 		logger.info("Skipping dry-run: no MCP client on connection")
-		return {"valid": True, "issues": [], "validated": 0, "_final_changes": changes}
+		return {
+			"valid": True, "status": "skipped",
+			"issues": [], "validated": 0, "_final_changes": changes,
+		}
 
 	async def _run(changeset):
 		"""Call the dry_run_changeset MCP tool and normalize the response.
 
-		If the MCP call itself fails (connection, permission, tool not registered),
-		return valid=False with a single "infrastructure" issue so the user knows
-		validation didn't actually run, rather than silently showing a green badge.
+		Tags each return with ``status`` so the caller can distinguish
+		"MCP gave us a genuine failure verdict" (``status=invalid``) from
+		"we never actually validated" (``status=infra_error``). Before
+		this split the UI saw the same ``valid=False`` shape for both and
+		could silently greenlight a deploy past an infra failure.
 		"""
 		try:
 			result = await conn.mcp_client.call_tool(
@@ -75,27 +79,31 @@ async def _dry_run_with_retry(
 			)
 			if not isinstance(result, dict):
 				return {
-					"valid": False, "validated": 0,
+					"valid": False, "status": "infra_error", "validated": 0,
 					"issues": [{
 						"severity": "warning",
 						"issue": f"dry_run_changeset returned unexpected type: {type(result).__name__}",
 					}],
 				}
 			# The client-side _safe_execute wrapper returns {"error": "...", "message": "..."}
-			# on permission denied / not found / internal error. Treat as not-validated.
+			# on permission denied / not found / internal error. Infra failure,
+			# not a content issue.
 			if result.get("error"):
 				return {
-					"valid": False, "validated": 0,
+					"valid": False, "status": "infra_error", "validated": 0,
 					"issues": [{
 						"severity": "warning",
 						"issue": f"Validation could not run: {result.get('message', result['error'])}",
 					}],
 				}
+			# Genuine validator verdict - may be valid=True (ok) or valid=False
+			# with content issues (invalid).
+			result["status"] = "ok" if result.get("valid") else "invalid"
 			return result
-		except Exception as e:  # noqa: BLE001 — MCP tool call boundary; tool runs on the client side and can raise anything (user-supplied Frappe code, transient network, tool-specific errors). Surface as a warning-shaped issue so dry-run keeps flowing.
+		except Exception as e:
 			logger.warning("Dry-run MCP call failed: %s", e)
 			return {
-				"valid": False, "validated": 0,
+				"valid": False, "status": "infra_error", "validated": 0,
 				"issues": [{"severity": "warning", "issue": f"Validation infrastructure error: {e}"}],
 			}
 
@@ -153,6 +161,7 @@ async def _dry_run_with_retry(
 
 	try:
 		from crewai import Crew, Process, Task
+
 		from alfred.agents.definitions import build_agents
 		from alfred.tools.mcp_tools import build_mcp_tools
 
@@ -300,7 +309,12 @@ async def _clarify_requirements(
 			num_ctx_override=8192,
 			timeout=int(site_config.get("llm_timeout") or 60),
 		)
-		logger.info("Clarify pass result (first 500): %r", (raw or "")[:500])
+		# Clarify LLM output is derived from the user's prompt and typically
+		# contains user context (field names, entity names, values). Logging
+		# 500 chars at INFO leaks that content; keep length at INFO for
+		# dashboard activity, verbatim at DEBUG for local troubleshooting.
+		logger.info("Clarify pass result: chars=%d", len(raw or ""))
+		logger.debug("Clarify pass result (first 500): %r", (raw or "")[:500])
 
 		questions = []
 		try:
@@ -311,9 +325,7 @@ async def _clarify_requirements(
 				parsed = json.loads(match.group())
 				if isinstance(parsed, list):
 					questions = [q for q in parsed if isinstance(q, dict) and q.get("question")]
-		except json.JSONDecodeError as e:
-			# Regex picked up text that wasn't valid JSON. Proceed
-			# without clarifications — the user still sees the prompt.
+		except Exception as e:
 			logger.warning("Clarify pass: failed to parse questions: %s", e)
 			questions = []
 
@@ -338,7 +350,7 @@ async def _clarify_requirements(
 			})
 			try:
 				answer = await conn.ask_human(question_text, choices=choices, timeout=900)
-			except Exception as e:  # noqa: BLE001 — WebSocket-boundary; ask_human can raise on disconnect, timeout, or malformed client response. Degrade to "[no response]" rather than abort the clarify pass entirely.
+			except Exception as e:
 				logger.warning("ask_human failed for question %r: %s", question_text, e)
 				answer = "[no response]"
 
@@ -358,7 +370,7 @@ async def _clarify_requirements(
 		})
 
 		return clarified, qa_pairs
-	except Exception as e:  # noqa: BLE001 — clarify pass is opportunistic; any failure anywhere in the LLM + question-loop + event-callback chain must degrade to the original prompt rather than block the pipeline
+	except Exception as e:
 		logger.warning("Clarify pass crashed, proceeding with original prompt: %s", e, exc_info=True)
 		return enhanced_prompt, []
 
@@ -509,7 +521,8 @@ async def _rescue_regenerate_changeset(
 				"message": "Rescue pass produced no changeset - request may be out of scope.",
 			})
 		return changes
-	except Exception as e:  # noqa: BLE001 — LLM-boundary contract; rescue call fails → empty changeset → pipeline emits EMPTY_CHANGESET error with drift context. Must never propagate.
+	except Exception as e:
 		logger.warning("Rescue regeneration failed: %s", e, exc_info=True)
 		return []
+
 

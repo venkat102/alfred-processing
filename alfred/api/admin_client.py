@@ -98,7 +98,7 @@ class AdminClient:
 			# Queue for later
 			if self.redis:
 				await self.redis.rpush(
-					f"alfred:usage_report_queue",
+					"alfred:usage_report_queue",
 					json.dumps({"payload": payload, "timestamp": time.time()}),
 				)
 			return {"status": "queued", "error": str(e)}

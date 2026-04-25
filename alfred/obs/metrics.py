@@ -29,8 +29,8 @@ the tracer doesn't natively expose.
 
 from __future__ import annotations
 
-from prometheus_client import CollectorRegistry, Counter, Histogram
 from prometheus_client import REGISTRY as DEFAULT_REGISTRY
+from prometheus_client import CollectorRegistry, Counter, Histogram
 
 # Using the default registry so make_asgi_app() finds everything without
 # explicit threading. If tests need isolation they can reset via the
@@ -107,6 +107,20 @@ ssrf_block_total = Counter(
 	labelnames=("reason",),
 )
 
+# Rate limiting degrades to fail-open when Redis is unavailable (the
+# decision we made: a transient Redis blip must not hard-block every
+# user request). That's operationally correct but invisible - this
+# counter makes it visible so operators can alert on a sustained
+# non-zero rate. A brief spike during a Redis restart is fine; a
+# sustained rate means rate limiting is effectively off.
+rate_limit_degraded_total = Counter(
+	"alfred_rate_limit_degraded_total",
+	"Rate-limit checks that bypassed enforcement because Redis was "
+	"unavailable. reason is 'no_client' (no redis was ever configured) "
+	"or 'redis_error' (call raised an exception).",
+	labelnames=("reason",),
+)
+
 
 def reset_for_tests() -> None:
 	"""Reset all metric samples. Call from test setup only.
@@ -124,6 +138,7 @@ def reset_for_tests() -> None:
 		crew_rescue_total,
 		rate_limit_block_total,
 		ssrf_block_total,
+		rate_limit_degraded_total,
 	):
 		try:
 			m._metrics.clear()

@@ -57,7 +57,7 @@ Rules:
 
 async def handle_chat(
 	prompt: str,
-	memory: "ConversationMemory | None",
+	memory: ConversationMemory | None,
 	user_context: dict,
 	site_config: dict,
 ) -> str:

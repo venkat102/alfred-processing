@@ -5,7 +5,6 @@ or falls back to default port 6379.
 """
 
 import asyncio
-import json
 
 import pytest
 import redis.asyncio as aioredis
@@ -186,6 +185,63 @@ class TestTTLCache:
 
 		with pytest.raises(ValueError, match="ttl_seconds must be positive"):
 			await store.set_with_ttl("site1", "key", "val", ttl_seconds=-5)
+
+
+# ── Event Stream TTL (#St1) ──────────────────────────────────────
+
+
+class TestStreamTTL:
+	"""push_event refreshes a key-level TTL on every call so idle
+	conversations auto-expire while active ones stay alive. Without
+	this, every conversation ever created sat in Redis forever -
+	maxlen only bounded entries per stream, not stream count."""
+
+	async def test_push_event_sets_ttl_on_stream_key(self, redis_client):
+		store = StateStore(redis_client, stream_ttl_seconds=60)
+		await store.push_event("site1", "conv-ttl-1", {"hello": "world"})
+
+		key = "alfred:site1:events:conv-ttl-1"
+		ttl = await redis_client.ttl(key)
+		# TTL should be positive and close to 60s (-1 means no ttl).
+		assert ttl > 0, f"Expected positive TTL on {key}, got {ttl}"
+		assert ttl <= 60
+
+	async def test_ttl_is_refreshed_on_subsequent_pushes(self, redis_client):
+		# A stream that keeps receiving events should never expire.
+		store = StateStore(redis_client, stream_ttl_seconds=60)
+		await store.push_event("site1", "conv-ttl-2", {"i": 1})
+
+		await asyncio.sleep(1.1)
+		ttl_before = await redis_client.ttl("alfred:site1:events:conv-ttl-2")
+		assert ttl_before < 60
+
+		# Second push should bump the TTL back up.
+		await store.push_event("site1", "conv-ttl-2", {"i": 2})
+		ttl_after = await redis_client.ttl("alfred:site1:events:conv-ttl-2")
+		assert ttl_after > ttl_before, (
+			f"Expected TTL to be refreshed, got {ttl_before} -> {ttl_after}"
+		)
+
+	async def test_ttl_zero_disables_auto_expiry(self, redis_client):
+		# Opt-out for deployments that want permanent event retention.
+		store = StateStore(redis_client, stream_ttl_seconds=0)
+		await store.push_event("site1", "conv-no-ttl", {"hello": "forever"})
+
+		ttl = await redis_client.ttl("alfred:site1:events:conv-no-ttl")
+		assert ttl == -1, f"Expected no TTL (-1), got {ttl}"
+
+	async def test_ttl_expiry_failure_does_not_fail_push(self, redis_client, monkeypatch):
+		# Redis EXPIRE hiccup must not crash the event push - degrades to
+		# pre-feature behaviour (no TTL refresh) but the event still lands.
+		store = StateStore(redis_client, stream_ttl_seconds=60)
+
+		async def broken_expire(*args, **kwargs):
+			raise ConnectionError("simulated redis hiccup")
+
+		monkeypatch.setattr(redis_client, "expire", broken_expire)
+		# Must not raise.
+		entry_id = await store.push_event("site1", "conv-hiccup", {"x": 1})
+		assert entry_id
 
 
 # ── Health Check ─────────────────────────────────────────────────

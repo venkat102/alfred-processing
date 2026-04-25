@@ -428,22 +428,22 @@ INSIGHTS_TASK_DESCRIPTION = (
 	"   - 'explain the Customer doctype', 'what fields are on X' -> lookup_doctype.\n"
 	"   - 'list of active customers', 'recent projects', 'show me open\n"
 	"     invoices' -> get_list with the right filters. Example:\n"
-	"     get_list(\"Customer\", filters='{\"disabled\": 0}', fields='[\"name\",\n"
+	"     get_list(\"Customer\", filters='{{\"disabled\": 0}}', fields='[\"name\",\n"
 	"     \"customer_name\"]', limit=50).\n"
 	"   - 'count of pending invoices' -> get_list(\"Sales Invoice\",\n"
-	"     filters='{\"status\": \"Unpaid\"}', limit=500) and report len(rows),\n"
+	"     filters='{{\"status\": \"Unpaid\"}}', limit=500) and report len(rows),\n"
 	"     noting truncated if true.\n"
 	"   - 'top N X by Y', 'average X per Y', 'count of X by Y', 'X joined\n"
 	"     with Y' -> run_query. The LLM-friendly JSON shape covers SUM /\n"
 	"     AVG / MIN / MAX / COUNT / COUNT_DISTINCT plus left/inner joins\n"
 	"     across doctypes. Example (top 5 customers by total sales this\n"
 	"     year):\n"
-	"       run_query('{\"from_doctype\": \"Sales Invoice\", \"select\":\n"
-	"       [{\"field\": \"customer\"}, {\"field\": \"grand_total\",\n"
-	"       \"agg\": \"sum\", \"alias\": \"total\"}], \"where\":\n"
-	"       [{\"field\": \"status\", \"op\": \"=\", \"value\": \"Paid\"}],\n"
-	"       \"group_by\": [\"customer\"], \"order_by\": [{\"field\":\n"
-	"       \"total\", \"dir\": \"desc\"}], \"limit\": 5}')\n"
+	"       run_query('{{\"from_doctype\": \"Sales Invoice\", \"select\":\n"
+	"       [{{\"field\": \"customer\"}}, {{\"field\": \"grand_total\",\n"
+	"       \"agg\": \"sum\", \"alias\": \"total\"}}], \"where\":\n"
+	"       [{{\"field\": \"status\", \"op\": \"=\", \"value\": \"Paid\"}}],\n"
+	"       \"group_by\": [\"customer\"], \"order_by\": [{{\"field\":\n"
+	"       \"total\", \"dir\": \"desc\"}}], \"limit\": 5}}')\n"
 	"   - 'who has access to X' -> check_permission / get_user_context.\n"
 	"   DO NOT call lookup_doctype when the user asked for actual records.\n"
 	"   Reporting the schema when asked for a list is WRONG and the user will\n"
@@ -465,11 +465,22 @@ INSIGHTS_TASK_DESCRIPTION = (
 	"   missing.\n"
 	"6. Ground every factual claim in a tool response. If you cannot verify a\n"
 	"   fact with a tool, say so explicitly - never guess about the user's site.\n"
-	"7. If get_list returns rows=[] it may mean 'no matches' or 'no read\n"
+	"7. NEVER claim a tool 'has limitations', 'cannot be used', or 'is\n"
+	"   unavailable' without first attempting the call. If a tool returns an\n"
+	"   error, quote the error code and message verbatim from the tool's\n"
+	"   response. Example: 'run_query returned permission_denied: You do not\n"
+	"   have read permission on Sales Invoice.' Do NOT paraphrase tool errors\n"
+	"   as 'technical limitations with the query tools', 'system limitations',\n"
+	"   or 'check with your system administrator'. The user needs the actual\n"
+	"   error code to act on it. If you ran out of your 5-call budget before\n"
+	"   reaching the right tool, say exactly that: 'I used my tool budget on\n"
+	"   X / Y / Z and didn't get to run the aggregation - try asking again\n"
+	"   more directly.'\n"
+	"8. If get_list returns rows=[] it may mean 'no matches' or 'no read\n"
 	"   access'. Say 'I found no records matching that criteria (which may\n"
 	"   also mean you don't have read access to this DocType).' - don't\n"
 	"   assume either.\n"
-	"8. If the user's question cannot be answered with read-only tools (e.g.\n"
+	"9. If the user's question cannot be answered with read-only tools (e.g.\n"
 	"   they are asking you to build something), respond with a short note\n"
 	"   suggesting they rephrase as a build request.\n\n"
 	"OUTPUT FORMAT (STRICT):\n"
@@ -831,7 +842,6 @@ async def run_crew(
 
 		def _ws_input(prompt_text=""):
 			"""Replacement for builtins.input() that routes through WebSocket."""
-			import concurrent.futures
 			loop = asyncio.new_event_loop()
 			try:
 				return loop.run_until_complete(human_input_handler(prompt_text))
@@ -956,18 +966,32 @@ def _get_specialist_developer_agent(
 	None means "use the generic Developer agent built by build_agents()".
 	Returned Agent slots into agents['developer'] unchanged; the rest of
 	the crew (Tester, Deployer) treats it identically.
+
+	Logs each fallback path so operators can tell apart:
+	  - flag-off (no log; expected)
+	  - classifier punt (intent None / "unknown"): INFO
+	  - intent recognised but no builder registered: WARNING (implies
+	    a drift between the classifier's vocabulary and the builder
+	    catalog - someone added a new intent without adding a builder,
+	    or renamed a builder family without updating the classifier)
 	"""
 	if not _per_intent_builders_enabled():
 		return None
 	if not intent or intent == "unknown":
+		logger.info(
+			"No specialist dispatched: intent=%r - falling back to generic Developer. "
+			"Classifier couldn't match the prompt to a known intent.",
+			intent,
+		)
 		return None
 
-	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS, build_schema_agent
-	from alfred.agents.builders.reports_builder import REPORTS_INTENTS, build_reports_agent
 	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS, build_automation_agent
 	from alfred.agents.builders.presentation_builder import (
-		PRESENTATION_INTENTS, build_presentation_agent,
+		PRESENTATION_INTENTS,
+		build_presentation_agent,
 	)
+	from alfred.agents.builders.reports_builder import REPORTS_INTENTS, build_reports_agent
+	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS, build_schema_agent
 
 	if intent in SCHEMA_INTENTS:
 		agent = build_schema_agent(
@@ -1017,6 +1041,17 @@ def _get_specialist_developer_agent(
 		)
 		return agent
 
+	# Intent was classified to a non-empty value but no family claims it.
+	# This is the "classifier / builder drift" signal - raise it to WARNING
+	# so it shows up in operator dashboards. The prompt still completes
+	# (generic Developer picks it up) but the specialist stack missed.
+	logger.warning(
+		"No builder registered for intent=%r - falling back to generic Developer. "
+		"Known families: schema=%s, reports=%s, automation=%s, presentation=%s.",
+		intent,
+		sorted(SCHEMA_INTENTS), sorted(REPORTS_INTENTS),
+		sorted(AUTOMATION_INTENTS), sorted(PRESENTATION_INTENTS),
+	)
 	return None
 
 
@@ -1040,14 +1075,6 @@ def _enhance_task_description(
 	if not intent or intent == "unknown":
 		return base_description
 
-	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS
-	from alfred.agents.builders.schema_builder import (
-		enhance_generate_changeset_description as enhance_schema,
-	)
-	from alfred.agents.builders.reports_builder import REPORTS_INTENTS
-	from alfred.agents.builders.reports_builder import (
-		enhance_generate_changeset_description as enhance_reports,
-	)
 	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS
 	from alfred.agents.builders.automation_builder import (
 		enhance_generate_changeset_description as enhance_automation,
@@ -1055,6 +1082,14 @@ def _enhance_task_description(
 	from alfred.agents.builders.presentation_builder import PRESENTATION_INTENTS
 	from alfred.agents.builders.presentation_builder import (
 		enhance_generate_changeset_description as enhance_presentation,
+	)
+	from alfred.agents.builders.reports_builder import REPORTS_INTENTS
+	from alfred.agents.builders.reports_builder import (
+		enhance_generate_changeset_description as enhance_reports,
+	)
+	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS
+	from alfred.agents.builders.schema_builder import (
+		enhance_generate_changeset_description as enhance_schema,
 	)
 
 	if intent in SCHEMA_INTENTS:

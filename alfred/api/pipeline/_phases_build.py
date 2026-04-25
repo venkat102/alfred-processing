@@ -144,7 +144,6 @@ class _PhasesBuildMixin:
 			_dry_run_with_retry,
 		)
 		from alfred.agents.reflection import reflect_minimality
-		from alfred.state.conversation_memory import save_conversation_memory
 		from alfred.api.safety_nets import (
 			apply_defaults_backfill,
 			apply_module_validation,
@@ -237,9 +236,10 @@ class _PhasesBuildMixin:
 			# Cross-mixin call — _mark_active_plan_built_if_any lives on
 			# _PhasesOrchestrateMixin; resolved via AgentPipeline's MRO.
 			self._mark_active_plan_built_if_any()  # type: ignore[attr-defined]
-			await save_conversation_memory(
-				ctx.store, ctx.conn.site_id, ctx.conversation_id, ctx.conversation_memory
-			)
+			# Master f8b0810: surface save failures to user via info event.
+			# (was previously a bare save_conversation_memory call with no
+			# error handling — Redis outage would crash the dev phase.)
+			await self._save_memory_with_feedback()  # type: ignore[attr-defined]
 
 		# Send preview
 		await ctx.conn.send({

@@ -17,6 +17,11 @@ import re
 logger = logging.getLogger("alfred.websocket")
 
 
+
+
+# Human-readable descriptions for MCP tool calls, used to render a live
+# activity ticker in the UI while agents process. Keep these terse - they
+# appear in a single-line status row.
 _TOOL_ACTIVITY = {
 	"get_site_info": lambda a: "Reading site info",
 	"get_doctypes": lambda a: (
@@ -44,7 +49,7 @@ def _describe_tool_call(tool_name: str, arguments: dict) -> str:
 		return f"Running {tool_name}"
 	try:
 		return formatter(arguments or {})
-	except Exception:  # noqa: BLE001 — formatter lambdas are user-replaceable (test injects ZeroDivisionError via test_unknown_tool_with_crashing_formatter); any formatter crash must degrade to the generic description rather than break the activity ticker
+	except Exception:
 		return f"Running {tool_name}"
 
 
@@ -325,3 +330,4 @@ def _extract_changes(result_text) -> list[dict]:
 		)
 
 	return normalized
+

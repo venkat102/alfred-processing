@@ -39,10 +39,9 @@ def test_user_values_preserved_and_flagged_as_user_source():
 
 
 def test_unknown_doctype_passes_through():
-	# The registry has grown over time (per-intent builders added
-	# entries for Custom Field, Server Script, Notification, ...) so
-	# pick a DocType that definitely has no registered defaults.
-	changes = [{"op": "create", "doctype": "Nonexistent Type", "data": {"fieldname": "x"}}]
+	# Use a doctype with no intent registry (Sales Invoice is ERPNext-level,
+	# no create_* registry exists for it).
+	changes = [{"op": "create", "doctype": "Sales Invoice", "data": {"customer": "ACME"}}]
 	out = backfill_defaults_raw(changes)
 	assert out == changes
 	assert "field_defaults_meta" not in out[0]
@@ -53,13 +52,29 @@ def test_empty_input_returns_empty_list():
 
 
 def test_multiple_items_handled_independently():
-	# Server Script now has registered defaults, so use a DocType
-	# that definitely has no registry entry for the "untouched" slot.
+	# DocType has a matching registry; Sales Invoice does not - mixed changesets
+	# must backfill only the registered item and leave the rest untouched.
 	changes = [
 		_doctype_change({"name": "Book", "module": "Custom"}),
-		{"op": "create", "doctype": "Nonexistent Type", "data": {"name": "x"}},
+		{"op": "create", "doctype": "Sales Invoice", "data": {"customer": "ACME"}},
 	]
 	out = backfill_defaults_raw(changes)
 	assert "field_defaults_meta" in out[0]
-	assert out[1]["data"] == {"name": "x"}
+	assert out[1]["data"] == {"customer": "ACME"}
 	assert "field_defaults_meta" not in out[1]
+
+
+def test_raw_intent_gating_skips_non_matching_doctype():
+	# Pipeline-facing intent-gated path: create_doctype intent + Custom Field
+	# item should leave the Custom Field untouched.
+	changes = [{"op": "create", "doctype": "Custom Field", "data": {"fieldname": "x"}}]
+	out = backfill_defaults_raw(changes, intent="create_doctype")
+	assert out == changes
+	assert "field_defaults_meta" not in out[0]
+
+
+def test_raw_intent_gating_applies_to_matching_doctype():
+	changes = [_doctype_change({"name": "Book", "module": "Custom"})]
+	out = backfill_defaults_raw(changes, intent="create_doctype")
+	assert out[0]["data"]["autoname"] == "autoincrement"
+	assert out[0]["field_defaults_meta"]["autoname"]["source"] == "default"

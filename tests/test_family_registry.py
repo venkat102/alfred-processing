@@ -15,14 +15,12 @@ Covers:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import jsonschema
 import pytest
 
 from alfred.registry.module_loader import (
 	FAMILIES_DIR,
-	SCHEMA_DIR,
 	ModuleRegistry,
 	UnknownFamilyError,
 )

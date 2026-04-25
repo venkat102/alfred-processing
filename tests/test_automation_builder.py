@@ -8,7 +8,6 @@ from alfred.agents.builders.automation_builder import (
 )
 from alfred.registry.loader import IntentRegistry
 
-
 # ── Intent set ────────────────────────────────────────────────
 
 def test_automation_intents_cover_the_family():

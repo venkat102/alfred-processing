@@ -14,8 +14,6 @@ Covers the three hops of the cancel flow on the processing side:
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from alfred.api.pipeline import AgentPipeline, PipelineContext
 from alfred.api.websocket import _handle_custom_message
 

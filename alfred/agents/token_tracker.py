@@ -7,7 +7,6 @@ Sends usage data back to the client app for storage in Alfred Conversation.
 import json
 import logging
 import time
-from typing import Any
 
 logger = logging.getLogger("alfred.tokens")
 

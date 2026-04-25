@@ -14,7 +14,7 @@ Usage:
 import logging
 import os
 
-from crewai import Agent, LLM
+from crewai import LLM, Agent
 
 from alfred.agents import backstories
 from alfred.agents.tool_stubs import TOOL_ASSIGNMENTS

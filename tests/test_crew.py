@@ -2,16 +2,15 @@
 
 import json
 import os
-import time
 
 import pytest
 
 from alfred.agents.crew import (
+	TASK_DESCRIPTIONS,
 	CrewState,
 	build_alfred_crew,
 	load_crew_state,
 	save_crew_state,
-	TASK_DESCRIPTIONS,
 )
 
 
@@ -164,6 +163,7 @@ class TestRedisStatePersistence:
 	@pytest.fixture
 	async def store(self):
 		import redis.asyncio as aioredis
+
 		from alfred.state.store import StateStore
 
 		try:
