@@ -29,3 +29,6 @@ htmlcov/
 # directory (baseline_*.json, phaseN_*.json) are what actually gate
 # the phase comparisons and are committed.
 benchmarks/*.log
+
+# Local Claude Code state (per-machine; never commit)
+.claude/
