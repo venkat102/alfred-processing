@@ -32,6 +32,7 @@ import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+from alfred.api.lifecycle import track_pipeline
 from alfred.obs.logging_setup import bind_request_context, clear_request_context
 from alfred.obs.tasks import spawn_logged
 
@@ -200,8 +201,14 @@ async def _run_rest_task(
 
 		final_status = "completed"
 		error: str | None = None
+		# TD-M6: bump app.state.active_pipelines via the same context
+		# manager the WS path uses so the lifespan handler waits for
+		# the REST run to finish before tearing down Redis. ``app_state``
+		# was stitched onto the conn shim at construction time so the
+		# wrap doesn't need a second app reference.
 		try:
-			await AgentPipeline(ctx).run()
+			async with track_pipeline(conn.websocket.app.state):
+				await AgentPipeline(ctx).run()
 			if ctx.should_stop and ctx.stop_signal is not None:
 				final_status = "failed"
 				error = ctx.stop_signal.error

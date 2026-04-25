@@ -165,6 +165,7 @@ ERROR_MESSAGES = {
 	"agent_error": "The AI agent encountered an error. The team has been notified.",
 	"connection_lost": "Connection to the processing service was lost. Reconnecting...",
 	"prompt_blocked": "Your message was flagged by our security filter. Please rephrase your request.",
+	"shutting_down": "The processing service is shutting down for an update. Please retry in a moment.",
 	"unknown": "An unexpected error occurred. Please try again or contact support.",
 }
 
@@ -184,6 +185,7 @@ _PIPELINE_CODE_TO_KEY = {
 	"RATE_LIMIT": "rate_limited",
 	"REDIS_UNAVAILABLE": "redis_unavailable",
 	"PLAN_EXCEEDED": "rate_limited",
+	"SHUTTING_DOWN": "shutting_down",
 }
 
 

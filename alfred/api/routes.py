@@ -18,6 +18,7 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from alfred import __version__
+from alfred.api.lifecycle import is_shutting_down
 from alfred.api.rest_runner import schedule_rest_task
 from alfred.middleware.auth import verify_api_key
 from alfred.middleware.rate_limit import check_rate_limit
@@ -75,6 +76,18 @@ async def create_task(
 	api_key: str = Depends(verify_api_key),
 ):
 	"""Submit a new task for agent processing."""
+	# TD-M6 shutdown gate: refuse new tasks once the lifespan has flipped.
+	# The WS path returns the same code via an error frame; here we use
+	# 503 so a polling client retries with the right backoff.
+	if is_shutting_down(request.app.state):
+		raise HTTPException(
+			status_code=503,
+			detail={
+				"error": "Service is shutting down for an update. Retry in a moment.",
+				"code": "SHUTTING_DOWN",
+			},
+		)
+
 	store = _get_store(request)
 	if store is None:
 		raise HTTPException(

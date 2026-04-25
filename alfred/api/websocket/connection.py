@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from alfred.api.lifecycle import is_shutting_down, track_pipeline
 from alfred.api.websocket.extract import _describe_tool_call
 from alfred.middleware.auth import verify_jwt_token
 from alfred.obs.logging_setup import bind_request_context, clear_request_context
@@ -502,6 +503,29 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 		if not prompt_text:
 			return
 
+		# TD-M6: refuse new prompts once shutdown has started so the
+		# operator's GRACEFUL_SHUTDOWN_TIMEOUT only has to drain in-flight
+		# work, not work submitted during the drain. Surfaced as a
+		# distinct code so the client UI can show "service updating,
+		# try again in a moment" instead of a generic error banner.
+		if is_shutting_down(websocket.app.state):
+			logger.info(
+				"Rejecting prompt during shutdown for %s@%s conversation=%s",
+				conn.user, conn.site_id, conversation_id,
+			)
+			await websocket.send_json({
+				"msg_id": str(uuid.uuid4()),
+				"type": "error",
+				"data": {
+					"error": (
+						"The processing service is shutting down for an update. "
+						"Please retry in a moment."
+					),
+					"code": "SHUTTING_DOWN",
+				},
+			})
+			return
+
 		# If the pipeline is paused waiting for a clarification answer, route
 		# this prompt to the oldest pending question instead of starting a new
 		# pipeline. This lets the user just type their answer in the chat box
@@ -626,8 +650,14 @@ async def _run_agent_pipeline(
 		manual_mode_override=manual_mode,
 	)
 	conn.active_pipeline_ctx = ctx
+	# TD-M6: bump app.state.active_pipelines so the lifespan shutdown
+	# handler waits for this run to finish before tearing down Redis.
+	# The counter was previously initialised but never moved — see
+	# alfred/api/lifecycle.py.
+	app_state = conn.websocket.app.state
 	try:
-		await AgentPipeline(ctx).run()
+		async with track_pipeline(app_state):
+			await AgentPipeline(ctx).run()
 	finally:
 		conn.active_pipeline_ctx = None
 
