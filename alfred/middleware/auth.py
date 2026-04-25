@@ -10,7 +10,7 @@ import logging
 import time
 
 import jwt
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 logger = logging.getLogger("alfred.auth")
@@ -63,6 +63,78 @@ async def verify_api_key(
 		)
 
 	return api_key
+
+
+def _get_jwt_signing_key(request: Request) -> str:
+	"""Resolve the secret used to verify REST JWTs.
+
+	Same fallback chain as the WS handshake (see ``connection.py``):
+	prefer ``JWT_SIGNING_KEY`` once it's configured; otherwise fall back
+	to ``API_SECRET_KEY`` for the legacy shared-key mode TD-C2 is
+	gradually phasing out.
+	"""
+	settings = request.app.state.settings
+	return settings.JWT_SIGNING_KEY or settings.API_SECRET_KEY
+
+
+async def verify_rest_jwt(
+	request: Request,
+	x_jwt: str | None = Header(default=None, alias="X-Alfred-JWT"),
+) -> dict:
+	"""Dependency that validates a per-user JWT for REST endpoints.
+
+	Without this, ``POST /api/v1/tasks`` trusted ``site_id`` /
+	``user`` straight from the request body — a leaked
+	``API_SECRET_KEY`` would let any caller submit tasks as any
+	tenant. Now every REST handler that needs site/user context
+	resolves them from the JWT instead, so the body's ``site_config.site_id``
+	is enforced to match what the JWT claims.
+
+	The JWT is read from the ``X-Alfred-JWT`` header (rather than
+	``Authorization``) so the existing ``verify_api_key`` Bearer flow
+	is preserved as a service-level gate. Layered:
+	  1. ``Authorization: Bearer <api_key>`` proves the *caller is an
+	     authorised client app* (``verify_api_key``).
+	  2. ``X-Alfred-JWT: <jwt>`` proves *which user / site* is acting
+	     on this request (this dependency).
+
+	Returns:
+		The decoded JWT payload: ``{user, roles, site_id, iat, exp}``.
+
+	Raises:
+		HTTPException 401 if the header is missing, malformed, expired,
+		or fails signature / claims verification.
+	"""
+	if not x_jwt:
+		logger.warning(
+			"Missing X-Alfred-JWT header from %s",
+			request.client.host if request.client else "unknown",
+		)
+		raise HTTPException(
+			status_code=401,
+			detail={
+				"error": (
+					"Missing X-Alfred-JWT header. REST endpoints require a "
+					"per-user JWT in addition to the service Bearer token."
+				),
+				"code": "JWT_MISSING",
+			},
+		)
+
+	secret = _get_jwt_signing_key(request)
+	try:
+		payload = verify_jwt_token(x_jwt, secret)
+	except ValueError as e:
+		logger.warning(
+			"REST JWT verification failed from %s: %s",
+			request.client.host if request.client else "unknown", e,
+		)
+		raise HTTPException(
+			status_code=401,
+			detail={"error": str(e), "code": "JWT_INVALID"},
+		) from e
+
+	return payload
 
 
 def verify_jwt_token(

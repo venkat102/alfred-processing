@@ -1,9 +1,21 @@
-"""Error handling utilities - retry logic, output validation, graceful degradation.
+"""Error handling utilities — retry logic, output validation, graceful degradation.
 
-Provides decorators and utilities for:
-- Retry with exponential backoff for transient failures
-- Agent output structure validation
-- User-friendly error message generation
+Despite the ``middleware/`` location this is a **utility library**, not
+FastAPI exception handlers — the actual error envelope shape is sent by
+``alfred.api.pipeline.runner._send_error``. The functions below are
+opt-in helpers consumed at call sites that want them:
+
+- :func:`retry_with_backoff` — decorator for new code that wraps an
+  external call (HTTP, MCP, etc.) which doesn't already have its own
+  retry strategy. The admin client and warmup probes have their own
+  retry loops; don't double-wrap them.
+- :func:`validate_agent_output` — generic JSON-shape validator for
+  brand-new agent flows. The dev pipeline already uses purpose-built
+  ``_extract_changes`` / ``_validate_changeset_shape`` for the
+  changeset case, so prefer those over this generic helper there.
+- :func:`get_user_error_message` — code → friendly-string lookup used
+  by ``_send_error`` to enrich every error envelope with a
+  ``user_message`` the UI can show without translating the code itself.
 """
 
 import asyncio
@@ -153,17 +165,44 @@ ERROR_MESSAGES = {
 	"agent_error": "The AI agent encountered an error. The team has been notified.",
 	"connection_lost": "Connection to the processing service was lost. Reconnecting...",
 	"prompt_blocked": "Your message was flagged by our security filter. Please rephrase your request.",
+	"shutting_down": "The processing service is shutting down for an update. Please retry in a moment.",
 	"unknown": "An unexpected error occurred. Please try again or contact support.",
+}
+
+
+# Pipeline-emitted UPPER_SNAKE codes (see ``ctx.stop(code=...)`` call sites)
+# mapped to ERROR_MESSAGES keys. Add new codes here as the pipeline grows
+# new failure modes; unknown codes silently fall through to the
+# ``unknown`` bucket so a missing entry never crashes the error envelope.
+_PIPELINE_CODE_TO_KEY = {
+	"PIPELINE_TIMEOUT": "llm_timeout",
+	"PIPELINE_ERROR": "agent_error",
+	"PIPELINE_FAILED": "agent_error",
+	"OLLAMA_UNHEALTHY": "llm_unavailable",
+	"LLM_UNAVAILABLE": "llm_unavailable",
+	"PROMPT_BLOCKED": "prompt_blocked",
+	"NEEDS_REVIEW": "prompt_blocked",
+	"RATE_LIMIT": "rate_limited",
+	"REDIS_UNAVAILABLE": "redis_unavailable",
+	"PLAN_EXCEEDED": "rate_limited",
+	"SHUTTING_DOWN": "shutting_down",
 }
 
 
 def get_user_error_message(error_type: str, details: str = "") -> dict:
 	"""Get a user-friendly error message for a given error type.
 
+	Accepts either a lowercase ERROR_MESSAGES key (e.g. ``"llm_timeout"``)
+	or a pipeline-emitted UPPER_SNAKE code (e.g. ``"PIPELINE_TIMEOUT"``)
+	— the latter is translated via ``_PIPELINE_CODE_TO_KEY``. Anything
+	unrecognised falls through to ``ERROR_MESSAGES["unknown"]`` so a
+	new code never crashes the error envelope.
+
 	Returns:
 		{"message": str, "type": str, "details": str}
 	"""
-	message = ERROR_MESSAGES.get(error_type, ERROR_MESSAGES["unknown"])
+	key = _PIPELINE_CODE_TO_KEY.get(error_type, error_type)
+	message = ERROR_MESSAGES.get(key, ERROR_MESSAGES["unknown"])
 	return {
 		"message": message,
 		"type": error_type,

@@ -28,9 +28,15 @@ def _make_conn(max_per_hour: int | None = None) -> ConnectionState:
 	ws = MagicMock()
 	ws.send_json = AsyncMock()
 	# Mock the app.state.redis chain that _handle_custom_message reads.
+	# A bare MagicMock for app.state would make every attribute access
+	# return a truthy MagicMock — including the new ``shutting_down``
+	# flag the P0.1 wire reads. Explicit defaults make the tests run
+	# in the "service is up" state the rate-limit logic was written for.
 	ws.app = MagicMock()
 	ws.app.state = MagicMock()
 	ws.app.state.redis = MagicMock()  # Presence is what matters; check_rate_limit is patched
+	ws.app.state.shutting_down = False
+	ws.app.state.active_pipelines = 0
 
 	site_config: dict = {}
 	if max_per_hour is not None:

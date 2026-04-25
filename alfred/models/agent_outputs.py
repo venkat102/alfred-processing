@@ -2,6 +2,22 @@
 
 Each agent produces structured output validated against these models.
 Models serve as documentation, validation, and contract between agents.
+
+Activation status (2026-04-26):
+  - The composite output models (``RequirementSpec``, ``AssessmentResult``,
+    ``ArchitectureBlueprint``, ``Changeset``, ``DeploymentResult``,
+    ``TestReport``) are referenced by ``alfred/agents/crew.py`` task
+    descriptions and downstream parsing helpers. They are **not** wired
+    into CrewAI's ``output_pydantic=`` because Ollama wraps JSON in
+    Markdown code fences and CrewAI's output parser raises on that —
+    see the TODO at ``crew.py``'s task-builder loop.
+  - ``RiskLevel``, ``FieldDesign``, ``PermissionDesign`` are kept-but-
+    currently-unused. They were the original strict schema for risk
+    bucketing / field design / permission design; the team relaxed
+    those slots to ``list[str]`` / ``dict[str, Any]`` for flexibility
+    during prototyping. Wiring them now would change the over-the-wire
+    schema. Keep them around so the strict-schema work has a fixed
+    starting point if/when the flexibility is no longer needed.
 """
 
 from enum import Enum

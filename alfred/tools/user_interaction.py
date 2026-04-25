@@ -1,7 +1,31 @@
-"""User interaction tool for agent-to-user communication.
+"""User interaction adapter for agent-to-user clarification.
 
-The ask_user tool sends questions to the user via the custom WebSocket channel
-(NOT the MCP channel) and blocks until the user responds or timeout is reached.
+When to use this module
+-----------------------
+
+The Alfred crew flow intentionally **pre-clarifies** every ambiguous
+requirement during ``_clarify_requirements`` (see
+``alfred/api/websocket/pipeline_stages.py``) so the crew never has to
+ask mid-execution. The default tool bundle therefore wires
+``ask_user_stub`` (a "you shouldn't need this" no-op) for the
+requirement agent rather than the real handler below.
+
+``UserInteractionHandler`` exists for **adapter contexts** that need a
+question/answer flow but don't have a ``ConnectionState`` to lean on:
+
+  - Custom REST-like flows that bridge a sync caller to an async
+    pending-future store.
+  - Tests that exercise the question/response Future plumbing without
+    spinning up a full WebSocket. ``tests/test_mcp_client.py`` is the
+    in-tree example.
+
+For the production WebSocket path, prefer
+``ConnectionState.ask_human`` (``alfred/api/websocket/connection.py``)
+— that path is wired into CrewAI's ``human_input`` override and shares
+the same ``_pending_questions`` map the WS message router resolves
+``user_response`` frames against. Don't construct a parallel handler
+on top of a live connection; you'll fragment the pending-question state
+between the two.
 """
 
 import asyncio

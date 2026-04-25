@@ -12,13 +12,18 @@ URL versioning (TD-M9):
   deprecation window (Sunset + Deprecation headers on v1).
 """
 
+import logging
 import uuid
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+logger = logging.getLogger("alfred.routes")
+
 from alfred import __version__
-from alfred.middleware.auth import verify_api_key
+from alfred.api.lifecycle import is_shutting_down
+from alfred.api.rest_runner import schedule_rest_task
+from alfred.middleware.auth import verify_api_key, verify_rest_jwt
 from alfred.middleware.rate_limit import check_rate_limit
 from alfred.models.messages import (
 	ErrorResponse,
@@ -72,8 +77,32 @@ async def create_task(
 	body: TaskCreateRequest,
 	request: Request,
 	api_key: str = Depends(verify_api_key),
+	jwt_payload: dict = Depends(verify_rest_jwt),
 ):
-	"""Submit a new task for agent processing."""
+	"""Submit a new task for agent processing.
+
+	Auth contract: the request must carry both
+	  - ``Authorization: Bearer <api_key>`` (service-level), and
+	  - ``X-Alfred-JWT: <jwt>``               (per-user/site).
+
+	``site_id``, ``user`` and ``roles`` are read from the JWT — never
+	from the request body — so a leaked ``API_SECRET_KEY`` alone
+	cannot impersonate another tenant. If the body's
+	``site_config.site_id`` disagrees with the JWT, the request is
+	rejected to surface client misconfiguration loudly.
+	"""
+	# TD-M6 shutdown gate: refuse new tasks once the lifespan has flipped.
+	# The WS path returns the same code via an error frame; here we use
+	# 503 so a polling client retries with the right backoff.
+	if is_shutting_down(request.app.state):
+		raise HTTPException(
+			status_code=503,
+			detail={
+				"error": "Service is shutting down for an update. Retry in a moment.",
+				"code": "SHUTTING_DOWN",
+			},
+		)
+
 	store = _get_store(request)
 	if store is None:
 		raise HTTPException(
@@ -81,8 +110,38 @@ async def create_task(
 			detail={"error": "Service unavailable: Redis not connected", "code": "REDIS_UNAVAILABLE"},
 		)
 
-	site_id = body.site_config.get("site_id", "unknown")
-	user = body.user_context.get("user", "unknown")
+	# Tenancy is JWT-bound. Body-supplied site_id is checked for
+	# consistency only — we never *use* it to route Redis keys.
+	site_id = jwt_payload["site_id"]
+	user = jwt_payload["user"]
+	roles = jwt_payload.get("roles", [])
+
+	body_site_id = body.site_config.get("site_id")
+	if body_site_id and body_site_id != site_id:
+		logger.warning(
+			"REST: site_id mismatch JWT=%s body=%s user=%s — rejecting",
+			site_id, body_site_id, user,
+		)
+		raise HTTPException(
+			status_code=403,
+			detail={
+				"error": (
+					f"site_id in request body ({body_site_id!r}) does not match the "
+					f"JWT-bound tenant ({site_id!r}). The request was rejected to "
+					"prevent cross-tenant data leakage."
+				),
+				"code": "SITE_MISMATCH",
+			},
+		)
+
+	# Backfill the JWT-bound tenant onto the body so the rest of the
+	# pipeline (which currently still reads ``body.site_config.site_id``
+	# / ``body.user_context.user``) sees the canonical values, not
+	# the client's version. Two-step write because Pydantic dicts are
+	# mutable but conceptually we want the JWT to be the source of truth.
+	body.site_config["site_id"] = site_id
+	body.user_context["user"] = user
+	body.user_context.setdefault("roles", roles)
 
 	# Rate limit uses SERVER-SIDE default - never trust client-supplied limits
 	allowed, remaining, retry_after = await check_rate_limit(
@@ -109,6 +168,40 @@ async def create_task(
 	}
 
 	await store.set_task_state(site_id, task_id, task_state)
+
+	# Spawn the pipeline as a background task. POST returns immediately
+	# with task_id and the caller polls GET /api/v1/tasks/{id}. Without
+	# this dispatch, the row above would sit at status="queued" forever
+	# — there is no separate worker process draining the keyspace.
+	#
+	# P1.3: ``schedule_rest_task`` returns False if the per-user
+	# concurrency cap is saturated. Surface that as 429 with a distinct
+	# code so the client can back off without thinking it's the
+	# rate-limit window. Drop the just-written task_state so a polling
+	# client doesn't see a "queued" row that never advances.
+	scheduled = schedule_rest_task(
+		task_id=task_id, body=body,
+		redis=request.app.state.redis,
+		settings=request.app.state.settings,
+		store=store,
+	)
+	if not scheduled:
+		try:
+			await store.delete_task_state(site_id, task_id)
+		except (aioredis.RedisError, OSError, ValueError, TypeError):
+			# Cleanup is best-effort — TTL will reap the row eventually.
+			pass
+		raise HTTPException(
+			status_code=429,
+			detail={
+				"error": (
+					f"You already have the maximum allowed concurrent tasks running "
+					f"({request.app.state.settings.MAX_CONCURRENT_REST_TASKS_PER_USER}). "
+					f"Wait for one to finish before submitting another."
+				),
+				"code": "CONCURRENT_LIMIT",
+			},
+		)
 	return TaskCreateResponse(task_id=task_id, status="queued")
 
 
@@ -121,11 +214,13 @@ async def get_task_status(
 	task_id: str,
 	request: Request,
 	api_key: str = Depends(verify_api_key),
+	jwt_payload: dict = Depends(verify_rest_jwt),
 ):
 	"""Get the current status of a task.
 
-	site_id is required as a query parameter. In production, this would
-	be validated against the API key to prevent cross-site access.
+	``site_id`` is read from the JWT — never a query parameter — so a
+	caller can only see tasks belonging to their own tenant. Same
+	auth contract as ``POST /api/v1/tasks``.
 	"""
 	store = _get_store(request)
 	if store is None:
@@ -134,9 +229,7 @@ async def get_task_status(
 			detail={"error": "Service unavailable: Redis not connected", "code": "REDIS_UNAVAILABLE"},
 		)
 
-	site_id = request.query_params.get("site_id", "")
-	if not site_id:
-		raise HTTPException(status_code=400, detail={"error": "site_id query parameter is required", "code": "MISSING_SITE_ID"})
+	site_id = jwt_payload["site_id"]
 
 	state = await store.get_task_state(site_id, task_id)
 	if state is None:
@@ -145,10 +238,16 @@ async def get_task_status(
 			detail={"error": f"Task {task_id} not found", "code": "TASK_NOT_FOUND"},
 		)
 
+	# Overlay the side-channel ``current_agent`` (set atomically on each
+	# ``agent_status`` event by the REST runner — see P1.1). The JSON
+	# state's own ``current_agent`` field is the slower terminal value
+	# the runner writes; the side-channel reflects mid-run progress.
+	live_agent = await store.get_current_agent(site_id, task_id)
+
 	return TaskStatusResponse(
 		task_id=task_id,
 		status=state.get("status", "unknown"),
-		current_agent=state.get("current_agent"),
+		current_agent=live_agent or state.get("current_agent"),
 		data=state,
 	)
 
@@ -162,9 +261,14 @@ async def get_task_messages(
 	task_id: str,
 	request: Request,
 	api_key: str = Depends(verify_api_key),
+	jwt_payload: dict = Depends(verify_rest_jwt),
 	since_id: str = "0",
 ):
-	"""Get message history for a task from the event stream."""
+	"""Get message history for a task from the event stream.
+
+	``site_id`` is read from the JWT for tenancy isolation; see
+	``create_task`` for the rationale.
+	"""
 	store = _get_store(request)
 	if store is None:
 		raise HTTPException(
@@ -172,9 +276,7 @@ async def get_task_messages(
 			detail={"error": "Service unavailable: Redis not connected", "code": "REDIS_UNAVAILABLE"},
 		)
 
-	site_id = request.query_params.get("site_id", "")
-	if not site_id:
-		raise HTTPException(status_code=400, detail={"error": "site_id query parameter is required", "code": "MISSING_SITE_ID"})
+	site_id = jwt_payload["site_id"]
 
 	events = await store.get_events(site_id, task_id, since_id=since_id)
 	return [TaskMessageResponse(id=e["id"], data=e["data"]) for e in events]

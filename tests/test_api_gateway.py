@@ -70,12 +70,22 @@ async def client(app):
 		yield ac
 
 
-def _auth_headers():
-	return {"Authorization": f"Bearer {API_KEY}"}
+def _make_jwt(site_id: str = SITE_ID, user: str = USER):
+	return create_jwt_token(user, ROLES, site_id, API_KEY, exp_hours=1)
 
 
-def _make_jwt():
-	return create_jwt_token(USER, ROLES, SITE_ID, API_KEY, exp_hours=1)
+def _auth_headers(*, include_jwt: bool = True, jwt_override: str | None = None):
+	"""Return headers for an authenticated REST request.
+
+	Default headers include both the service Bearer + the per-user JWT
+	(see TD-P0.2 in commit history). Pass ``include_jwt=False`` to test
+	the JWT-missing branch, or ``jwt_override`` to inject a tampered /
+	mismatched JWT for the JWT-validation paths.
+	"""
+	headers = {"Authorization": f"Bearer {API_KEY}"}
+	if include_jwt:
+		headers["X-Alfred-JWT"] = jwt_override or _make_jwt()
+	return headers
 
 
 # ── Health Endpoint (no auth) ────────────────────────────────────
@@ -285,7 +295,12 @@ class TestTaskEndpoints:
 		)
 		assert resp.status_code == 200
 		assert resp.json()["task_id"] == task_id
-		assert resp.json()["status"] == "queued"
+		# After C2 (REST runner): the POST spawns the pipeline as a
+		# background task. By the time this GET lands, the runner may
+		# have advanced the row past "queued" or even crashed in
+		# warmup (no Ollama in CI). All four are valid lifecycle
+		# states; the test only cares that the row was persisted.
+		assert resp.json()["status"] in {"queued", "running", "completed", "failed"}
 
 	async def test_get_nonexistent_task(self, client, app):
 		if app.state.redis is None:

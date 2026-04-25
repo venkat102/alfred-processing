@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
 	from alfred.agents.crew import CrewState
+	from alfred.agents.token_tracker import TokenTracker
 	from alfred.api.websocket import ConnectionState
 	from alfred.state.conversation_memory import ConversationMemory
 	from alfred.state.store import StateStore
@@ -127,6 +128,12 @@ class PipelineContext:
 	crew: Any = None
 	crew_state: CrewState | None = None
 	crew_result: dict | None = None
+	# Per-conversation token tally. Populated at the end of ``_phase_run_crew``
+	# from each agent's ``_token_process``, then surfaced as a ``usage`` event
+	# and (for REST runs) folded into the final task_state. Stays None for
+	# chat / insights / plan modes — they don't run the multi-agent crew so
+	# there's nothing per-agent to break down.
+	token_tracker: TokenTracker | None = None
 	result_text: str = ""
 	changes: list[dict] = field(default_factory=list)
 	removed_by_reflection: list[dict] = field(default_factory=list)

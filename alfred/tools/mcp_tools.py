@@ -31,7 +31,15 @@ from typing import Any
 
 from crewai.tools import tool
 
+from alfred.tools.code_validation import (
+	validate_changeset_order_tool,
+	validate_doctype_tool,
+	validate_js_syntax_tool,
+	validate_python_syntax_tool,
+	validate_workflow_tool,
+)
 from alfred.tools.mcp_client import MCPClient
+from alfred.tools.permission_checks import check_permissions_tool
 
 logger = logging.getLogger("alfred.mcp_tools")
 
@@ -597,6 +605,12 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		"assessment": [
 			check_permission, get_user_context, get_existing_customizations,
 			lookup_doctype,              # verify target doctype exists in framework
+			# Deterministic permission matrix — overlays the live `check_permission`
+			# probe with the offline rule table in alfred/tools/permission_checks.py.
+			# Catches "user lacks Workflow Manager for the workflow they asked us
+			# to ship" before the changeset is built, instead of relying solely on
+			# the per-call MCP probe which only sees one DocType at a time.
+			check_permissions_tool,
 		],
 		"architect": [
 			lookup_doctype,              # primary source for vanilla field lookups
@@ -607,9 +621,21 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 			lookup_doctype,              # verify field names for the changeset
 			lookup_pattern,              # retrieve template to adapt
 			lookup_frappe_knowledge,     # platform rules (no-import, permissions, etc.)
+			lookup_kb_entry_by_id,       # cheap re-fetch when the id is already known
 			get_site_customization_detail,  # existing site artefacts on the target
 		],
 		"tester": [
+			# The "_tool" variants do real AST analysis (forbidden imports / raw
+			# SQL / missing permission checks / hardcoded emails) and structural
+			# DocType / Workflow / dependency-order validation — the original
+			# `_stub` versions only catch SyntaxError. Both are kept registered:
+			# the agent picks based on docstring, and the stubs remain as the
+			# cheapest sanity check for code that's already been parsed.
+			validate_python_syntax_tool,
+			validate_js_syntax_tool,
+			validate_doctype_tool,
+			validate_workflow_tool,
+			validate_changeset_order_tool,
 			validate_python_syntax_stub, validate_js_syntax_stub, validate_name_available,
 			check_permission, has_active_workflow, lookup_doctype, check_has_records,
 			dry_run_changeset,
@@ -652,6 +678,29 @@ def validate_python_syntax_stub(code: str) -> str:
 		return json.dumps({"valid": True, "errors": []})
 	except SyntaxError as e:
 		return json.dumps({"valid": False, "errors": [f"{e.msg} at line {e.lineno}"]})
+
+
+@tool
+def lookup_kb_entry_by_id(entry_id: str) -> str:
+	"""Fetch a single Frappe Knowledge Base entry by its exact id.
+
+	Use this when you already know the id of an entry (e.g. from a
+	previous ``lookup_frappe_knowledge`` call's ``id`` field) and want
+	the full body without re-running keyword search. Returns the full
+	YAML row as JSON, or ``{"found": false, "id": "..."}`` if no entry
+	with that id exists.
+
+	Example: lookup_kb_entry_by_id("server_script_no_imports")
+	  -> {"id": "...", "kind": "rule", "title": "...", "body": "...", ...}
+
+	Prefer this over a second ``lookup_frappe_knowledge`` call when the
+	id is known — saves the keyword-search overhead and is deterministic.
+	"""
+	from alfred.knowledge import fkb
+	entry = fkb.lookup_entry(entry_id)
+	if entry is None:
+		return json.dumps({"found": False, "id": entry_id})
+	return json.dumps(dict(entry, found=True))
 
 
 @tool
