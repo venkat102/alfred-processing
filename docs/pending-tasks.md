@@ -63,7 +63,7 @@ validation, empty-changeset error) lives in its own file under
 
 ---
 
-## TD-H2 — Split mega-files (pipeline, websocket, orchestrator, crew) ⏳ IN PROGRESS (2 of 4 PRs shipped)
+## TD-H2 — Split mega-files (pipeline, websocket, orchestrator, crew) ⏳ IN PROGRESS (3 of 4 PRs shipped)
 
 Progress so far on `refactor/decompose-post-crew`:
 
@@ -75,45 +75,23 @@ Progress so far on `refactor/decompose-post-crew`:
   - ✅ PR 2 — `alfred/api/websocket.py` (1330 LOC) → package
     (`__init__`/`extract`/`connection`/`pipeline_stages`, commit
     `30f9311`). Every file under 550 LOC.
+  - ✅ PR 3 — `alfred/api/pipeline.py` (2129 LOC) → package
+    (`__init__`/`extractors`/`context`/`_phases_setup`/
+    `_phases_orchestrate`/`_phases_dev`/`_phases_build`/`runner`,
+    commit `e1534b0`). 8 modules, every file under 600 LOC.
+    `AgentPipeline` is a multi-mixin class composing the four
+    `_PhasesXMixin` modules; cross-mixin method calls work via MRO
+    with a small `# type: ignore[attr-defined]` for mypy.
 
 **Still pending:**
-
-  - ⏳ PR 3 — `alfred/api/pipeline.py` (2129 LOC). Biggest and
-    trickiest: `AgentPipeline` is a single ~1500-LOC class with 20+
-    `_phase_*` methods, so a naive file split leaves one oversized
-    `runner.py`. Options under consideration:
-      (a) split the class via mixins, one module per concern group
-          (setup/orchestrate, dev-mode phases, resolve+build+run,
-          post-crew). Keeps MRO simple; each mixin ≤ 600 LOC.
-      (b) extract each phase body as a module-level function taking
-          the context, leave `_phase_X` methods as thin shims. More
-          mechanical churn but cleaner call graph.
-    Either way, plan first: draft the target structure on paper,
-    grep every `self.ctx.*` and `self._*` access in the class to
-    confirm what state each phase mutates, and only then start
-    writing files.
 
   - ⏳ PR 4 — `alfred/agents/crew.py` (1080 LOC). Backlog flags this
     as defer-worthy — concerns are tightly coupled (Crew / Task /
     Agent definitions + state serialization + `run_crew`
     orchestration). A naive split might move lines around without
-    actually improving navigation. Revisit only if pipeline.py PR
-    surfaces a natural seam.
-
-**Before-work checklist for PR 3:**
-- [ ] Read `tech-debt-backlog.md` TD-H2 for the proposed pipeline
-  package shape (extractors / context / runner / phases/).
-- [ ] Map every external import:
-  ```
-  grep -rn 'from alfred.api.pipeline import' alfred/ tests/
-  ```
-  The `__init__.py` must re-export every named callable/class
-  (`AgentPipeline`, `PipelineContext`, `StopSignal`, `_detect_drift`,
-  `_parse_report_candidate_marker`, `_extract_target_doctypes`).
-- [ ] Tests patch `alfred.api.pipeline._WARMUP_CACHE`,
-  `alfred.api.pipeline._INJECT_SITE_BUDGET`, `alfred.api.pipeline.
-  _PROBE_ATTEMPTS`, `alfred.api.pipeline._PROBE_RETRY_BACKOFF_S`, and
-  module-level constants — re-export those too.
+    actually improving navigation. Defer unless a real maintenance
+    pain point surfaces, OR if a future feature wants a clean seam
+    between the agent definitions and the run/state machinery.
 
 **Scope discipline** (inherited from backlog):
 - **One file at a time**, one PR each.
