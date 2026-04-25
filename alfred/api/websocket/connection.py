@@ -30,6 +30,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from alfred.api.websocket.extract import _describe_tool_call
 from alfred.middleware.auth import verify_jwt_token
+from alfred.obs.logging_setup import bind_request_context, clear_request_context
 from alfred.obs.tasks import spawn_logged
 
 if TYPE_CHECKING:
@@ -248,7 +249,31 @@ async def _authenticate_handshake(
 			pass
 		return None
 
-	api_key = handshake.get("api_key", "")
+	# Shape-validate via the documented Pydantic model. Catches
+	# malformed payloads (missing api_key, wrong types) with a single
+	# explicit error class instead of relying on downstream string
+	# coercions. Extra fields are ignored — Pydantic's default — which
+	# matches the forward-compat clause in test_ws_contract.py.
+	from pydantic import ValidationError
+
+	from alfred.models.messages import WSHandshakePayload
+	try:
+		payload = WSHandshakePayload.model_validate(handshake)
+	except ValidationError as e:
+		logger.warning(
+			"WS handshake shape invalid for conversation=%s: %s",
+			conversation_id, e,
+		)
+		try:
+			await websocket.close(
+				code=WS_CLOSE_INVALID_HANDSHAKE,
+				reason=f"Invalid handshake: {e.errors()[0]['msg']}",
+			)
+		except Exception:  # noqa: BLE001 — close after auth failure is best-effort; the connection may already be torn down by the client
+			pass
+		return None
+
+	api_key = payload.api_key
 	expected_key = websocket.app.state.settings.API_SECRET_KEY
 	# Constant-time comparison defeats timing attacks - a naive != leaks the
 	# prefix match length via response latency. hmac.compare_digest accepts
@@ -259,7 +284,7 @@ async def _authenticate_handshake(
 		await websocket.close(code=WS_CLOSE_AUTH_FAILED, reason="Invalid API key")
 		return None
 
-	jwt_token = handshake.get("jwt_token", "")
+	jwt_token = payload.jwt_token
 	try:
 		jwt_payload = verify_jwt_token(jwt_token, expected_key)
 	except ValueError as e:
@@ -267,7 +292,7 @@ async def _authenticate_handshake(
 		await websocket.close(code=WS_CLOSE_AUTH_FAILED, reason=str(e))
 		return None
 
-	site_config = handshake.get("site_config", {})
+	site_config = payload.site_config
 
 	# Attach the state store if Redis is configured. ConnectionState.send
 	# uses it to mirror user-visible events into the resume stream, and
@@ -626,6 +651,17 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 	if conn is None:
 		return
 
+	# TD-M3: every log line emitted while this connection lives will
+	# carry site_id / user / conversation_id, so triage on a busy host
+	# can grep by tenant without sprinkling extra args at each call site.
+	# Cleared in the ``finally`` block so the asyncio task doesn't leak
+	# stale fields to whatever runs next on the same loop.
+	bind_request_context(
+		site_id=conn.site_id,
+		user=conn.user,
+		conversation_id=conversation_id,
+	)
+
 	logger.info("WebSocket authenticated: user=%s, site=%s, conversation=%s", conn.user, conn.site_id, conversation_id)
 
 	# Register connection
@@ -684,3 +720,7 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 				await conn.active_pipeline
 			except (asyncio.CancelledError, Exception):  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 				pass
+
+		# TD-M3: drop the per-connection contextvars frame so the next task
+		# scheduled on this loop doesn't inherit stale site_id / user fields.
+		clear_request_context()

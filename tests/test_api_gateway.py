@@ -285,7 +285,12 @@ class TestTaskEndpoints:
 		)
 		assert resp.status_code == 200
 		assert resp.json()["task_id"] == task_id
-		assert resp.json()["status"] == "queued"
+		# After C2 (REST runner): the POST spawns the pipeline as a
+		# background task. By the time this GET lands, the runner may
+		# have advanced the row past "queued" or even crashed in
+		# warmup (no Ollama in CI). All four are valid lifecycle
+		# states; the test only cares that the row was persisted.
+		assert resp.json()["status"] in {"queued", "running", "completed", "failed"}
 
 	async def test_get_nonexistent_task(self, client, app):
 		if app.state.redis is None:

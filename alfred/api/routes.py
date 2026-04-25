@@ -18,6 +18,7 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from alfred import __version__
+from alfred.api.rest_runner import schedule_rest_task
 from alfred.middleware.auth import verify_api_key
 from alfred.middleware.rate_limit import check_rate_limit
 from alfred.models.messages import (
@@ -109,6 +110,17 @@ async def create_task(
 	}
 
 	await store.set_task_state(site_id, task_id, task_state)
+
+	# Spawn the pipeline as a background task. POST returns immediately
+	# with task_id and the caller polls GET /api/v1/tasks/{id}. Without
+	# this dispatch, the row above would sit at status="queued" forever
+	# — there is no separate worker process draining the keyspace.
+	schedule_rest_task(
+		task_id=task_id, body=body,
+		redis=request.app.state.redis,
+		settings=request.app.state.settings,
+		store=store,
+	)
 	return TaskCreateResponse(task_id=task_id, status="queued")
 
 
