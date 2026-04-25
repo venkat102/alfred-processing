@@ -191,6 +191,17 @@ class TestRestShutdownGate:
 		# before our shutdown gate can fire.
 		app.state.redis = MagicMock()
 
+		# JWT — REST endpoints now require X-Alfred-JWT (P0.2). The
+		# shutdown gate fires AFTER auth dependencies resolve, so the
+		# JWT has to be valid for this test to actually reach the
+		# shutdown branch.
+		from alfred.middleware.auth import create_jwt_token
+		jwt_str = create_jwt_token(
+			"alice", ["System Manager"], "site-a",
+			"test-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4",
+			exp_hours=1,
+		)
+
 		from httpx import ASGITransport, AsyncClient
 		transport = ASGITransport(app=app)
 		async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -198,6 +209,7 @@ class TestRestShutdownGate:
 				"/api/v1/tasks",
 				headers={
 					"Authorization": "Bearer test-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4",
+					"X-Alfred-JWT": jwt_str,
 				},
 				json={
 					"prompt": "x",
