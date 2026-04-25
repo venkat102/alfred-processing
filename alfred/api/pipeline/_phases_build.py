@@ -106,6 +106,7 @@ class _PhasesBuildMixin:
 			return
 
 		from alfred.agents.crew import run_crew
+		from alfred.agents.token_tracker import TokenTracker, estimate_cost
 
 		ctx = self.ctx
 		# _phase_build_crew populates both unconditionally when mode=dev;
@@ -122,6 +123,44 @@ class _PhasesBuildMixin:
 			),
 			timeout=timeout * 2,
 		)
+
+		# Token usage telemetry. CrewAI accumulates per-agent tokens on
+		# ``agent._token_process`` during kickoff; we fan them out into a
+		# TokenTracker so the per-agent breakdown is visible in the
+		# emitted ``usage`` event and in the REST task_state.
+		# Best-effort: any failure here must not regress a successful
+		# crew run — token telemetry is non-load-bearing.
+		try:
+			tracker = TokenTracker(ctx.conversation_id)
+			for agent in (ctx.crew.agents or []):
+				token_proc = getattr(agent, "_token_process", None)
+				if token_proc is None:
+					continue
+				summary = token_proc.get_summary()
+				prompt_t = getattr(summary, "prompt_tokens", 0) or 0
+				completion_t = getattr(summary, "completion_tokens", 0) or 0
+				if prompt_t == 0 and completion_t == 0:
+					continue
+				tracker.record_usage(
+					getattr(agent, "role", "unknown") or "unknown",
+					prompt_t, completion_t,
+				)
+			ctx.token_tracker = tracker
+			summary_dict = tracker.get_summary()
+			# Fold cost estimate alongside raw counts so the UI can show
+			# "$0.0023" without the client knowing per-provider pricing.
+			model_id = ctx.conn.site_config.get("llm_model", "")
+			summary_dict["cost"] = estimate_cost(tracker.total_tokens, model_id)
+			await ctx.conn.send({
+				"msg_id": str(uuid.uuid4()),
+				"type": "usage",
+				"data": summary_dict,
+			})
+		except Exception as e:  # noqa: BLE001 — telemetry is best-effort; a broken usage hook must never abort a successful crew run
+			logger.warning(
+				"Token tracker failed for conversation=%s: %s",
+				ctx.conversation_id, e,
+			)
 
 	async def _phase_post_crew(self) -> None:
 		"""Extract changeset, rescue if needed, run safety nets, reflect,
