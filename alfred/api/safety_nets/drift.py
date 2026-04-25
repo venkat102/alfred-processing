@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("alfred.safety_nets.drift")
 
 
-def detect_drift_with_metric(ctx: "PipelineContext") -> str | None:
+def detect_drift_with_metric(ctx: PipelineContext) -> str | None:
 	"""Run drift detection on ``ctx.result_text`` and record the metric.
 
 	Returns the reason string when drift is detected, else None. When

@@ -13,7 +13,7 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-	from alfred.api.pipeline import PipelineContext
+	pass
 
 logger = logging.getLogger("alfred.safety_nets.empty_changeset")
 

@@ -11,12 +11,8 @@ import json
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-import redis.asyncio as aioredis
-from fastapi import WebSocketDisconnect
-
-from alfred.config import get_settings as _get_settings
 from alfred.api.pipeline.extractors import (
 	_PROBE_ATTEMPTS,
 	_PROBE_RETRY_BACKOFF_S,
@@ -35,7 +31,7 @@ class _PhasesSetupMixin:
 	"""Setup phases — input safety, state recovery, model warmup, plan check."""
 
 	# Set on the concrete AgentPipeline class via the runner.
-	ctx: "PipelineContext"
+	ctx: PipelineContext
 
 	async def _phase_sanitize(self) -> None:
 		from alfred.defense.sanitizer import check_prompt
@@ -49,8 +45,8 @@ class _PhasesSetupMixin:
 
 	async def _phase_load_state(self) -> None:
 		"""Load redis store + per-conversation memory, capture user context."""
-		from alfred.state.store import StateStore
 		from alfred.state.conversation_memory import load_conversation_memory
+		from alfred.state.store import StateStore
 
 		ctx = self.ctx
 		redis = getattr(ctx.conn.websocket.app.state, "redis", None)
@@ -87,7 +83,9 @@ class _PhasesSetupMixin:
 		site_config = ctx.conn.site_config or {}
 
 		from alfred.llm_client import (
-			TIER_AGENT, TIER_REASONING, TIER_TRIAGE,
+			TIER_AGENT,
+			TIER_REASONING,
+			TIER_TRIAGE,
 			_resolve_ollama_config_for_tier,
 		)
 
@@ -133,7 +131,8 @@ class _PhasesSetupMixin:
 			# it a parallel attack surface to ollama_chat. Validate the
 			# URL here too. See alfred/security/url_allowlist.py.
 			from alfred.security.url_allowlist import (
-				SsrfPolicyError, validate_llm_url,
+				SsrfPolicyError,
+				validate_llm_url,
 			)
 			try:
 				validate_llm_url(base_url)

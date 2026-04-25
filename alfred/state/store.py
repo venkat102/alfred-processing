@@ -170,7 +170,7 @@ class StateStore:
 		if self._stream_ttl_seconds > 0:
 			try:
 				await self._redis.expire(key, self._stream_ttl_seconds)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 				# Expiry refresh is best-effort; a Redis hiccup here must
 				# not fail the event push itself. Worst case the stream
 				# keeps the previous TTL (or none), which is the

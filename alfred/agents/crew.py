@@ -13,12 +13,10 @@ Usage:
 import asyncio
 import json
 import logging
-import os
 import time
-
-import redis.asyncio as aioredis
 from typing import Any
 
+import redis.asyncio as aioredis
 from crewai import Agent, Crew, Process, Task
 
 from alfred.agents.condenser import make_condenser_callback

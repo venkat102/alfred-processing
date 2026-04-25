@@ -28,13 +28,13 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from alfred.api.websocket.extract import _describe_tool_call
 from alfred.middleware.auth import verify_jwt_token
 from alfred.obs.tasks import spawn_logged
-from alfred.api.websocket.extract import _describe_tool_call
 
 if TYPE_CHECKING:
-	from alfred.agents.crew import CrewState
 	from alfred.api.pipeline import PipelineContext
+	from alfred.state.store import StateStore
 	from alfred.tools.mcp_client import MCPClient
 
 logger = logging.getLogger("alfred.websocket")
@@ -56,7 +56,7 @@ WS_CLOSE_HEARTBEAT_TIMEOUT = 4004
 _EXPIRED_Q_TTL_SECONDS = 3600
 
 # Active connections: conversation_id -> ConnectionState
-_connections: dict[str, "ConnectionState"] = {}
+_connections: dict[str, ConnectionState] = {}
 
 
 class ConnectionState:
@@ -79,7 +79,7 @@ class ConnectionState:
 		roles: list[str],
 		site_config: dict,
 		conversation_id: str | None = None,
-		store: "StateStore | None" = None,
+		store: StateStore | None = None,
 	):
 		self.websocket = websocket
 		self.site_id = site_id
@@ -142,7 +142,7 @@ class ConnectionState:
 			await self.store.push_event(
 				self.site_id, self.conversation_id, message,
 			)
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 			logger.debug(
 				"push_event for type=%s conv=%s failed: %s",
 				msg_type, self.conversation_id, e,
@@ -220,7 +220,7 @@ class ConnectionState:
 						"response_to": msg_id,
 					},
 				})
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 				logger.debug("Failed to send late-clarifier info for %s: %s", msg_id, e)
 		return False
 
@@ -235,16 +235,16 @@ async def _authenticate_handshake(
 	except TimeoutError:
 		try:
 			await websocket.close(code=WS_CLOSE_INVALID_HANDSHAKE, reason="Handshake timeout")
-		except Exception:
+		except Exception:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 			pass
 		return None
 	except WebSocketDisconnect:
 		logger.debug("Client disconnected before handshake: conversation=%s", conversation_id)
 		return None
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 		try:
 			await websocket.close(code=WS_CLOSE_INVALID_HANDSHAKE, reason=f"Invalid handshake: {e}")
-		except Exception:
+		except Exception:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 			pass
 		return None
 
@@ -401,7 +401,7 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 			events = await conn.store.get_events(
 				conn.site_id, conn.conversation_id, since_id="0",
 			)
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 			logger.warning(
 				"Resume replay for %s@%s conv=%s failed at get_events: %s",
 				conn.user, conn.site_id, conversation_id, e,
@@ -435,7 +435,7 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 		for entry in to_replay:
 			try:
 				await websocket.send_json(entry["data"])
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 				logger.warning(
 					"Resume replay send for %s@%s failed partway: %s",
 					conn.user, conn.site_id, e,
@@ -552,7 +552,11 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 
 		async def _run_and_clear():
 			try:
-				await _run_agent_pipeline(
+				# Lazy re-import through the package so tests that patch
+				# ``alfred.api.websocket._run_agent_pipeline`` reach this
+				# call site (the local-module name would bypass the patch).
+				from alfred.api.websocket import _run_agent_pipeline as _runner
+				await _runner(
 					conn, conversation_id, prompt_text, manual_mode=manual_mode
 				)
 			finally:
@@ -608,7 +612,7 @@ async def _heartbeat_loop(websocket: WebSocket, interval: int = 30):
 		while True:
 			await asyncio.sleep(interval)
 			await websocket.send_json({"msg_id": str(uuid.uuid4()), "type": "ping", "data": {}})
-	except Exception:
+	except Exception:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 		pass
 
 
@@ -661,7 +665,7 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 
 	except WebSocketDisconnect:
 		logger.info("WebSocket disconnected: user=%s, conversation=%s", conn.user, conversation_id)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 		logger.error("WebSocket error: user=%s, conversation=%s, error=%s", conn.user, conversation_id, e)
 	finally:
 		_connections.pop(conversation_id, None)
@@ -678,5 +682,5 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 			conn.active_pipeline.cancel()
 			try:
 				await conn.active_pipeline
-			except (asyncio.CancelledError, Exception):
+			except (asyncio.CancelledError, Exception):  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 				pass

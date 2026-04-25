@@ -30,8 +30,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import redis.asyncio as aioredis
-
 logger = logging.getLogger("alfred.conversation_memory")
 
 # Caps - trim older entries first when exceeded.

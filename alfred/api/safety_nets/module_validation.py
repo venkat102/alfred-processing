@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("alfred.safety_nets.module_validation")
 
 
-async def apply_module_validation(ctx: "PipelineContext") -> None:
+async def apply_module_validation(ctx: PipelineContext) -> None:
 	"""Run the module specialist validation pass, populate ``ctx.
 	module_validation_notes``.
 

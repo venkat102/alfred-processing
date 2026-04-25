@@ -14,10 +14,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-	from alfred.api.websocket import ConnectionState
 	from alfred.agents.crew import CrewState
-	from alfred.state.store import StateStore
+	from alfred.api.websocket import ConnectionState
 	from alfred.state.conversation_memory import ConversationMemory
+	from alfred.state.store import StateStore
 
 logger = logging.getLogger("alfred.pipeline")
 
@@ -41,7 +41,7 @@ class PipelineContext:
 	populated by the phases in execution order.
 	"""
 
-	conn: "ConnectionState"
+	conn: ConnectionState
 	conversation_id: str
 	prompt: str
 
@@ -101,8 +101,8 @@ class PipelineContext:
 	report_candidate: dict | None = None
 
 	# Services
-	store: "StateStore | None" = None
-	conversation_memory: "ConversationMemory | None" = None
+	store: StateStore | None = None
+	conversation_memory: ConversationMemory | None = None
 
 	# Phase outputs (populated as the pipeline runs)
 	user_context: dict = field(default_factory=dict)
@@ -125,7 +125,7 @@ class PipelineContext:
 	pipeline_mode_source: str = "site_config"
 	custom_tools: dict | None = None
 	crew: Any = None
-	crew_state: "CrewState | None" = None
+	crew_state: CrewState | None = None
 	crew_result: dict | None = None
 	result_text: str = ""
 	changes: list[dict] = field(default_factory=list)

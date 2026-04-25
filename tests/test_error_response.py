@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import os
-import pytest
-from httpx import ASGITransport, AsyncClient
-from fastapi import HTTPException
 
-from alfred.api.errors import install_error_handler, raise_error
+import pytest
+from fastapi import HTTPException
+from httpx import ASGITransport, AsyncClient
+
+from alfred.api.errors import raise_error
 from alfred.main import create_app
 from alfred.models.messages import ErrorResponse
 
 
 @pytest.fixture
 async def app():
-	os.environ["API_SECRET_KEY"] = "test-key"
+	os.environ["API_SECRET_KEY"] = "test-cors-32byte-key-not-a-real-secret-padding"
 	os.environ["ALLOWED_ORIGINS"] = "http://localhost"
 	os.environ["DEBUG"] = "false"
 	from alfred.config import get_settings

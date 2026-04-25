@@ -21,7 +21,7 @@ logger = logging.getLogger("alfred.safety_nets.rescue")
 
 
 async def apply_rescue_if_empty(
-	ctx: "PipelineContext",
+	ctx: PipelineContext,
 	drift_reason: str | None,
 ) -> None:
 	"""If ``ctx.changes`` is empty, attempt a rescue regeneration and

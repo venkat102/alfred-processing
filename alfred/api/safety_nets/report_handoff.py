@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("alfred.safety_nets.report_handoff")
 
 
-def apply_report_handoff_safety_net(ctx: "PipelineContext") -> None:
+def apply_report_handoff_safety_net(ctx: PipelineContext) -> None:
 	"""Backfill Report items from the Insights-to-Report handoff.
 
 	No-op unless ``ctx.intent == "create_report"``, ``ctx.changes`` is

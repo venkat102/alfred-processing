@@ -40,6 +40,11 @@ from alfred.obs import tracer  # noqa: F401 — re-exported for tests that patch
 logger = logging.getLogger("alfred.pipeline")
 
 # Pure helpers + module constants
+# Shared dataclasses
+from alfred.api.pipeline.context import (  # noqa: E402, F401
+	PipelineContext,
+	StopSignal,
+)
 from alfred.api.pipeline.extractors import (  # noqa: E402, F401
 	_DOCTYPE_NAME_RE,
 	_DOCUMENTATION_MODE_PHRASES,
@@ -59,11 +64,7 @@ from alfred.api.pipeline.extractors import (  # noqa: E402, F401
 	_site_detail_has_artefacts,
 	_summarise_probe_error,
 )
-# Shared dataclasses
-from alfred.api.pipeline.context import (  # noqa: E402, F401
-	PipelineContext,
-	StopSignal,
-)
+
 # AgentPipeline class
 from alfred.api.pipeline.runner import AgentPipeline  # noqa: E402, F401
 

@@ -20,7 +20,6 @@ import pytest
 from alfred.main import create_app
 from alfred.middleware.auth import create_jwt_token, verify_jwt_token
 
-
 _STRONG_KEY_A = "a-very-long-and-unique-api-secret-key-32+chars"
 _STRONG_KEY_B = "b-distinct-32-byte-jwt-signing-key-for-tests!"
 

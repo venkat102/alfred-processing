@@ -15,7 +15,6 @@ import pytest
 
 from alfred.middleware.auth import create_jwt_token, verify_jwt_token
 
-
 _KEY = "test-signing-key-32-plus-bytes-long-xxxxxxxx"
 _USER = "u@test.com"
 _ROLES = ["Administrator"]

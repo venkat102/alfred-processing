@@ -40,7 +40,7 @@ def test_executor_max_workers_respects_setting(monkeypatch):
 	if hasattr(get_settings, "cache_clear"):
 		get_settings.cache_clear()
 	monkeypatch.setenv("LLM_POOL_SIZE", "4")
-	monkeypatch.setenv("API_SECRET_KEY", "test-key-for-pool-test")
+	monkeypatch.setenv("API_SECRET_KEY", "test-llm-pool-32byte-key-padding-here-yes")
 	monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost")
 
 	executor = llm_client_mod._get_llm_executor()

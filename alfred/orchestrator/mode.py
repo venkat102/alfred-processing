@@ -49,6 +49,7 @@ def is_enabled() -> bool:
 	ValidationError at Settings construction — is treated as disabled.
 	"""
 	from pydantic import ValidationError
+
 	from alfred.config import get_settings
 	try:
 		return get_settings().ALFRED_ORCHESTRATOR_ENABLED
@@ -207,7 +208,7 @@ def _normalize_mode(mode: str | None) -> str | None:
 	return val if val in _VALID_MODES else None
 
 
-def _has_active_plan(memory: "ConversationMemory | None") -> bool:
+def _has_active_plan(memory: ConversationMemory | None) -> bool:
 	"""Check if the conversation has an active plan the user could reference.
 
 	Phase C adds a proper `active_plan` slot on ConversationMemory. Until
@@ -365,7 +366,7 @@ async def _classify_with_llm(
 
 async def classify_mode(
 	prompt: str,
-	memory: "ConversationMemory | None",
+	memory: ConversationMemory | None,
 	manual_override: str | None,
 	site_config: dict,
 	force_dev_override: bool = False,
@@ -389,8 +390,8 @@ async def classify_mode(
 	"""
 	# Imported lazily to avoid a circular import at module load time
 	# (orchestrator.intent re-uses the analytics-query detector).
-	from alfred.orchestrator.intent import _looks_like_analytics_query
 	from alfred.obs.metrics import orchestrator_decisions_total
+	from alfred.orchestrator.intent import _looks_like_analytics_query
 
 	def _record(decision: ModeDecision) -> ModeDecision:
 		try:

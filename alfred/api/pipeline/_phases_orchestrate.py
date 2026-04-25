@@ -6,17 +6,11 @@ TD-H2 PR 3 split from ``alfred/api/pipeline.py``. Mixed into
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-import redis.asyncio as aioredis
 from fastapi import WebSocketDisconnect
-
-from alfred.config import get_settings as _get_settings
 
 if TYPE_CHECKING:
 	from alfred.api.pipeline.context import PipelineContext
@@ -28,7 +22,7 @@ class _PhasesOrchestrateMixin:
 	"""Mode-orchestration phases — runs the dev/plan/insights/chat dispatcher and short-circuits chat/insights/plan modes."""
 
 	# Set on the concrete AgentPipeline class via the runner.
-	ctx: "PipelineContext"
+	ctx: PipelineContext
 
 	async def _phase_orchestrate(self) -> None:
 		"""Classify the prompt into a mode (dev/plan/insights/chat).

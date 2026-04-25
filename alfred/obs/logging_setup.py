@@ -41,8 +41,8 @@ from alfred.obs.log_redaction import (
 
 
 def _redact_processor(
-	logger: Any, name: str, event_dict: "structlog.types.EventDict"
-) -> "structlog.types.EventDict":
+	logger: Any, name: str, event_dict: structlog.types.EventDict
+) -> structlog.types.EventDict:
 	"""structlog processor: redact sensitive keys across the event dict.
 
 	Handles top-level keys (``event_dict["api_key"]`` from a
@@ -80,8 +80,8 @@ class _RedactingFilter(logging.Filter):
 
 
 def _redact_message_patterns_processor(
-	logger: Any, name: str, event_dict: "structlog.types.EventDict"
-) -> "structlog.types.EventDict":
+	logger: Any, name: str, event_dict: structlog.types.EventDict
+) -> structlog.types.EventDict:
 	"""structlog processor: sweep the ``event`` (message) for Bearer /
 	JWT shapes that were string-interpolated instead of passed as args.
 

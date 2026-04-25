@@ -7,14 +7,11 @@ TD-H2 PR 3 split from ``alfred/api/pipeline.py``. Mixed into
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as aioredis
-from fastapi import WebSocketDisconnect
 
 from alfred.config import get_settings as _get_settings
 
@@ -28,7 +25,7 @@ class _PhasesBuildMixin:
 	"""Crew lifecycle phases — build, run, and post-process."""
 
 	# Set on the concrete AgentPipeline class via the runner.
-	ctx: "PipelineContext"
+	ctx: PipelineContext
 
 	async def _phase_build_crew(self) -> None:
 		"""Assemble the crew, MCP tool set, and per-run tracking state."""
@@ -139,10 +136,6 @@ class _PhasesBuildMixin:
 		if self.ctx.mode != "dev":
 			return
 
-		from alfred.api.websocket import (
-			_extract_changes,
-			_dry_run_with_retry,
-		)
 		from alfred.agents.reflection import reflect_minimality
 		from alfred.api.safety_nets import (
 			apply_defaults_backfill,
@@ -151,6 +144,10 @@ class _PhasesBuildMixin:
 			apply_rescue_if_empty,
 			detect_drift_with_metric,
 			emit_empty_changeset_error,
+		)
+		from alfred.api.websocket import (
+			_dry_run_with_retry,
+			_extract_changes,
 		)
 
 		ctx = self.ctx

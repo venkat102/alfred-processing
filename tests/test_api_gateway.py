@@ -361,6 +361,7 @@ class TestWebSocketRateLimit:
 			pytest.skip("httpx_ws not installed")
 
 		import time as _t
+
 		import alfred.api.websocket as ws_mod
 
 		original_limit = ws_mod.SERVER_DEFAULT_RATE_LIMIT

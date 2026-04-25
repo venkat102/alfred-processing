@@ -28,7 +28,6 @@ What this handler does NOT do:
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING
 
 from alfred.models.insights_result import InsightsResult

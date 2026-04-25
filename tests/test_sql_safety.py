@@ -6,7 +6,6 @@ import pytest
 
 from alfred.security.sql_safety import UnsafeSqlError, validate_safe_select
 
-
 # ── Valid SELECTs (must not raise) ─────────────────────────────────
 
 

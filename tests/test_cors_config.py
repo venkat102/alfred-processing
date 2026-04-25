@@ -44,7 +44,7 @@ def _boot_with(env_overrides: dict[str, str]):
 def test_star_origin_rejected_when_debug_false():
 	with pytest.raises(ValueError, match="ALLOWED_ORIGINS"):
 		_boot_with({
-			"API_SECRET_KEY": "k",
+			"API_SECRET_KEY": "test-cors-32byte-key-not-a-real-secret-padding",
 			"ALLOWED_ORIGINS": "*",
 			"DEBUG": "false",
 		})
@@ -53,7 +53,7 @@ def test_star_origin_rejected_when_debug_false():
 def test_empty_origin_rejected_at_startup():
 	with pytest.raises(ValueError, match="ALLOWED_ORIGINS"):
 		_boot_with({
-			"API_SECRET_KEY": "k",
+			"API_SECRET_KEY": "test-cors-32byte-key-not-a-real-secret-padding",
 			"ALLOWED_ORIGINS": "",
 			"DEBUG": "false",
 		})
@@ -62,7 +62,7 @@ def test_empty_origin_rejected_at_startup():
 def test_whitespace_only_origin_rejected_at_startup():
 	with pytest.raises(ValueError, match="ALLOWED_ORIGINS"):
 		_boot_with({
-			"API_SECRET_KEY": "k",
+			"API_SECRET_KEY": "test-cors-32byte-key-not-a-real-secret-padding",
 			"ALLOWED_ORIGINS": "   ",
 			"DEBUG": "false",
 		})
@@ -72,7 +72,7 @@ def test_only_commas_and_spaces_rejected_at_startup():
 	# Parses to an empty list after stripping — still invalid.
 	with pytest.raises(ValueError, match="ALLOWED_ORIGINS"):
 		_boot_with({
-			"API_SECRET_KEY": "k",
+			"API_SECRET_KEY": "test-cors-32byte-key-not-a-real-secret-padding",
 			"ALLOWED_ORIGINS": ",,, ,  ",
 			"DEBUG": "false",
 		})
@@ -86,7 +86,7 @@ def test_debug_mode_allows_star_with_credentials_disabled():
 	# allow_credentials MUST be False so the config stays CORS-spec
 	# compliant (browsers reject credentialed `*`).
 	app = _boot_with({
-		"API_SECRET_KEY": "k",
+		"API_SECRET_KEY": "test-cors-32byte-key-not-a-real-secret-padding",
 		"ALLOWED_ORIGINS": "*",
 		"DEBUG": "true",
 	})
@@ -100,7 +100,7 @@ def test_debug_mode_with_explicit_origins_uses_credentials():
 	# enabled, methods/headers tightened), NOT fall into the wildcard
 	# escape path. The escape only fires when origin == "*".
 	app = _boot_with({
-		"API_SECRET_KEY": "k",
+		"API_SECRET_KEY": "test-cors-32byte-key-not-a-real-secret-padding",
 		"ALLOWED_ORIGINS": "http://localhost:8001",
 		"DEBUG": "true",
 	})
@@ -115,7 +115,7 @@ def test_debug_mode_with_empty_origins_still_rejected():
 	# almost certainly an operator mistake, not a dev-intent wildcard.
 	with pytest.raises(ValueError, match="ALLOWED_ORIGINS"):
 		_boot_with({
-			"API_SECRET_KEY": "k",
+			"API_SECRET_KEY": "test-cors-32byte-key-not-a-real-secret-padding",
 			"ALLOWED_ORIGINS": "",
 			"DEBUG": "true",
 		})
@@ -126,7 +126,7 @@ def test_debug_mode_with_empty_origins_still_rejected():
 
 def test_single_origin_boots():
 	app = _boot_with({
-		"API_SECRET_KEY": "k",
+		"API_SECRET_KEY": "test-cors-32byte-key-not-a-real-secret-padding",
 		"ALLOWED_ORIGINS": "https://example.com",
 		"DEBUG": "false",
 	})
@@ -135,7 +135,7 @@ def test_single_origin_boots():
 
 def test_multiple_origins_boot():
 	app = _boot_with({
-		"API_SECRET_KEY": "k",
+		"API_SECRET_KEY": "test-cors-32byte-key-not-a-real-secret-padding",
 		"ALLOWED_ORIGINS": "http://localhost:8001,https://app.example.com",
 		"DEBUG": "false",
 	})
@@ -148,7 +148,7 @@ def test_multiple_origins_boot():
 def test_origins_are_trimmed():
 	# Whitespace around commas shouldn't break anything.
 	app = _boot_with({
-		"API_SECRET_KEY": "k",
+		"API_SECRET_KEY": "test-cors-32byte-key-not-a-real-secret-padding",
 		"ALLOWED_ORIGINS": "  http://localhost:8001  ,  https://app.example.com  ",
 		"DEBUG": "false",
 	})
@@ -165,7 +165,7 @@ def test_methods_restricted_to_get_post_options():
 	# OPTIONS. Enforcing the list shrinks the pre-approved attack
 	# surface per origin.
 	app = _boot_with({
-		"API_SECRET_KEY": "k",
+		"API_SECRET_KEY": "test-cors-32byte-key-not-a-real-secret-padding",
 		"ALLOWED_ORIGINS": "https://example.com",
 		"DEBUG": "false",
 	})
@@ -182,7 +182,7 @@ def test_methods_restricted_to_get_post_options():
 
 def test_headers_restricted_to_known_list():
 	app = _boot_with({
-		"API_SECRET_KEY": "k",
+		"API_SECRET_KEY": "test-cors-32byte-key-not-a-real-secret-padding",
 		"ALLOWED_ORIGINS": "https://example.com",
 		"DEBUG": "false",
 	})

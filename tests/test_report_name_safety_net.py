@@ -4,8 +4,6 @@ candidate's suggested_name when the specialist's output omitted it.
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from alfred.api.pipeline import PipelineContext
 
 

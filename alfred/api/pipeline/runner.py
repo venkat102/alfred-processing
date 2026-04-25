@@ -23,7 +23,6 @@ falls through to the mixin that defines each ``_phase_X``.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from typing import Any
@@ -80,13 +79,12 @@ class AgentPipeline(
 		at the outer level and converts them to user-visible error messages."""
 		import time as _time
 
-		from alfred.obs.metrics import pipeline_phase_duration_seconds
-
 		# Resolve `tracer` through the package so tests that
 		# ``patch("alfred.api.pipeline.tracer", ...)`` affect this lookup.
 		# A direct ``from alfred.obs import tracer`` at module scope
 		# would bypass the patch.
 		from alfred.api import pipeline as _pkg
+		from alfred.obs.metrics import pipeline_phase_duration_seconds
 		tracer = _pkg.tracer
 
 		try:
@@ -105,7 +103,7 @@ class AgentPipeline(
 						pipeline_phase_duration_seconds.labels(phase=name).observe(
 							_time.perf_counter() - phase_started
 						)
-		except asyncio.TimeoutError:
+		except TimeoutError:
 			logger.error(
 				"Pipeline timeout for conversation=%s", self.ctx.conversation_id
 			)

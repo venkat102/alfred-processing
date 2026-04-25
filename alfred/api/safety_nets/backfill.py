@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("alfred.safety_nets.backfill")
 
 
-def apply_defaults_backfill(ctx: "PipelineContext") -> None:
+def apply_defaults_backfill(ctx: PipelineContext) -> None:
 	"""Backfill registry defaults into ``ctx.changes`` in place.
 
 	No-op when ``ALFRED_PER_INTENT_BUILDERS`` is off or ``ctx.changes``
@@ -52,6 +52,11 @@ def apply_defaults_backfill(ctx: "PipelineContext") -> None:
 		)
 		ctx.changes = backfill_defaults_raw(
 			ctx.changes,
+			# Master 5c5ed15: gate registry defaults on classified intent
+			# so a Custom Field item inside a create_doctype changeset
+			# doesn't accidentally get all 22 create_custom_field
+			# defaults injected.
+			intent=ctx.intent,
 			module=module_arg,
 			secondary_modules=secondary_arg,
 		)

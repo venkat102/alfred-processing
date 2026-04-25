@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
-
 from alfred.obs.log_redaction import (
 	RedactingFormatter,
 	_apply_message_patterns,

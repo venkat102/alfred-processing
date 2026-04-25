@@ -22,8 +22,6 @@ import sys
 from contextlib import contextmanager
 from unittest.mock import patch
 
-import pytest
-
 from alfred.obs.logging_setup import (
 	_RedactingFilter,
 	bind_request_context,

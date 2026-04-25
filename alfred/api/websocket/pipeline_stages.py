@@ -8,10 +8,7 @@ import asyncio
 import json
 import logging
 import re
-import uuid
 from typing import TYPE_CHECKING
-
-from fastapi import WebSocketDisconnect
 
 from alfred.api.websocket.extract import _extract_changes
 
@@ -23,8 +20,8 @@ logger = logging.getLogger("alfred.websocket")
 
 
 async def _dry_run_with_retry(
-	conn: "ConnectionState",
-	state: "CrewState",
+	conn: ConnectionState,
+	state: CrewState,
 	changes: list[dict],
 	site_config: dict,
 	event_callback,
@@ -100,7 +97,7 @@ async def _dry_run_with_retry(
 			# with content issues (invalid).
 			result["status"] = "ok" if result.get("valid") else "invalid"
 			return result
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 			logger.warning("Dry-run MCP call failed: %s", e)
 			return {
 				"valid": False, "status": "infra_error", "validated": 0,
@@ -228,7 +225,7 @@ async def _dry_run_with_retry(
 
 async def _clarify_requirements(
 	enhanced_prompt: str,
-	conn: "ConnectionState",
+	conn: ConnectionState,
 	event_callback,
 ) -> tuple[str, list[tuple[str, str]]]:
 	"""Structured clarification gate: ask the user about ambiguities before the crew runs.
@@ -325,7 +322,7 @@ async def _clarify_requirements(
 				parsed = json.loads(match.group())
 				if isinstance(parsed, list):
 					questions = [q for q in parsed if isinstance(q, dict) and q.get("question")]
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 			logger.warning("Clarify pass: failed to parse questions: %s", e)
 			questions = []
 
@@ -350,7 +347,7 @@ async def _clarify_requirements(
 			})
 			try:
 				answer = await conn.ask_human(question_text, choices=choices, timeout=900)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 				logger.warning("ask_human failed for question %r: %s", question_text, e)
 				answer = "[no response]"
 
@@ -370,7 +367,7 @@ async def _clarify_requirements(
 		})
 
 		return clarified, qa_pairs
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 		logger.warning("Clarify pass crashed, proceeding with original prompt: %s", e, exc_info=True)
 		return enhanced_prompt, []
 
@@ -521,7 +518,7 @@ async def _rescue_regenerate_changeset(
 				"message": "Rescue pass produced no changeset - request may be out of scope.",
 			})
 		return changes
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 		logger.warning("Rescue regeneration failed: %s", e, exc_info=True)
 		return []
 

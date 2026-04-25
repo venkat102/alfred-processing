@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
+import pytest
+
 from alfred.orchestrator import (
 	_clip_memory_context,
 	_fast_path,

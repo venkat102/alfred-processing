@@ -49,7 +49,7 @@ def _describe_tool_call(tool_name: str, arguments: dict) -> str:
 		return f"Running {tool_name}"
 	try:
 		return formatter(arguments or {})
-	except Exception:
+	except Exception:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 		return f"Running {tool_name}"
 
 

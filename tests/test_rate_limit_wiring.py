@@ -11,8 +11,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from alfred.middleware.rate_limit import check_rate_limit
 
 

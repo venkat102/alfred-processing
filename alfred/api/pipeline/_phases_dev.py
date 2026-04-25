@@ -6,26 +6,21 @@ TD-H2 PR 3 split from ``alfred/api/pipeline.py``. Mixed into
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import time
 import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-import redis.asyncio as aioredis
 from fastapi import WebSocketDisconnect
 
-from alfred.config import get_settings as _get_settings
-from alfred.obs import tracer
 from alfred.api.pipeline.extractors import (
-	_INJECT_MAX_TARGETS,
 	_INJECT_SITE_BUDGET,
 	_extract_target_doctypes,
 	_parse_report_candidate_marker,
 	_render_site_state_block,
 	_site_detail_has_artefacts,
 )
+from alfred.config import get_settings as _get_settings
+from alfred.obs import tracer
 
 if TYPE_CHECKING:
 	from alfred.api.pipeline.context import PipelineContext
@@ -37,7 +32,7 @@ class _PhasesDevMixin:
 	"""Dev-mode phases — per-intent + per-module classification plus enhance/clarify/inject_kb/resolve_mode."""
 
 	# Set on the concrete AgentPipeline class via the runner.
-	ctx: "PipelineContext"
+	ctx: PipelineContext
 
 	async def _phase_classify_intent(self) -> None:
 		"""Classify the dev-mode prompt into a Builder specialist intent.
