@@ -215,10 +215,16 @@ async def get_task_status(
 			detail={"error": f"Task {task_id} not found", "code": "TASK_NOT_FOUND"},
 		)
 
+	# Overlay the side-channel ``current_agent`` (set atomically on each
+	# ``agent_status`` event by the REST runner — see P1.1). The JSON
+	# state's own ``current_agent`` field is the slower terminal value
+	# the runner writes; the side-channel reflects mid-run progress.
+	live_agent = await store.get_current_agent(site_id, task_id)
+
 	return TaskStatusResponse(
 		task_id=task_id,
 		status=state.get("status", "unknown"),
-		current_agent=state.get("current_agent"),
+		current_agent=live_agent or state.get("current_agent"),
 		data=state,
 	)
 

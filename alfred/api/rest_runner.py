@@ -124,19 +124,18 @@ class _RestConn:
 				self.task_id, self.site_id, e,
 			)
 
-		# Surface the current agent on the task_state so a polling
-		# client can show "Architect..." / "Developer..." without
-		# tailing the message stream.
+		# Surface the current agent on its own Redis key (atomic SETEX)
+		# so a polling client can show "Architect..." / "Developer..."
+		# without tailing the message stream. P1.1: the previous
+		# read-modify-write into ``task_state`` raced with the runner's
+		# terminal status write — the GET endpoint now overlays this
+		# side-channel value on top of the JSON state.
 		if message.get("type") == "agent_status":
 			agent = (message.get("data") or {}).get("agent")
 			if agent:
 				try:
-					state = await self.store.get_task_state(
-						self.site_id, self.task_id,
-					) or {}
-					state["current_agent"] = agent
-					await self.store.set_task_state(
-						self.site_id, self.task_id, state,
+					await self.store.set_current_agent(
+						self.site_id, self.task_id, agent,
 					)
 				except Exception as e:  # noqa: BLE001 — current_agent telemetry is non-load-bearing; never block on it
 					logger.debug(

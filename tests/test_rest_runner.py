@@ -32,11 +32,15 @@ from alfred.models.messages import TaskCreateRequest
 
 class _FakeStore:
 	"""Minimal in-memory stand-in for ``StateStore`` covering only the
-	three methods the runner touches. Keeps tests independent of Redis."""
+	methods the runner touches. Keeps tests independent of Redis."""
 
 	def __init__(self) -> None:
 		self.tasks: dict[tuple[str, str], dict[str, Any]] = {}
 		self.events: list[tuple[str, str, dict[str, Any]]] = []
+		# P1.1 side-channel: current_agent is its own atomic Redis key
+		# in production, modeled here as a flat dict keyed identically
+		# to the task row.
+		self.current_agents: dict[tuple[str, str], str] = {}
 
 	async def get_task_state(self, site_id: str, task_id: str):
 		return self.tasks.get((site_id, task_id))
@@ -48,6 +52,12 @@ class _FakeStore:
 	async def push_event(self, site_id: str, conversation_id: str, event):
 		self.events.append((site_id, conversation_id, dict(event)))
 		return f"stream-{len(self.events)}"
+
+	async def set_current_agent(self, site_id: str, task_id: str, agent, ttl_seconds=None):
+		self.current_agents[(site_id, task_id)] = agent
+
+	async def get_current_agent(self, site_id: str, task_id: str):
+		return self.current_agents.get((site_id, task_id))
 
 
 def _body(prompt: str = "Create a Customer doctype") -> TaskCreateRequest:
@@ -189,9 +199,10 @@ async def test_rest_conn_send_pushes_to_event_stream():
 	assert conv_id == "t4"
 	assert ev["data"]["agent"] == "Architect"
 
-	# … and ``current_agent`` updates on the task row so polling clients
-	# get the headline status without reading the full message stream.
-	assert store.tasks[("site-a", "t4")]["current_agent"] == "Architect"
+	# … and ``current_agent`` updates on its own Redis key (the P1.1
+	# fix split this off the task row so high-frequency agent_status
+	# emits don't race with the runner's terminal status write).
+	assert store.current_agents[("site-a", "t4")] == "Architect"
 
 
 @pytest.mark.asyncio
