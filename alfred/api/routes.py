@@ -173,12 +173,35 @@ async def create_task(
 	# with task_id and the caller polls GET /api/v1/tasks/{id}. Without
 	# this dispatch, the row above would sit at status="queued" forever
 	# — there is no separate worker process draining the keyspace.
-	schedule_rest_task(
+	#
+	# P1.3: ``schedule_rest_task`` returns False if the per-user
+	# concurrency cap is saturated. Surface that as 429 with a distinct
+	# code so the client can back off without thinking it's the
+	# rate-limit window. Drop the just-written task_state so a polling
+	# client doesn't see a "queued" row that never advances.
+	scheduled = schedule_rest_task(
 		task_id=task_id, body=body,
 		redis=request.app.state.redis,
 		settings=request.app.state.settings,
 		store=store,
 	)
+	if not scheduled:
+		try:
+			await store.delete_task_state(site_id, task_id)
+		except (aioredis.RedisError, OSError, ValueError, TypeError):
+			# Cleanup is best-effort — TTL will reap the row eventually.
+			pass
+		raise HTTPException(
+			status_code=429,
+			detail={
+				"error": (
+					f"You already have the maximum allowed concurrent tasks running "
+					f"({request.app.state.settings.MAX_CONCURRENT_REST_TASKS_PER_USER}). "
+					f"Wait for one to finish before submitting another."
+				),
+				"code": "CONCURRENT_LIMIT",
+			},
+		)
 	return TaskCreateResponse(task_id=task_id, status="queued")
 
 

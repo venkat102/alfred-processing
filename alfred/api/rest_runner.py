@@ -46,6 +46,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger("alfred.rest_runner")
 
 
+# Per-user concurrent-task counter (audit P1.3). Keyed by (site_id, user)
+# so two different users on the same tenant don't fight, and one user on
+# two tenants doesn't fight themselves either. Single-process — multi-
+# worker deployments need a Redis-backed counter to share state, but
+# single-process is the supported deploy shape today (see TD-H7).
+#
+# All reads + writes happen inside one asyncio coroutine without an
+# ``await`` between check and increment, so the increment is atomic
+# under the asyncio cooperative scheduler. No locking needed in single-
+# process mode.
+_concurrent_tasks: dict[tuple[str, str], int] = {}
+
+
+def _concurrency_key(site_id: str, user: str) -> tuple[str, str]:
+	return (site_id, user)
+
+
+def concurrent_count(site_id: str, user: str) -> int:
+	"""Read the current concurrent-task count for a user. Used by the
+	route layer's cap check and by tests."""
+	return _concurrent_tasks.get(_concurrency_key(site_id, user), 0)
+
+
 class _RestConn:
 	"""Stand-in for ``ConnectionState`` on a REST-driven pipeline run.
 
@@ -237,6 +260,18 @@ async def _run_rest_task(
 			final_state["usage"] = ctx.token_tracker.get_summary()
 		await store.set_task_state(site_id, task_id, final_state)
 	finally:
+		# Release the per-user concurrency slot exactly once, even on
+		# crash. Clamped at zero so a wire bug doesn't push us negative
+		# and let an attacker submit "free" tasks above the cap.
+		key = _concurrency_key(site_id, user)
+		current = _concurrent_tasks.get(key, 1)
+		new_val = max(0, current - 1)
+		if new_val == 0:
+			# Avoid leaving a dead key forever — the dict can grow
+			# unboundedly across many distinct users otherwise.
+			_concurrent_tasks.pop(key, None)
+		else:
+			_concurrent_tasks[key] = new_val
 		clear_request_context()
 
 
@@ -247,7 +282,7 @@ def schedule_rest_task(
 	redis: aioredis.Redis,
 	settings: Settings,
 	store: StateStore,
-) -> None:
+) -> bool:
 	"""Spawn ``_run_rest_task`` as a tracked background task.
 
 	Returning to the HTTP caller after this means ``POST /api/v1/tasks``
@@ -255,7 +290,28 @@ def schedule_rest_task(
 	``spawn_logged`` wrapper makes orphan crashes visible in
 	``alfred.obs.tasks`` instead of vanishing into asyncio's silent
 	exception sink.
+
+	Returns ``True`` if the task was scheduled, ``False`` if the
+	per-user concurrency cap (``MAX_CONCURRENT_REST_TASKS_PER_USER``)
+	is already saturated. The route layer translates ``False`` into
+	an HTTP 429 with code ``CONCURRENT_LIMIT``. The check + increment
+	is atomic under the asyncio scheduler (no ``await`` between
+	``concurrent_count`` and the dict write).
 	"""
+	site_id = body.site_config.get("site_id", "unknown")
+	user = body.user_context.get("user", "unknown")
+	cap = settings.MAX_CONCURRENT_REST_TASKS_PER_USER
+
+	key = _concurrency_key(site_id, user)
+	current = _concurrent_tasks.get(key, 0)
+	if cap > 0 and current >= cap:
+		logger.warning(
+			"REST concurrency cap hit for %s@%s: %d/%d in flight; rejecting task=%s",
+			user, site_id, current, cap, task_id,
+		)
+		return False
+	_concurrent_tasks[key] = current + 1
+
 	spawn_logged(
 		_run_rest_task(
 			task_id=task_id, body=body, redis=redis,
@@ -263,3 +319,4 @@ def schedule_rest_task(
 		),
 		name=f"rest-task-{task_id}",
 	)
+	return True

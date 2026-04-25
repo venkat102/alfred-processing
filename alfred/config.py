@@ -180,6 +180,17 @@ class Settings(BaseSettings):
 	# (default k8s is 30s, so match).
 	GRACEFUL_SHUTDOWN_TIMEOUT: int = 30
 
+	# Per-user concurrency cap for REST-driven background pipeline
+	# runs (audit P1.3). The HTTP rate limiter caps requests-per-hour
+	# but not concurrent runs — without this, a burst POST loop fires
+	# all N requests within the rate window and stacks N concurrent
+	# AgentPipeline runs on the LLM thread pool, denying service to
+	# other tenants. Default of 2 covers "user submitted a second
+	# task while the first is still running" without enabling abuse.
+	# Single-process scope (same caveat as TD-H7); multi-worker
+	# deploys should add a Redis-backed counter here.
+	MAX_CONCURRENT_REST_TASKS_PER_USER: int = 2
+
 	# ── ALFRED_* feature flags ──────────────────────────────────
 	# Pydantic coerces string env values: "1", "true", "yes", "on"
 	# (case-insensitive) → True; everything else → False. This matches
