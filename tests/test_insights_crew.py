@@ -106,6 +106,24 @@ class TestBuildInsightsCrew:
 		# Sanity check that the agent knows which tools are available
 		assert "lookup_doctype" in INSIGHTS_TASK_DESCRIPTION
 
+	def test_task_description_forbids_fake_tool_limitations(self):
+		"""Regression: an Insights run produced 'technical limitations with the
+		query tools' and told the user to consult their admin, when run_query
+		was right there in its tool list. The prompt must explicitly forbid
+		that failure mode and require quoting tool errors verbatim instead.
+		"""
+		from alfred.agents.crew import INSIGHTS_TASK_DESCRIPTION
+
+		# The rule must name the failure mode it's preventing.
+		assert "NEVER claim" in INSIGHTS_TASK_DESCRIPTION
+		assert "without first attempting the call" in INSIGHTS_TASK_DESCRIPTION
+		# The rule must mandate verbatim error surfacing.
+		assert "quote the error code and message verbatim" in INSIGHTS_TASK_DESCRIPTION
+		# And it must call out the exact paraphrases we saw in the wild,
+		# so the LLM associates them with the forbidden pattern.
+		assert "system limitations" in INSIGHTS_TASK_DESCRIPTION
+		assert "system administrator" in INSIGHTS_TASK_DESCRIPTION
+
 
 class TestInsightsToolAssignments:
 	def test_build_mcp_tools_returns_insights_key(self):
