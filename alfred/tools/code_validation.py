@@ -10,6 +10,7 @@ backstory directing it to call MCP tools, not by this module.
 import ast
 import json
 import re
+from typing import Any
 
 from crewai.tools import tool
 
@@ -168,7 +169,7 @@ def validate_doctype_definition(doctype_data: dict) -> dict:
 
 	Checks naming, field types, fieldname uniqueness, permissions, module.
 	"""
-	errors = []
+	errors: list[dict[str, Any]] = []
 	name = doctype_data.get("name", "")
 
 	# Name validation
@@ -300,7 +301,7 @@ def validate_changeset_order(changeset: list[dict]) -> dict:
 
 	# Check for circular dependencies
 	# Simple cycle detection: if A links to B and B links to A
-	links = {}
+	links: dict[str, set[str]] = {}
 	for item in changeset:
 		if item.get("doctype") == "DocType" and item.get("operation") == "create":
 			dt_name = item.get("data", {}).get("name", "")

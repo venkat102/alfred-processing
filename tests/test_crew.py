@@ -169,7 +169,7 @@ class TestRedisStatePersistence:
 		try:
 			client = aioredis.from_url("redis://127.0.0.1:11000/2", decode_responses=True)
 			await client.ping()
-		except Exception:
+		except (aioredis.RedisError, OSError):
 			pytest.skip("Redis not available")
 
 		store = StateStore(client)

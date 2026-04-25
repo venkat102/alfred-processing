@@ -20,7 +20,7 @@ async def redis_client():
 	client = aioredis.from_url(REDIS_URL, decode_responses=True, socket_timeout=5)
 	try:
 		await client.ping()
-	except Exception:
+	except (aioredis.RedisError, OSError):
 		pytest.skip("Redis not available - skipping state store tests")
 	yield client
 	# Cleanup: delete all alfred:* keys in test DB

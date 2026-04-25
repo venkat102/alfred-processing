@@ -58,9 +58,18 @@ class TaskMessageResponse(BaseModel):
 
 
 class ErrorResponse(BaseModel):
-	"""Standard error response."""
+	"""Standard error response. TD-M2 canonical shape.
+
+	Every API error (REST + WebSocket ``type:"error"``) conforms to
+	this structure. OpenAPI clients and the admin portal can switch on
+	``code`` for branching; ``details`` carries machine-readable
+	context (retry_after, allowed_values, etc.) without polluting the
+	human-readable ``error`` message.
+	"""
+
 	error: str
 	code: str
+	details: dict[str, Any] | None = None
 
 
 # ── WebSocket Protocol Models ────────────────────────────────────

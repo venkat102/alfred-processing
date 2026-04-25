@@ -122,6 +122,19 @@ class TestResolveOllamaConfigForTier:
 		assert url == "http://shared:11434"
 
 
+@pytest.fixture(autouse=True)
+def _bypass_ssrf_for_localhost():
+	# Tests use ``http://localhost:11434`` which the SSRF policy
+	# rejects as a private/loopback IP. The SSRF gate is exercised
+	# in tests/test_url_allowlist.py; here we only care about the
+	# ollama_chat_sync request/response path, so stub the check.
+	with patch(
+		"alfred.security.url_allowlist.validate_llm_url",
+		return_value=None,
+	):
+		yield
+
+
 class TestOllamaChatSyncHappyPath:
 	def test_builds_and_parses_response(self):
 		cfg = {

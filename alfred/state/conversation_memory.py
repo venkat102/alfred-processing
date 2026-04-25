@@ -299,14 +299,17 @@ async def load_conversation_memory(
 		return empty
 	try:
 		data = await store.get_task_state(site_id, _memory_key(conversation_id))
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — store-boundary contract (see test_load_tolerates_store_errors): any exception from the store must degrade to an empty memory, not crash the pipeline. Mocked stores in tests inject arbitrary exceptions (RuntimeError, etc.) to exercise this tolerance.
 		logger.warning("conversation memory load failed for %s: %s", conversation_id, e)
 		return empty
 	if not data:
 		return empty
 	try:
 		return ConversationMemory.from_dict(data)
-	except Exception as e:
+	except (KeyError, TypeError, ValueError) as e:
+		# from_dict can hit any of these on a malformed payload (missing
+		# field, wrong type, bad enum value). Schema-evolution misses
+		# show up here.
 		logger.warning("conversation memory parse failed for %s: %s", conversation_id, e)
 		return empty
 
@@ -323,7 +326,7 @@ async def save_conversation_memory(
 			"Saved conversation memory: site=%s, conversation=%s, items=%d",
 			site_id, conversation_id, len(memory.items),
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — store-boundary contract (see test_save_tolerates_store_errors): memory save is best-effort and must never block the pipeline. Mocked stores in tests inject arbitrary exceptions (RuntimeError, etc.) to exercise this.
 		logger.warning(
 			"conversation memory save failed for %s/%s: %s",
 			site_id, conversation_id, e,

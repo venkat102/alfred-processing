@@ -84,10 +84,13 @@ class TestPipelineOrder:
 			"warmup",
 			"plan_check",
 			"orchestrate",
+			"classify_intent",
+			"classify_module",
 			"enhance",
 			"clarify",
 			"inject_kb",
 			"resolve_mode",
+			"provide_module_context",
 			"build_crew",
 			"run_crew",
 			"post_crew",
@@ -181,6 +184,29 @@ class TestSanitizePhase:
 
 
 class TestWarmupPhase:
+	@pytest.fixture(autouse=True)
+	def _bypass_ssrf(self):
+		# Tests use `http://fake-ollama:11434` which fails DNS → SSRF
+		# rejection before urlopen is ever called. The SSRF gate is
+		# exercised in tests/test_url_allowlist.py; here we only care
+		# about the warmup phase's own behavior, so stub the check.
+		with patch(
+			"alfred.security.url_allowlist.validate_llm_url",
+			return_value=None,
+		):
+			yield
+
+	@pytest.fixture(autouse=True)
+	def _clear_warmup_cache(self):
+		# _WARMUP_CACHE is module-global and persists across tests in
+		# the same process. A successful probe in test N would poison
+		# test N+1 (cache hit → probe skipped → no failure → pipeline
+		# never stops). Reset between each test.
+		from alfred.api.pipeline import _WARMUP_CACHE
+		_WARMUP_CACHE.clear()
+		yield
+		_WARMUP_CACHE.clear()
+
 	def _ctx_with_models(self, **extra):
 		ctx = _make_ctx()
 		ctx.conn.site_config = {
@@ -563,6 +589,18 @@ class TestOrchestratePhase:
 	  - Non-dev mode gates enhance/clarify/resolve_mode/build/run/post
 	"""
 
+	@pytest.fixture(autouse=True)
+	def _reset_settings_cache(self):
+		# is_enabled() reads Settings via @lru_cache(maxsize=1). A
+		# monkeypatch.setenv("ALFRED_ORCHESTRATOR_ENABLED", "1") inside
+		# a test is invisible to a Settings snapshot already cached by
+		# some earlier test. Clear before + after so each test gets its
+		# own Settings read against the currently-patched env.
+		from alfred.config import get_settings
+		get_settings.cache_clear()
+		yield
+		get_settings.cache_clear()
+
 	def test_flag_off_preserves_dev_default(self, monkeypatch):
 		monkeypatch.delenv("ALFRED_ORCHESTRATOR_ENABLED", raising=False)
 		ctx = _make_ctx("hi")
@@ -693,8 +731,10 @@ class TestOrchestratePhase:
 				source="fast_path",
 			)
 
+		from alfred.models.insights_result import InsightsResult
+
 		async def fake_insights(**kwargs):
-			return "You have 42 DocTypes in the HR module."
+			return InsightsResult(reply="You have 42 DocTypes in the HR module.")
 
 		with patch(
 			"alfred.orchestrator.classify_mode", side_effect=fake_classify
@@ -1026,9 +1066,15 @@ class TestDetectDrift:
 		assert _detect_drift(result, prompt) is None
 
 	def test_mentioning_training_data_field_is_drift(self):
+		# Prose variant: when the output is prose that mentions a
+		# training-data field the user never asked about, drift fires
+		# on the field-smell signal. (A valid-JSON-array variant of
+		# this case is now intentionally short-circuited by _detect_drift
+		# — foreign-field detection moved downstream to module validation
+		# once the commit 4fd189c drift short-circuit landed.)
 		result = (
-			'[{"op": "create", "doctype": "Server Script", "data": '
-			'{"reference_doctype": "Sales Order", "customer_name": "X"}}]'
+			"I'll create a Server Script with reference_doctype "
+			"Sales Order and set customer_name to X."
 		)
 		prompt = "validate Employee age"
 		reason = _detect_drift(result, prompt)

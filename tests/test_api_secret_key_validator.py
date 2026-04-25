@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from alfred.config import Settings, _API_SECRET_KEY_MIN_LENGTH
+from alfred.config import _API_SECRET_KEY_MIN_LENGTH, Settings
 
 
 def _strong_key(n: int = 48) -> str:

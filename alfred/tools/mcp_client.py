@@ -121,7 +121,7 @@ class MCPClient:
 		if self._on_call is not None:
 			try:
 				await self._on_call(tool_name, arguments or {})
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001 — side-channel callback (user-supplied); must not break the primary MCP call
 				logger.debug("MCP on_call callback failed for %s: %s", tool_name, e)
 
 		try:

@@ -22,6 +22,14 @@ class ReportCandidate(BaseModel):
 	``target_doctype`` is the only required field. Everything else is
 	optional so the extractor can populate whatever the user's prompt made
 	clear without fabricating the rest.
+
+	Aggregation queries (``top N <entity> by <metric>``, ``<metric> by
+	<entity>``) use ``query`` + ``aggregation`` to carry a ready-made
+	Query Report SQL body. When these are set, the handoff asks the
+	specialist to emit a Query Report (report_type="Query Report") with
+	the exact SQL in ``data.query``. The pipeline safety net
+	(``_phase_post_crew``) fills the fields deterministically if the
+	specialist skipped them.
 	"""
 
 	target_doctype: str
@@ -32,6 +40,15 @@ class ReportCandidate(BaseModel):
 	limit: int | None = None
 	time_range: dict[str, Any] | None = None
 	suggested_name: str | None = None
+	# Query Report SQL body, pre-rendered when the extractor detected an
+	# aggregation pattern. None for simple list-shape (Report Builder) reports.
+	query: str | None = None
+	# Metadata describing the aggregation:
+	#   source_doctype, metric_field, metric_fn, metric_label,
+	#   group_by_field, group_by_label
+	# Carried alongside ``query`` so the specialist (and UI preview) can
+	# describe what was built without re-parsing the SQL.
+	aggregation: dict[str, Any] | None = None
 
 	def to_handoff_prompt(self) -> str:
 		"""Render the candidate as a human-readable block for a Dev prompt.
@@ -70,6 +87,22 @@ class ReportCandidate(BaseModel):
 				f"Time range: {rng.get('field', 'date')} in "
 				f"{rng.get('preset', rng.get('value', ''))}"
 			)
+		if self.aggregation:
+			agg = self.aggregation
+			parts.append(
+				"Aggregation: "
+				f"{agg.get('metric_fn', 'SUM')}({agg.get('metric_field', '?')}) "
+				f"grouped by {agg.get('group_by_field', '?')} "
+				f"on {agg.get('source_doctype', '?')}"
+			)
+		if self.query:
+			# Fence the SQL so prompt-level interpolation (.format) doesn't
+			# mangle braces and so the specialist sees it as a literal block
+			# to copy into data.query verbatim.
+			parts.append("Query (copy verbatim into data.query):")
+			parts.append("```sql")
+			parts.append(self.query)
+			parts.append("```")
 		return "\n".join(parts)
 
 

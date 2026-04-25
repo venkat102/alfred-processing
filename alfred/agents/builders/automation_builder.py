@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from crewai import Agent
 
+from alfred.agents.definitions import _resolve_llm_for_tier
 from alfred.registry.loader import IntentRegistry
 
 AUTOMATION_INTENTS: frozenset[str] = frozenset({
@@ -422,12 +423,17 @@ def build_automation_agent(
 			if t is not None:
 				tools.append(t)
 
+	llm = _resolve_llm_for_tier(site_config or {}, tier="agent")
+
 	return Agent(
 		role=_INTENT_ROLES[intent],
 		goal=_INTENT_GOALS[intent],
 		backstory=_build_backstory(intent),
+		llm=llm,
 		allow_delegation=False,
 		tools=tools,
+		max_iter=2,
+		max_retry_limit=1,
 		verbose=False,
 	)
 

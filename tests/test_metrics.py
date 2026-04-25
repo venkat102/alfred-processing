@@ -281,6 +281,18 @@ class TestCrewRecoveryCounters:
 
 
 class TestLlmErrorCounter:
+	@pytest.fixture(autouse=True)
+	def _bypass_ssrf_for_fake_hosts(self):
+		# Tests use ``http://x`` which the SSRF check would reject
+		# (DNS fail) before urlopen is ever reached, so the urlopen
+		# error paths the counters hang off would never fire.
+		from unittest.mock import patch
+		with patch(
+			"alfred.security.url_allowlist.validate_llm_url",
+			return_value=None,
+		):
+			yield
+
 	def test_http_error_increments_counter(self):
 		import io
 		import urllib.error

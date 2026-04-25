@@ -22,6 +22,14 @@ from alfred.api.pipeline import AgentPipeline, PipelineContext
 from alfred.handlers.post_build.backfill_defaults import backfill_defaults_raw
 
 
+@pytest.fixture(autouse=True)
+def _reset_settings_cache():
+	from alfred.config import get_settings
+	get_settings.cache_clear()
+	yield
+	get_settings.cache_clear()
+
+
 def _build_ctx(prompt: str, mode: str = "dev") -> PipelineContext:
 	conn = MagicMock()
 	conn.site_config = {}
@@ -49,7 +57,7 @@ async def test_classify_intent_noop_for_non_dev_mode(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_classify_intent_noop_when_flag_off(monkeypatch):
-	monkeypatch.delenv("ALFRED_PER_INTENT_BUILDERS", raising=False)
+	monkeypatch.setenv("ALFRED_PER_INTENT_BUILDERS", "0")
 	ctx = _build_ctx("Create a DocType called Book", mode="dev")
 	pipeline = AgentPipeline(ctx)
 	await pipeline._phase_classify_intent()

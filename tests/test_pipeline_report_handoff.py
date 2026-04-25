@@ -8,6 +8,14 @@ import pytest
 from alfred.api.pipeline import AgentPipeline, PipelineContext, _parse_report_candidate_marker
 
 
+@pytest.fixture(autouse=True)
+def _reset_settings_cache():
+	from alfred.config import get_settings
+	get_settings.cache_clear()
+	yield
+	get_settings.cache_clear()
+
+
 def _ctx(prompt: str) -> PipelineContext:
 	conn = MagicMock()
 	conn.site_config = {}
@@ -61,7 +69,7 @@ async def test_classify_intent_short_circuits_on_handoff_marker(monkeypatch):
 @pytest.mark.asyncio
 async def test_handoff_flag_off_does_not_short_circuit(monkeypatch):
 	monkeypatch.setenv("ALFRED_PER_INTENT_BUILDERS", "1")
-	monkeypatch.delenv("ALFRED_REPORT_HANDOFF", raising=False)
+	monkeypatch.setenv("ALFRED_REPORT_HANDOFF", "0")
 	prompt = '__report_candidate__: {"target_doctype": "Customer"}'
 	c = _ctx(prompt)
 	p = AgentPipeline(c)

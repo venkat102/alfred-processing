@@ -5,6 +5,20 @@ import pytest
 from alfred.api.pipeline import AgentPipeline, PipelineContext
 
 
+@pytest.fixture(autouse=True)
+def _reset_settings_cache():
+	# Most tests in this module flip ALFRED_PER_INTENT_BUILDERS /
+	# ALFRED_MODULE_SPECIALISTS via monkeypatch.setenv or .delenv and
+	# then expect ``_phase_classify_module`` / ``_phase_provide_module_context``
+	# to read the new value. Those phases consult ``get_settings()``,
+	# which is ``@lru_cache``d, so without this reset every test after
+	# the first sees the Settings snapshot taken by the earliest test.
+	from alfred.config import get_settings
+	get_settings.cache_clear()
+	yield
+	get_settings.cache_clear()
+
+
 def _build_ctx(prompt: str, mode: str = "dev") -> PipelineContext:
 	conn = MagicMock()
 	conn.site_config = {}
@@ -35,7 +49,7 @@ async def test_classify_module_noop_for_non_dev_mode(monkeypatch):
 @pytest.mark.asyncio
 async def test_classify_module_noop_when_v2_flag_off(monkeypatch):
 	monkeypatch.setenv("ALFRED_PER_INTENT_BUILDERS", "1")
-	monkeypatch.delenv("ALFRED_MODULE_SPECIALISTS", raising=False)
+	monkeypatch.setenv("ALFRED_MODULE_SPECIALISTS", "0")
 	ctx = _build_ctx("Customize Sales Invoice", mode="dev")
 	pipeline = AgentPipeline(ctx)
 	await pipeline._phase_classify_module()
@@ -44,7 +58,7 @@ async def test_classify_module_noop_when_v2_flag_off(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_classify_module_noop_when_v1_flag_off(monkeypatch):
-	monkeypatch.delenv("ALFRED_PER_INTENT_BUILDERS", raising=False)
+	monkeypatch.setenv("ALFRED_PER_INTENT_BUILDERS", "0")
 	monkeypatch.setenv("ALFRED_MODULE_SPECIALISTS", "1")
 	ctx = _build_ctx("Customize Sales Invoice", mode="dev")
 	pipeline = AgentPipeline(ctx)
@@ -78,6 +92,9 @@ async def test_provide_module_context_noop_when_module_is_none(monkeypatch):
 async def test_provide_module_context_calls_specialist_when_module_set(monkeypatch):
 	monkeypatch.setenv("ALFRED_PER_INTENT_BUILDERS", "1")
 	monkeypatch.setenv("ALFRED_MODULE_SPECIALISTS", "1")
+	# V2 single-module path — disable V3 so the specialist's snippet
+	# flows through verbatim (no PRIMARY MODULE / FAMILY wrapper).
+	monkeypatch.setenv("ALFRED_MULTI_MODULE", "0")
 	ctx = _build_ctx("prompt")
 	ctx.module = "accounts"
 	ctx.intent = "create_doctype"
@@ -108,7 +125,7 @@ async def test_classify_module_noop_when_v1_off_but_v2_on_with_prior_intent(monk
 	# Cross-flag race: V2 flag on, V1 flag off, ctx.intent already set from
 	# a prior turn's V1 run. Module classification must still be a no-op
 	# because V2 depends on V1's prompt-enhancement path being active.
-	monkeypatch.delenv("ALFRED_PER_INTENT_BUILDERS", raising=False)
+	monkeypatch.setenv("ALFRED_PER_INTENT_BUILDERS", "0")
 	monkeypatch.setenv("ALFRED_MODULE_SPECIALISTS", "1")
 	ctx = _build_ctx("Customize Sales Invoice")
 	ctx.intent = "create_doctype"  # stale from prior turn

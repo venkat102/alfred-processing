@@ -13,10 +13,10 @@ Usage:
 import asyncio
 import json
 import logging
-import os
 import time
 from typing import Any
 
+import redis.asyncio as aioredis
 from crewai import Agent, Crew, Process, Task
 
 from alfred.agents.condenser import make_condenser_callback
@@ -310,7 +310,10 @@ async def save_crew_state(store, site_id: str, conversation_id: str, state: Crew
 	try:
 		await store.set_task_state(site_id, key, state.to_dict())
 		logger.debug("Saved crew state for %s/%s", site_id, conversation_id)
-	except Exception as e:
+	except (aioredis.RedisError, TypeError, ValueError) as e:
+		# Same shape as conversation_memory save: RedisError = network/
+		# auth/timeout, TypeError = JSON serialise of an item that
+		# slipped into state, ValueError = id-validator on bad inputs.
 		logger.error("Failed to save crew state: %s (crew will continue but resume won't work)", e)
 
 
@@ -548,9 +551,14 @@ def build_insights_crew(
 		verbose=True,
 	)
 
-	description = INSIGHTS_TASK_DESCRIPTION.format(
-		prompt=user_prompt,
-		user_context=json.dumps(user_context, indent=2),
+	# The template contains literal JSON examples like ``{"disabled": 0}``
+	# inside the tool-selection guide. ``str.format`` would trip on those
+	# as unknown format keys, so we splice the two real placeholders in
+	# by hand instead of doubling every literal brace in the template.
+	description = (
+		INSIGHTS_TASK_DESCRIPTION
+		.replace("{prompt}", user_prompt)
+		.replace("{user_context}", json.dumps(user_context, indent=2))
 	)
 
 	task = Task(
@@ -707,7 +715,7 @@ def build_alfred_crew(
 
 	# Create tasks - skip already completed ones on resume
 	tasks = []
-	task_map = {}
+	task_map: dict[str, Task] = {}
 
 	# Pydantic output models - kept for reference and downstream parsing,
 	# but NOT wired into CrewAI's output_json because local models (Ollama)
@@ -941,7 +949,8 @@ async def run_crew(
 
 
 def _per_intent_builders_enabled() -> bool:
-	return os.environ.get("ALFRED_PER_INTENT_BUILDERS") == "1"
+	from alfred.config import get_settings
+	return get_settings().ALFRED_PER_INTENT_BUILDERS
 
 
 def _get_specialist_developer_agent(

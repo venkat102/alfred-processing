@@ -20,21 +20,53 @@ dependencies = [
 	# run the full pytest suite + bench tests, confirm no drift/rescue
 	# regression, then commit.
 	"crewai==0.203.2",
+	# Range is wide but crewai 0.203.2 pins litellm==1.74.9 exactly, so
+	# the effective installed version is 1.74.9. That version carries 3
+	# CVEs (CVE-2026-35029 admin auth bypass + RCE, CVE-2026-35030 JWT
+	# OIDC cache-key collision, GHSA-69x8-hrgq-fjj8 weak password
+	# hashing). RISK ACCEPTED: Alfred uses litellm as an in-process
+	# library — it does not expose /config/update, /v2/login, or any
+	# proxy endpoint — so the CVEs' /config/update + /v2/login attack
+	# paths are not reachable from Alfred. Closing these CVEs requires
+	# bumping crewai, which the pyproject comment above explicitly
+	# calls out as deliberate work. See task #11 in tech-debt-backlog
+	# for the planned crewai bump.
 	"litellm>=1.40,<2.0",
 	"redis[hiredis]>=5.0,<6.0",
 	"pydantic>=2.0,<3.0",
 	"pydantic-settings>=2.0,<3.0",
 	"pyjwt>=2.8,<3.0",
 	"prometheus-client>=0.20,<1.0",
+	# TD-M3: structured (JSON) logging with contextvars. Bridged to the
+	# stdlib ``logging`` module via structlog.stdlib.ProcessorFormatter,
+	# so existing ``logging.getLogger(...).info(...)`` calls still work;
+	# structured context (site_id, user, conversation_id) is bound per
+	# request/WS connection and emitted on every log line produced
+	# inside that context.
+	"structlog>=24.1,<26.0",
 ]
 
 [project.optional-dependencies]
 dev = [
 	"pytest>=8.0",
 	"pytest-asyncio>=0.23",
+	"pytest-cov>=5.0",
 	"httpx>=0.25",
+	# httpx-ws: ASGIWebSocketTransport + aconnect_ws for WebSocket
+	# integration tests. Without this the WS test class in
+	# test_api_gateway.py skips entirely.
+	"httpx-ws>=0.6",
 	"ruff>=0.4",
 	"jsonschema>=4.0",
+	# pip-audit: supply-chain CVE scan; invoked in CI but useful locally
+	# (`.venv/bin/pip-audit --desc`) for a quick pre-commit check.
+	"pip-audit>=2.7",
+	# TD-L2: mypy type-check discipline. Baseline is `ignore_missing_imports`
+	# (CrewAI / LiteLLM / ollama stubs don't exist). Every file in
+	# alfred/ currently type-checks clean; CI gates against regression.
+	"mypy>=1.10,<2.0",
+	# Type stubs for libraries used by alfred.knowledge.fkb and similar.
+	"types-PyYAML>=6.0",
 ]
 
 [build-system]
@@ -50,10 +82,14 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["F", "E", "W", "I", "UP", "B"]
+# TD-H3 phase 1: BLE001 (blind-except) enforced for NEW code. Existing
+# broad `except Exception:` sites are grandfathered with an inline
+# `# noqa: BLE001` comment so ruff passes today; each site is replaced
+# with a specific exception class as it's touched.
+extend-select = ["BLE001"]
 # W191 (tab-indentation) + E101 (mixed-spaces-and-tabs) would fire on
 # every line - the project's format config is indent-style="tab", but
-# pycodestyle's default rules still flag tabs. Mirror Frappe's own
-# ignore set here so ruff check agrees with ruff format.
+# pycodestyle's default rules still flag tabs.
 #
 # E501 (line-too-long) is relaxed because line-length=110 is already
 # generous; the remaining violations are mostly long log-message
@@ -63,19 +99,9 @@ select = ["F", "E", "W", "I", "UP", "B"]
 # deferred imports inside functions + the CrewAI telemetry opt-out
 # block in alfred/main.py that MUST run before crewai imports.
 #
-# B904 (raise-without-from-inside-except) flags 9 sites where we
-# re-raise a friendlier error. Adding `from e` everywhere is a
-# cosmetic change touching many files; do in a dedicated cleanup.
-#
-# UP042 (replace-str-enum) flags StrEnum subclasses; we keep them
-# for backward compat with older Pydantic versions + external consumers.
-#
-# F821 fires on forward-ref strings inside TYPE_CHECKING-only imports
-# ("StateStore | None" etc.) - valid at runtime, ruff can't see it.
-#
-# B007 + B008 + B017 + B905 + E701 + E741 + UP035 are one-off style
-# preferences too small to fix this session; revisit as code gets
-# touched in follow-ups.
+# B904, UP042, F821, B007/B008/B017/B905, E701/E741, UP035, F541 —
+# one-off style preferences from master's ruff sweep we keep ignored
+# pending a focused cleanup pass.
 ignore = [
 	"W191", "E101", "E501",
 	"E402", "B904", "UP042", "F821",
@@ -89,3 +115,25 @@ indent-style = "tab"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+# TD-L2: mypy configuration.
+#
+# Scope: alfred/ only — tests/ and scripts/ excluded for now, same
+# rationale as ruff (test code uses MagicMock + duck-typing heavily;
+# strict checking there produces mostly noise).
+#
+# Policy: every current file in alfred/ passes a default-strictness
+# mypy run (no `--strict`, just stock checks). When the strict knob
+# flips on in a future pass, per-file overrides go in
+# ``[[tool.mypy.overrides]]`` blocks below.
+[tool.mypy]
+python_version = "3.11"
+files = ["alfred"]
+# CrewAI, LiteLLM, ollama, httpx-ws, redis etc. don't ship stubs.
+# Rather than flag every import, suppress the noise globally and rely
+# on explicit annotations for their public surface where we use it.
+ignore_missing_imports = true
+# Keep the defaults reasonable:
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
