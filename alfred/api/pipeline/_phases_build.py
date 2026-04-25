@@ -145,17 +145,33 @@ class _PhasesBuildMixin:
 					getattr(agent, "role", "unknown") or "unknown",
 					prompt_t, completion_t,
 				)
-			ctx.token_tracker = tracker
-			summary_dict = tracker.get_summary()
-			# Fold cost estimate alongside raw counts so the UI can show
-			# "$0.0023" without the client knowing per-provider pricing.
-			model_id = ctx.conn.site_config.get("llm_model", "")
-			summary_dict["cost"] = estimate_cost(tracker.total_tokens, model_id)
-			await ctx.conn.send({
-				"msg_id": str(uuid.uuid4()),
-				"type": "usage",
-				"data": summary_dict,
-			})
+			# P1.5: skip the ``usage`` event entirely when no agent
+			# recorded any tokens. CrewAI's per-agent ``_token_process``
+			# can stay at zero for the whole run on cached prompts,
+			# custom LLM wrappers, or fallback paths; emitting a
+			# "$0 / 0 tokens" event in that case is misleading
+			# telemetry that doesn't match the LLM provider invoice.
+			# Gate on the aggregate so a partial-tracking run (one
+			# agent recorded, others didn't) still surfaces.
+			if tracker.total_tokens > 0:
+				ctx.token_tracker = tracker
+				summary_dict = tracker.get_summary()
+				# Fold cost estimate alongside raw counts so the UI
+				# can show "$0.0023" without the client knowing
+				# per-provider pricing.
+				model_id = ctx.conn.site_config.get("llm_model", "")
+				summary_dict["cost"] = estimate_cost(tracker.total_tokens, model_id)
+				await ctx.conn.send({
+					"msg_id": str(uuid.uuid4()),
+					"type": "usage",
+					"data": summary_dict,
+				})
+			else:
+				logger.info(
+					"Skipping usage event for conversation=%s: no agent "
+					"recorded any tokens (CrewAI bypassed _token_process)",
+					ctx.conversation_id,
+				)
 		except Exception as e:  # noqa: BLE001 — telemetry is best-effort; a broken usage hook must never abort a successful crew run
 			logger.warning(
 				"Token tracker failed for conversation=%s: %s",

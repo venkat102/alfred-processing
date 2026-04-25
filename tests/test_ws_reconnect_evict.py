@@ -21,7 +21,6 @@ These tests pin the contract.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import time
 from unittest.mock import AsyncMock, MagicMock

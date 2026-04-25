@@ -167,6 +167,47 @@ async def test_run_crew_skips_token_tracker_for_non_dev_mode(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_crew_skips_usage_event_when_total_tokens_is_zero(monkeypatch):
+	"""P1.5: CrewAI can run a crew end-to-end with every agent's
+	``_token_process`` staying at zero (cached prompts, custom LLM
+	wrappers, fallback paths). Emitting a "$0 / 0 tokens" event
+	in that case is misleading telemetry — operators see "free run"
+	dashboards that don't match the actual LLM provider invoice.
+
+	Gate: skip the ``usage`` event entirely. The tracker stays
+	None on ``ctx`` too so the REST runner doesn't fold an
+	all-zero summary into ``task_state``.
+	"""
+	send = AsyncMock()
+	# Two agents that exist but never recorded any tokens.
+	ctx = _make_ctx(
+		mode="dev",
+		agents=[
+			_fake_agent("Architect", 0, 0),
+			_fake_agent("Developer", 0, 0),
+		],
+		send=send,
+	)
+
+	async def _fake_run_crew(*_, **__):
+		return ctx.crew_result
+	monkeypatch.setattr("alfred.agents.crew.run_crew", _fake_run_crew)
+
+	pipeline = _PipelineForTest(ctx)
+	await pipeline._phase_run_crew()
+
+	# No ``usage`` event was emitted.
+	usage_calls = [
+		call for call in send.await_args_list
+		if call.args and call.args[0].get("type") == "usage"
+	]
+	assert usage_calls == []
+	# Tracker stayed None — REST runner's task_state won't get a
+	# garbage usage block either.
+	assert ctx.token_tracker is None
+
+
+@pytest.mark.asyncio
 async def test_run_crew_swallows_token_tracker_failure(monkeypatch):
 	"""A broken ``_token_process`` (e.g. CrewAI internal change)
 	must NOT abort an otherwise-successful crew run. The pipeline
