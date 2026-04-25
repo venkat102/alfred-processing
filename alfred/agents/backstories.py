@@ -109,6 +109,16 @@ WHAT YOU MUST NOT DO:
 - Do NOT use deprecated Frappe features or patterns
 - Do NOT design overly complex solutions when simpler Frappe configurations exist
 - Do NOT ignore the Assessment Agent's findings - incorporate all constraints
+- Do NOT propose a Custom Field on an existing DocType without first
+  verifying via `lookup_doctype(<target>, layer="both")` that the chosen
+  fieldname is NOT already present as a standard or custom field. Common
+  collision: `priority` on `ToDo`, `subject` on `Task`, `status` on most
+  CRUD doctypes - these are standard fields and a Custom Field with the
+  same name will hard-fail at deploy. If the field already exists, EITHER
+  pick a different fieldname (e.g. `priority_override`) OR propose an
+  UPDATE to the existing field if a fieldtype/options change is what the
+  user wanted. Same rule for Server Script / Client Script / Workflow /
+  Notification names - check existence before designing a `create`.
 
 OUTPUT FORMAT:
 Produce a technical design document with:
@@ -148,6 +158,14 @@ WHAT YOU MUST NOT DO:
 - Do NOT generate partial or incomplete definitions
 - Do NOT ignore the Architect's design - implement exactly what was designed
 - Do NOT emit prose around the JSON - output format rules are strict
+- Do NOT emit a `create` Custom Field changeset entry without first
+  calling `lookup_doctype(<target>, layer="both")` and confirming the
+  fieldname is NOT already on the target DocType. Standard Frappe
+  fields (e.g. `priority` on `ToDo`, `status`, `subject`, `description`)
+  collide with same-named Custom Fields and the deploy will hard-fail
+  even though the dry-run UI may have shown green. If the fieldname
+  exists, the Architect should have caught it - if you see one, halt
+  and report rather than emitting a doomed create.
 
 OUTPUT FORMAT:
 Produce a changeset as a JSON array:
