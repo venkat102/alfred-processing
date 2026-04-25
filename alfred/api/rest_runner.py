@@ -114,10 +114,9 @@ class _RestConn:
 		# touches the attributes during its lifecycle.
 		self.active_pipeline = None
 		self.active_pipeline_ctx = None
-		# WS-only fields the pipeline never touches in REST mode but
-		# leaving as benign defaults is cheaper than guarding every read.
+		# WS-only field the pipeline never touches in REST mode but
+		# leaving as a benign default is cheaper than guarding every read.
 		self.last_acked_msg_id: str | None = None
-		self.pending_acks: dict[str, dict[str, Any]] = {}
 
 		# Pipeline phases read ``ctx.conn.websocket.app.state.{redis,settings}``
 		# directly. Build a minimal duck-typed lookalike — SimpleNamespace

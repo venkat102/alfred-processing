@@ -100,7 +100,6 @@ class ConnectionState:
 		self.conversation_id: str | None = conversation_id
 		self.store = store
 		self.last_acked_msg_id: str | None = None
-		self.pending_acks: dict[str, dict] = {}
 		# For human_input: map of question msg_id -> asyncio.Future
 		self._pending_questions: dict[str, asyncio.Future] = {}
 		# Recently-expired question msg_ids, mapped to the expiry timestamp.
@@ -399,8 +398,12 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 	msg_id = data.get("msg_id", "")
 
 	if msg_type == "ack":
+		# Track the latest acknowledged msg_id so the ``resume`` handler
+		# knows where to start replaying from. The previous wire also
+		# popped a ``pending_acks`` dict, but nothing on the server ever
+		# populated that dict — the pop was always a no-op (audit P1.4).
+		# Removed the dead state.
 		acked_id = data.get("data", {}).get("msg_id", msg_id)
-		conn.pending_acks.pop(acked_id, None)
 		conn.last_acked_msg_id = acked_id
 		return
 
