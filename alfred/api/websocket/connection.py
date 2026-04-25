@@ -49,6 +49,11 @@ WS_CLOSE_AUTH_FAILED = 4001
 WS_CLOSE_RATE_LIMIT = 4002
 WS_CLOSE_INVALID_HANDSHAKE = 4003
 WS_CLOSE_HEARTBEAT_TIMEOUT = 4004
+# 4005: a new client connected with the same conversation_id and replaced
+# this connection. Used by the P1.2 reconnect-evict path so the old client
+# (if it's still alive — usually it isn't) sees a distinct close code from
+# auth/rate failures and can decide whether to reconnect or stay dropped.
+WS_CLOSE_SUPERSEDED = 4005
 
 # How long a timed-out clarifier question remains eligible for a
 # late-response acknowledgement. After this window the msg_id is
@@ -694,7 +699,35 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 
 	logger.info("WebSocket authenticated: user=%s, site=%s, conversation=%s", conn.user, conn.site_id, conversation_id)
 
-	# Register connection
+	# P1.2: a client may reconnect under the same conversation_id (page
+	# reload, mobile network blip). Without this eviction, the prior
+	# ConnectionState's ``active_pipeline`` task kept running with its
+	# own MCP futures bound to the old loop — a zombie crew burning LLM
+	# tokens until the per-task timeout. Cancel the prior pipeline,
+	# close the prior socket with WS_CLOSE_SUPERSEDED so the old client
+	# (rare case it's still alive) doesn't try to reconnect, then
+	# install the new conn.
+	old_conn = _connections.pop(conversation_id, None)
+	if old_conn is not None and old_conn is not conn:
+		logger.info(
+			"Reconnect detected for conversation=%s — evicting prior conn for %s@%s",
+			conversation_id, old_conn.user, old_conn.site_id,
+		)
+		if (
+			old_conn.active_pipeline is not None
+			and not old_conn.active_pipeline.done()
+		):
+			old_conn.active_pipeline.cancel()
+		try:
+			await old_conn.websocket.close(
+				code=WS_CLOSE_SUPERSEDED,
+				reason="Connection superseded by a new session for this conversation",
+			)
+		except Exception as e:  # noqa: BLE001 — old socket is almost always already gone (that's why the client reconnected); a stray close failure here must not block the new connection
+			logger.debug(
+				"Old WS close after supersede failed (already gone?): %s", e,
+			)
+
 	_connections[conversation_id] = conn
 
 	await websocket.send_json({
