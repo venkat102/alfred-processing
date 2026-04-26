@@ -731,6 +731,40 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 			"Reconnect detected for conversation=%s — evicting prior conn for %s@%s",
 			conversation_id, old_conn.user, old_conn.site_id,
 		)
+
+		# Mark the eviction on the conversation's Redis event stream so
+		# a later resume-replay can splice cleanly across the old/new
+		# boundary instead of mixing events from two runs. Without
+		# this, a reconnect that hits the resume handler would replay
+		# the cancelled run's events as if they were live, so the UI
+		# transcript shows half a run from the previous session
+		# followed by the new run with no separator.
+		# Push BEFORE cancelling so the sentinel is guaranteed to land
+		# before any straggler events from the old task get drained.
+		# Best-effort: a failure here is logged but does not block the
+		# eviction itself - the sentinel is a UI nicety, not load-bearing.
+		if old_conn.store is not None and old_conn.conversation_id:
+			try:
+				await old_conn.store.push_event(
+					old_conn.site_id,
+					old_conn.conversation_id,
+					{
+						"msg_id": str(uuid.uuid4()),
+						"type": "run_evicted",
+						"data": {
+							"conversation_id": conversation_id,
+							"reason": "reconnect",
+							"evicted_user": old_conn.user,
+							"evicted_site": old_conn.site_id,
+						},
+					},
+				)
+			except Exception as e:  # noqa: BLE001 — best-effort sentinel; eviction itself must always proceed
+				logger.debug(
+					"Failed to push run_evicted sentinel for conv=%s: %s",
+					conversation_id, e,
+				)
+
 		if (
 			old_conn.active_pipeline is not None
 			and not old_conn.active_pipeline.done()

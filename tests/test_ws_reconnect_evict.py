@@ -208,3 +208,118 @@ async def test_old_socket_close_failure_does_not_block_new_connection():
 	# New conn IS now installed in _connections — but the endpoint's
 	# own finally pops it on disconnect, so we can only assert eviction
 	# happened, not that the new entry persists past the test.
+
+
+@pytest.mark.asyncio
+async def test_reconnect_pushes_run_evicted_sentinel_before_cancel():
+	"""When the prior conn carries a store, eviction must push a
+	``run_evicted`` event onto the conversation's Redis stream so the
+	UI's resume-replay can splice cleanly. Without the sentinel, a
+	post-eviction resume mixes events from the cancelled run with the
+	new run and the transcript looks broken to the user.
+
+	The push has to happen BEFORE cancel() so the sentinel lands ahead
+	of any straggler events the old task drains as it unwinds.
+	"""
+	# Old conn with a real-shaped store mock so we can observe push_event.
+	old_ws = _make_ws()
+	old_pipeline = MagicMock()
+	old_pipeline.done.return_value = False
+	old_pipeline.cancel = MagicMock()
+
+	store = MagicMock()
+	store.push_event = AsyncMock()
+
+	old_conn = ConnectionState(
+		websocket=old_ws, site_id=SITE_ID, user=USER,
+		roles=["System Manager"], site_config={},
+		conversation_id="conv-sentinel",
+		store=store,
+	)
+	old_conn.active_pipeline = old_pipeline
+	connection_mod._connections["conv-sentinel"] = old_conn
+
+	# Track call ordering: cancel must be called AFTER push_event.
+	order: list[str] = []
+	store.push_event.side_effect = lambda *a, **kw: order.append("push") or None
+	old_pipeline.cancel.side_effect = lambda *a, **kw: order.append("cancel")
+
+	new_ws = _make_ws()
+	_handshake_then_disconnect(new_ws)
+	await websocket_endpoint(new_ws, conversation_id="conv-sentinel")
+
+	# Sentinel was pushed exactly once, with the right shape.
+	store.push_event.assert_awaited_once()
+	args = store.push_event.await_args.args
+	assert args[0] == SITE_ID
+	assert args[1] == "conv-sentinel"
+	event = args[2]
+	assert event["type"] == "run_evicted"
+	assert event["data"]["reason"] == "reconnect"
+	assert event["data"]["conversation_id"] == "conv-sentinel"
+	assert event["data"]["evicted_user"] == USER
+	# Push must precede cancel.
+	assert order == ["push", "cancel"], (
+		f"sentinel must be pushed before pipeline cancel; got {order}"
+	)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_sentinel_failure_does_not_block_eviction():
+	"""push_event raising must not abort the eviction. The sentinel is a
+	UI-quality concern; the cancel + close are the load-bearing
+	operations and have to run regardless."""
+	old_ws = _make_ws()
+	old_pipeline = MagicMock()
+	old_pipeline.done.return_value = False
+	old_pipeline.cancel = MagicMock()
+
+	store = MagicMock()
+	store.push_event = AsyncMock(side_effect=RuntimeError("redis down"))
+
+	old_conn = ConnectionState(
+		websocket=old_ws, site_id=SITE_ID, user=USER,
+		roles=["System Manager"], site_config={},
+		conversation_id="conv-store-down",
+		store=store,
+	)
+	old_conn.active_pipeline = old_pipeline
+	connection_mod._connections["conv-store-down"] = old_conn
+
+	new_ws = _make_ws()
+	_handshake_then_disconnect(new_ws)
+	# Must not raise.
+	await websocket_endpoint(new_ws, conversation_id="conv-store-down")
+
+	# Eviction proceeded despite the store failure.
+	old_pipeline.cancel.assert_called_once()
+	old_ws.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_no_store_skips_sentinel():
+	"""When the prior conn has no store (early-handshake / test
+	scaffolding / Redis unconfigured), the sentinel push is skipped
+	without error and eviction proceeds normally."""
+	old_ws = _make_ws()
+	old_pipeline = MagicMock()
+	old_pipeline.done.return_value = False
+	old_pipeline.cancel = MagicMock()
+
+	old_conn = ConnectionState(
+		websocket=old_ws, site_id=SITE_ID, user=USER,
+		roles=["System Manager"], site_config={},
+		conversation_id="conv-nostore",
+		store=None,
+	)
+	old_conn.active_pipeline = old_pipeline
+	connection_mod._connections["conv-nostore"] = old_conn
+
+	new_ws = _make_ws()
+	_handshake_then_disconnect(new_ws)
+	await websocket_endpoint(new_ws, conversation_id="conv-nostore")
+
+	# No assertion failure - the eviction path checked store is None
+	# before attempting the push.
+	old_pipeline.cancel.assert_called_once()
+	old_ws.close.assert_awaited_once()
