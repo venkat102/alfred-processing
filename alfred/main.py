@@ -112,6 +112,22 @@ async def lifespan(app: FastAPI):
 			"routing. See TD-H7 in docs/tech-debt-backlog.md.",
 			settings.WORKERS,
 		)
+		# Same shared-process assumption breaks the REST per-user
+		# concurrency cap. _concurrent_tasks lives in rest_runner module
+		# memory, so MAX_CONCURRENT_REST_TASKS_PER_USER becomes the cap
+		# PER WORKER. With WORKERS=4 a configured cap of 2 silently
+		# becomes a global cap of 8 - same TD-H7 root cause, different
+		# observable. Operators sizing capacity off the documented value
+		# will be off by a factor of WORKERS.
+		logger.warning(
+			"WORKERS=%d also affects MAX_CONCURRENT_REST_TASKS_PER_USER=%d: "
+			"the per-user counter is per-worker, so the effective global "
+			"cap is %d. Multiply mentally or pin WORKERS=1 until TD-H7 "
+			"moves the counter to Redis.",
+			settings.WORKERS,
+			settings.MAX_CONCURRENT_REST_TASKS_PER_USER,
+			settings.WORKERS * settings.MAX_CONCURRENT_REST_TASKS_PER_USER,
+		)
 
 	logger.info("Alfred Processing App ready on %s:%d", settings.HOST, settings.PORT)
 
