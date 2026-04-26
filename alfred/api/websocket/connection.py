@@ -28,8 +28,10 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from alfred.api.lifecycle import is_shutting_down, track_pipeline
 from alfred.api.websocket.extract import _describe_tool_call
 from alfred.middleware.auth import verify_jwt_token
+from alfred.obs.logging_setup import bind_request_context, clear_request_context
 from alfred.obs.tasks import spawn_logged
 
 if TYPE_CHECKING:
@@ -47,6 +49,11 @@ WS_CLOSE_AUTH_FAILED = 4001
 WS_CLOSE_RATE_LIMIT = 4002
 WS_CLOSE_INVALID_HANDSHAKE = 4003
 WS_CLOSE_HEARTBEAT_TIMEOUT = 4004
+# 4005: a new client connected with the same conversation_id and replaced
+# this connection. Used by the P1.2 reconnect-evict path so the old client
+# (if it's still alive — usually it isn't) sees a distinct close code from
+# auth/rate failures and can decide whether to reconnect or stay dropped.
+WS_CLOSE_SUPERSEDED = 4005
 
 # How long a timed-out clarifier question remains eligible for a
 # late-response acknowledgement. After this window the msg_id is
@@ -93,7 +100,6 @@ class ConnectionState:
 		self.conversation_id: str | None = conversation_id
 		self.store = store
 		self.last_acked_msg_id: str | None = None
-		self.pending_acks: dict[str, dict] = {}
 		# For human_input: map of question msg_id -> asyncio.Future
 		self._pending_questions: dict[str, asyncio.Future] = {}
 		# Recently-expired question msg_ids, mapped to the expiry timestamp.
@@ -248,7 +254,31 @@ async def _authenticate_handshake(
 			pass
 		return None
 
-	api_key = handshake.get("api_key", "")
+	# Shape-validate via the documented Pydantic model. Catches
+	# malformed payloads (missing api_key, wrong types) with a single
+	# explicit error class instead of relying on downstream string
+	# coercions. Extra fields are ignored — Pydantic's default — which
+	# matches the forward-compat clause in test_ws_contract.py.
+	from pydantic import ValidationError
+
+	from alfred.models.messages import WSHandshakePayload
+	try:
+		payload = WSHandshakePayload.model_validate(handshake)
+	except ValidationError as e:
+		logger.warning(
+			"WS handshake shape invalid for conversation=%s: %s",
+			conversation_id, e,
+		)
+		try:
+			await websocket.close(
+				code=WS_CLOSE_INVALID_HANDSHAKE,
+				reason=f"Invalid handshake: {e.errors()[0]['msg']}",
+			)
+		except Exception:  # noqa: BLE001 — close after auth failure is best-effort; the connection may already be torn down by the client
+			pass
+		return None
+
+	api_key = payload.api_key
 	expected_key = websocket.app.state.settings.API_SECRET_KEY
 	# Constant-time comparison defeats timing attacks - a naive != leaks the
 	# prefix match length via response latency. hmac.compare_digest accepts
@@ -259,7 +289,7 @@ async def _authenticate_handshake(
 		await websocket.close(code=WS_CLOSE_AUTH_FAILED, reason="Invalid API key")
 		return None
 
-	jwt_token = handshake.get("jwt_token", "")
+	jwt_token = payload.jwt_token
 	try:
 		jwt_payload = verify_jwt_token(jwt_token, expected_key)
 	except ValueError as e:
@@ -267,7 +297,7 @@ async def _authenticate_handshake(
 		await websocket.close(code=WS_CLOSE_AUTH_FAILED, reason=str(e))
 		return None
 
-	site_config = handshake.get("site_config", {})
+	site_config = payload.site_config
 
 	# Attach the state store if Redis is configured. ConnectionState.send
 	# uses it to mirror user-visible events into the resume stream, and
@@ -368,8 +398,12 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 	msg_id = data.get("msg_id", "")
 
 	if msg_type == "ack":
+		# Track the latest acknowledged msg_id so the ``resume`` handler
+		# knows where to start replaying from. The previous wire also
+		# popped a ``pending_acks`` dict, but nothing on the server ever
+		# populated that dict — the pop was always a no-op (audit P1.4).
+		# Removed the dead state.
 		acked_id = data.get("data", {}).get("msg_id", msg_id)
-		conn.pending_acks.pop(acked_id, None)
 		conn.last_acked_msg_id = acked_id
 		return
 
@@ -475,6 +509,29 @@ async def _handle_custom_message(data: dict, websocket: WebSocket, conn: Connect
 		if manual_mode not in ("auto", "dev", "plan", "insights"):
 			manual_mode = "auto"
 		if not prompt_text:
+			return
+
+		# TD-M6: refuse new prompts once shutdown has started so the
+		# operator's GRACEFUL_SHUTDOWN_TIMEOUT only has to drain in-flight
+		# work, not work submitted during the drain. Surfaced as a
+		# distinct code so the client UI can show "service updating,
+		# try again in a moment" instead of a generic error banner.
+		if is_shutting_down(websocket.app.state):
+			logger.info(
+				"Rejecting prompt during shutdown for %s@%s conversation=%s",
+				conn.user, conn.site_id, conversation_id,
+			)
+			await websocket.send_json({
+				"msg_id": str(uuid.uuid4()),
+				"type": "error",
+				"data": {
+					"error": (
+						"The processing service is shutting down for an update. "
+						"Please retry in a moment."
+					),
+					"code": "SHUTTING_DOWN",
+				},
+			})
 			return
 
 		# If the pipeline is paused waiting for a clarification answer, route
@@ -601,8 +658,14 @@ async def _run_agent_pipeline(
 		manual_mode_override=manual_mode,
 	)
 	conn.active_pipeline_ctx = ctx
+	# TD-M6: bump app.state.active_pipelines so the lifespan shutdown
+	# handler waits for this run to finish before tearing down Redis.
+	# The counter was previously initialised but never moved — see
+	# alfred/api/lifecycle.py.
+	app_state = conn.websocket.app.state
 	try:
-		await AgentPipeline(ctx).run()
+		async with track_pipeline(app_state):
+			await AgentPipeline(ctx).run()
 	finally:
 		conn.active_pipeline_ctx = None
 
@@ -626,9 +689,48 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 	if conn is None:
 		return
 
+	# TD-M3: every log line emitted while this connection lives will
+	# carry site_id / user / conversation_id, so triage on a busy host
+	# can grep by tenant without sprinkling extra args at each call site.
+	# Cleared in the ``finally`` block so the asyncio task doesn't leak
+	# stale fields to whatever runs next on the same loop.
+	bind_request_context(
+		site_id=conn.site_id,
+		user=conn.user,
+		conversation_id=conversation_id,
+	)
+
 	logger.info("WebSocket authenticated: user=%s, site=%s, conversation=%s", conn.user, conn.site_id, conversation_id)
 
-	# Register connection
+	# P1.2: a client may reconnect under the same conversation_id (page
+	# reload, mobile network blip). Without this eviction, the prior
+	# ConnectionState's ``active_pipeline`` task kept running with its
+	# own MCP futures bound to the old loop — a zombie crew burning LLM
+	# tokens until the per-task timeout. Cancel the prior pipeline,
+	# close the prior socket with WS_CLOSE_SUPERSEDED so the old client
+	# (rare case it's still alive) doesn't try to reconnect, then
+	# install the new conn.
+	old_conn = _connections.pop(conversation_id, None)
+	if old_conn is not None and old_conn is not conn:
+		logger.info(
+			"Reconnect detected for conversation=%s — evicting prior conn for %s@%s",
+			conversation_id, old_conn.user, old_conn.site_id,
+		)
+		if (
+			old_conn.active_pipeline is not None
+			and not old_conn.active_pipeline.done()
+		):
+			old_conn.active_pipeline.cancel()
+		try:
+			await old_conn.websocket.close(
+				code=WS_CLOSE_SUPERSEDED,
+				reason="Connection superseded by a new session for this conversation",
+			)
+		except Exception as e:  # noqa: BLE001 — old socket is almost always already gone (that's why the client reconnected); a stray close failure here must not block the new connection
+			logger.debug(
+				"Old WS close after supersede failed (already gone?): %s", e,
+			)
+
 	_connections[conversation_id] = conn
 
 	await websocket.send_json({
@@ -684,3 +786,7 @@ async def websocket_endpoint(websocket: WebSocket, conversation_id: str):
 				await conn.active_pipeline
 			except (asyncio.CancelledError, Exception):  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
 				pass
+
+		# TD-M3: drop the per-connection contextvars frame so the next task
+		# scheduled on this loop doesn't inherit stale site_id / user fields.
+		clear_request_context()

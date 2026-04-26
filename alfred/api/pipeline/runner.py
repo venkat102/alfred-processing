@@ -145,11 +145,22 @@ class AgentPipeline(
 				# cancellation still took effect server-side.
 				logger.warning("Failed to send cancellation message: %s", e)
 			return
+		# Enrich the envelope with a UI-ready string so the client can
+		# render a friendly banner without owning the code → text mapping
+		# itself. Falls back to the ``unknown`` bucket for codes the
+		# helper doesn't recognise yet, so a new failure mode never
+		# breaks this send. See alfred.middleware.error_handling.
+		from alfred.middleware.error_handling import get_user_error_message
+		user_msg = get_user_error_message(code).get("message", "")
+
 		try:
 			await self.ctx.conn.send({
 				"msg_id": str(uuid.uuid4()),
 				"type": "error",
-				"data": {"error": error, "code": code, **extra},
+				"data": {
+					"error": error, "code": code,
+					"user_message": user_msg, **extra,
+				},
 			})
 		except (RuntimeError, WebSocketDisconnect, OSError) as e:
 			# Same shape as the cancel path above.

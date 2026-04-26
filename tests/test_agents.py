@@ -111,16 +111,24 @@ class TestToolAssignments:
 		os.environ["FALLBACK_LLM_MODEL"] = "ollama/llama3.1"
 		agents = build_agents()
 		tool_names = {t.name for t in agents["tester"].tools}
-		# Minimal fallback: only local syntax validators
-		assert "validate_python_syntax" in tool_names
-		assert "validate_js_syntax" in tool_names
+		# After M1: stub fallback now mirrors the real validators in
+		# alfred/tools/code_validation.py — same depth as production
+		# (real AST analysis, dependency-order check, etc.).
+		assert "validate_python_syntax_tool" in tool_names
+		assert "validate_js_syntax_tool" in tool_names
+		assert "validate_doctype_tool" in tool_names
 
 	def test_most_agents_have_no_local_tools(self):
-		"""Assessment, architect, developer, deployer rely entirely on MCP in
-		production. Their fallback tool lists are empty."""
+		"""Architect, developer, deployer rely entirely on MCP in
+		production. Their fallback tool lists are empty.
+
+		Assessment now ships the deterministic permission matrix
+		(``check_permissions_tool``) as part of the stub fallback —
+		see M1 — so it's excluded from this guarantee.
+		"""
 		os.environ["FALLBACK_LLM_MODEL"] = "ollama/llama3.1"
 		agents = build_agents()
-		for key in ("assessment", "architect", "developer", "deployer"):
+		for key in ("architect", "developer", "deployer"):
 			assert len(agents[key].tools) == 0, f"{key} should have no fallback tools"
 
 

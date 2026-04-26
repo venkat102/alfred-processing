@@ -212,3 +212,48 @@ async def test_handshake_rejects_malformed_json():
 	conn = await _authenticate_handshake(ws, conversation_id="conv-badjson")
 	assert conn is None
 	ws.close.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handshake_rejects_missing_jwt_token_via_pydantic():
+	"""L1 wire: ``WSHandshakePayload`` requires ``jwt_token``. A handshake
+	missing it must fail at ``model_validate`` with INVALID_HANDSHAKE,
+	not later in the JWT verifier with a confusing error trace.
+
+	Regression guard for the audit's L1 — before the wire we relied on
+	``handshake.get("jwt_token", "")`` returning ``""`` and the JWT
+	verifier rejecting an empty string. Same end state, but with the
+	wire we surface the real shape problem to the operator.
+	"""
+	from alfred.api.websocket.connection import WS_CLOSE_INVALID_HANDSHAKE
+
+	ws = _make_ws()
+	await _feed_handshake(ws, {"api_key": API_KEY, "site_config": {}})
+
+	conn = await _authenticate_handshake(ws, conversation_id="conv-no-jwt")
+	assert conn is None
+	# Close was called with the INVALID_HANDSHAKE code, not AUTH_FAILED —
+	# that's what tells the operator "the client is sending the wrong
+	# shape" rather than "the credentials look wrong."
+	close_call = ws.close.await_args
+	assert close_call.kwargs.get("code") == WS_CLOSE_INVALID_HANDSHAKE
+
+
+@pytest.mark.asyncio
+async def test_handshake_pydantic_accepts_documented_shape():
+	"""L1 wire: a documented-shape handshake passes the new
+	``WSHandshakePayload.model_validate`` step and lands a real
+	``ConnectionState`` — proves the wire didn't accidentally tighten
+	rejection on the happy path."""
+	ws = _make_ws()
+	await _feed_handshake(ws, {
+		"api_key": API_KEY,
+		"jwt_token": _make_jwt(),
+		"site_config": {"llm_model": "ollama/llama3.1"},
+	})
+
+	conn = await _authenticate_handshake(ws, conversation_id="conv-pydantic-ok")
+	assert conn is not None
+	assert conn.user == USER
+	# site_config flowed through the model unchanged.
+	assert conn.site_config["llm_model"] == "ollama/llama3.1"

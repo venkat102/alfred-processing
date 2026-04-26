@@ -132,6 +132,47 @@ class StateStore:
 		logger.debug("Deleted task state: %s (existed=%s)", key, bool(deleted))
 		return bool(deleted)
 
+	# ── Current-agent (atomic, separate key) ─────────────────────────
+	#
+	# Lives in its own Redis key so high-frequency ``agent_status``
+	# updates from the pipeline don't collide with the runner's
+	# coarser ``set_task_state`` writes (audit P1.1: read-modify-write
+	# on the JSON-encoded state was racing with the final terminal
+	# status write). Each ``set_current_agent`` is a single SETEX,
+	# so concurrent emits are serialised by Redis itself rather than
+	# fighting for the same JSON blob.
+
+	async def set_current_agent(
+		self,
+		site_id: str,
+		task_id: str,
+		agent: str,
+		ttl_seconds: int | None = None,
+	) -> None:
+		"""Atomically set the running agent label for a task.
+
+		The TTL piggybacks on the task_state TTL so the side-channel
+		key is reaped at the same time as its parent — no orphan
+		``current_agent`` rows lingering after the task itself
+		expires. Use ``ttl_seconds=None`` to inherit from settings.
+		"""
+		_validate_id(task_id, "task_id")
+		key = self._key(site_id, "task", task_id, "current_agent")
+		if ttl_seconds is None:
+			from alfred.config import get_settings
+			ttl_seconds = get_settings().TASK_STATE_TTL_SECONDS
+		if ttl_seconds <= 0:
+			raise ValueError(f"ttl_seconds must be positive, got {ttl_seconds}")
+		await self._redis.setex(key, ttl_seconds, agent)
+		logger.debug("Set current_agent for %s: %s (ttl=%ds)", key, agent, ttl_seconds)
+
+	async def get_current_agent(self, site_id: str, task_id: str) -> str | None:
+		"""Return the current agent label, or None if unset / expired."""
+		_validate_id(task_id, "task_id")
+		key = self._key(site_id, "task", task_id, "current_agent")
+		value = await self._redis.get(key)
+		return value if value is not None else None
+
 	# ── Event Stream ─────────────────────────────────────────────────
 
 	async def push_event(self, site_id: str, conversation_id: str, event: dict[str, Any]) -> str:
