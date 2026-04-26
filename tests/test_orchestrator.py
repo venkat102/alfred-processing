@@ -472,11 +472,23 @@ class TestClassifyMode:
 
 class TestIsEnabled:
 	@pytest.fixture(autouse=True)
-	def _reset_settings_cache(self):
+	def _reset_settings_cache(self, monkeypatch):
 		# is_enabled() reads Settings via @lru_cache; each test in this
 		# class flips ALFRED_ORCHESTRATOR_ENABLED via monkeypatch and
 		# needs a fresh read.
-		from alfred.config import get_settings
+		#
+		# Settings ALSO loads the operator's local .env via
+		# pydantic-settings (model_config["env_file"] = ".env"). The
+		# dev .env in this repo sets ALFRED_ORCHESTRATOR_ENABLED=1,
+		# which would defeat test_unset_is_disabled - monkeypatch.delenv
+		# only clears os.environ, not the .env file pydantic re-reads.
+		# Point env_file at /dev/null so each test sees only the
+		# explicit os.environ values it sets.
+		from alfred.config import Settings, get_settings
+		monkeypatch.setattr(
+			Settings, "model_config",
+			{**Settings.model_config, "env_file": "/dev/null"},
+		)
 		get_settings.cache_clear()
 		yield
 		get_settings.cache_clear()

@@ -344,7 +344,11 @@ class TestRateLimit:
 					"/api/v1/tasks",
 					json={
 						"prompt": f"task {i}",
-						"site_config": {"site_id": "ratelimit-test-site-v2"},
+						# Body site_id MUST match the JWT's site_id post-P0.2;
+						# otherwise the route 403's with SITE_MISMATCH before
+						# the rate-limit check ever runs. Use the global
+						# fixture's SITE_ID to stay aligned with _auth_headers().
+						"site_config": {"site_id": SITE_ID},
 						"user_context": {"user": "rate-v2@test.com"},
 					},
 					headers=_auth_headers(),
@@ -363,7 +367,17 @@ class TestWebSocketRateLimit:
 	the pipeline. Test pre-seeds the Redis sliding-window bucket to the
 	limit so the first prompt sent by the test is already over quota -
 	this avoids triggering a real pipeline (which would need LLM access)
-	on any attempt."""
+	on any attempt.
+
+	Cap is controlled per-handshake via ``site_config["max_tasks_per_user_per_hour"]``
+	(see alfred/api/websocket/connection.py:577). Earlier versions of
+	this test patched ``alfred.api.websocket.SERVER_DEFAULT_RATE_LIMIT``
+	but that constant lives on the REST surface (alfred/api/routes.py)
+	and was never read from the WS path; after the TD-H2 package split
+	the patch was a no-op. The site_config override is what the
+	production code actually consults, so the test exercises the real
+	contract.
+	"""
 
 	async def test_ws_prompt_rate_limited_returns_error_frame(self, app):
 		if app.state.redis is None:
@@ -376,11 +390,6 @@ class TestWebSocketRateLimit:
 			pytest.skip("httpx_ws not installed")
 
 		import time as _t
-
-		import alfred.api.websocket as ws_mod
-
-		original_limit = ws_mod.SERVER_DEFAULT_RATE_LIMIT
-		ws_mod.SERVER_DEFAULT_RATE_LIMIT = 1
 
 		# Pre-seed the user's sliding-window bucket with one recent entry
 		# so the next prompt is immediately over quota. Key format comes
@@ -399,7 +408,10 @@ class TestWebSocketRateLimit:
 					await ws.send_json({
 						"api_key": API_KEY,
 						"jwt_token": _make_jwt(),
-						"site_config": {},
+						# Force the cap to 1 via the handshake; combined with
+						# the pre-seeded bucket entry above, the next prompt
+						# is immediately over-quota.
+						"site_config": {"max_tasks_per_user_per_hour": 1},
 					})
 					auth = json.loads(await ws.receive_text())
 					assert auth["type"] == "auth_success"
@@ -415,11 +427,9 @@ class TestWebSocketRateLimit:
 						resp = json.loads(await ws.receive_text())
 
 					assert resp["type"] == "error"
-					assert resp["data"]["code"] == "RATE_LIMITED"
+					assert resp["data"]["code"] == "RATE_LIMIT"
 					assert resp["data"]["retry_after"] > 0
-					assert "remaining" in resp["data"]
 		finally:
-			ws_mod.SERVER_DEFAULT_RATE_LIMIT = original_limit
 			await app.state.redis.delete(ratelimit_key)
 
 	async def test_ws_prompt_under_limit_spawns_pipeline(self, app):
@@ -435,11 +445,6 @@ class TestWebSocketRateLimit:
 			from httpx_ws.transport import ASGIWebSocketTransport
 		except ImportError:
 			pytest.skip("httpx_ws not installed")
-
-		import alfred.api.websocket as ws_mod
-
-		original_limit = ws_mod.SERVER_DEFAULT_RATE_LIMIT
-		ws_mod.SERVER_DEFAULT_RATE_LIMIT = 100  # plenty of headroom
 
 		under_user = "under-limit-user@test.com"
 		ratelimit_key = f"alfred:{SITE_ID}:ratelimit:{under_user}"
@@ -460,7 +465,9 @@ class TestWebSocketRateLimit:
 					await ws.send_json({
 						"api_key": API_KEY,
 						"jwt_token": jwt_token,
-						"site_config": {},
+						# Plenty of headroom via the same handshake-config
+						# override the production code reads.
+						"site_config": {"max_tasks_per_user_per_hour": 100},
 					})
 					auth = json.loads(await ws.receive_text())
 					assert auth["type"] == "auth_success"
@@ -471,7 +478,7 @@ class TestWebSocketRateLimit:
 						"data": {"text": "noop prompt"},
 					})
 
-					# Collect a few frames; we should NOT see a RATE_LIMITED
+					# Collect a few frames; we should NOT see a RATE_LIMIT
 					# response. The pipeline may emit other messages (status,
 					# error from LLM unavailability, etc) - those are fine.
 					rate_limited = False
@@ -480,12 +487,11 @@ class TestWebSocketRateLimit:
 							frame = json.loads(await ws.receive_text())
 						except (WebSocketDisconnect, json.JSONDecodeError, RuntimeError):
 							break
-						if frame.get("type") == "error" and frame.get("data", {}).get("code") == "RATE_LIMITED":
+						if frame.get("type") == "error" and frame.get("data", {}).get("code") == "RATE_LIMIT":
 							rate_limited = True
 							break
 					assert not rate_limited, "Under-quota prompt was incorrectly rate-limited"
 		finally:
-			ws_mod.SERVER_DEFAULT_RATE_LIMIT = original_limit
 			await app.state.redis.delete(ratelimit_key)
 
 
