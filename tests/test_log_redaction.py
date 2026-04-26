@@ -201,3 +201,87 @@ def test_format_does_not_raise_on_unusual_types():
 	# A bytes value shouldn't cause a formatter crash.
 	out = _format("%s", {"api_key": b"bytes-secret", "ok": 1})
 	assert "bytes-secret" not in out
+
+
+# ── extra={...} redaction (M2 / record.__dict__ walk) ──────────────
+
+
+def _format_with_extra(msg: str, *, fmt: str = "%(message)s", **extras) -> tuple[str, logging.LogRecord]:
+	"""Build a LogRecord with ``extras`` promoted to attributes (the
+	same way ``logger.info("...", extra={...})`` does), run it through
+	the formatter, and return (formatted-output, record) so tests can
+	inspect both the JSON-handler-visible state and the human-readable
+	message line.
+	"""
+	record = logging.LogRecord(
+		name="test", level=logging.INFO, pathname="test.py",
+		lineno=1, msg=msg, args=(), exc_info=None,
+	)
+	for k, v in extras.items():
+		setattr(record, k, v)
+	out = RedactingFormatter(fmt=fmt).format(record)
+	return out, record
+
+
+def test_extra_jwt_token_redacted_on_record():
+	# extras don't appear in the default %(message)s line - they ride on
+	# the record for structured handlers (JSON formatters, etc.) - so the
+	# regression check is "record.<key> is no longer the secret".
+	_, rec = _format_with_extra("handshake", jwt_token="eyJhbc.def.ghi-secret")
+	assert rec.jwt_token == "***REDACTED***"
+
+
+def test_extra_api_key_redacted():
+	_, rec = _format_with_extra("cfg loaded", api_key="sk-leaked-abc")
+	assert rec.api_key == "***REDACTED***"
+
+
+def test_extra_non_sensitive_key_preserved():
+	_, rec = _format_with_extra(
+		"event", request_id="req-123", user="navin@example.com",
+	)
+	assert rec.request_id == "req-123"
+	assert rec.user == "navin@example.com"
+
+
+def test_extra_case_insensitive():
+	_, rec = _format_with_extra("event", JWT_TOKEN="t1", Api_Key="t2")
+	assert rec.JWT_TOKEN == "***REDACTED***"
+	assert rec.Api_Key == "***REDACTED***"
+
+
+def test_extra_empty_string_preserved():
+	# Same passthrough policy as _redact_dict: empty / None signals
+	# "not configured" and stays visible.
+	_, rec = _format_with_extra("event", api_key="")
+	assert rec.api_key == ""
+
+
+def test_extra_nested_dict_redacted():
+	_, rec = _format_with_extra(
+		"event",
+		context={"jwt_token": "leak-nested", "user": "alice"},
+	)
+	assert rec.context["jwt_token"] == "***REDACTED***"
+	assert rec.context["user"] == "alice"
+
+
+def test_extra_list_of_dicts_redacted():
+	_, rec = _format_with_extra(
+		"event",
+		tokens=[{"token": "t1"}, {"token": "t2"}],
+	)
+	assert rec.tokens[0]["token"] == "***REDACTED***"
+	assert rec.tokens[1]["token"] == "***REDACTED***"
+
+
+def test_extra_does_not_clobber_logrecord_builtins():
+	# A caller can't set extra={"name": "..."} (stdlib disallows it),
+	# but defensively confirm we leave LogRecord built-in attrs alone
+	# even if the dict somehow gets one.
+	_, rec = _format_with_extra("event", api_key="leak")
+	# Built-ins still readable.
+	assert rec.name == "test"
+	assert rec.levelno == logging.INFO
+	# Sensitive extra still redacted.
+	assert rec.api_key == "***REDACTED***"
