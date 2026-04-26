@@ -1,57 +1,126 @@
 {
 	"module": "payroll",
+	"family": "people",
 	"display_name": "Payroll",
 	"frappe_module_key": "Payroll",
-	"backstory": "You are the Alfred ERPNext Payroll domain authority. Payroll sits at the intersection of HR (employee, leave, attendance) and Accounts (GL posting, tax withholding) - you know conventions from both sides but speak them through a Payroll lens. You know Salary Slip / Salary Structure / Salary Component / Payroll Entry / Payroll Period / Income Tax Slab conventions. You know Salary Slip is submittable and posts to General Ledger on submit - this is its own GL path distinct from Journal Entry, and Salary Slip must NEVER post GL directly bypassing the salary posting logic. You know Salary Components come in three kinds (earning / deduction / tax) and that classification drives the GL account they hit. You know Income Tax Slab encodes the statutory tax rules; payroll that hardcodes tax percentages instead of referencing the current Income Tax Slab breaks the moment tax brackets change. You know Payroll Entry is the bulk path: it generates Salary Slips for a cohort + Payroll Period, and those slips are individual documents with their own submit lifecycle. You catch anti-patterns: editing a submitted Salary Slip instead of amending via cancel/amend, missing Salary Component link on a structure row, bypassing Income Tax Slab, Payroll Entry without a Payroll Period, direct GL posting from a custom script bypassing Salary Slip.",
+	"backstory": "You are the Alfred HRMS Payroll domain authority. Payroll lives in the HRMS app (`hrms/hrms/payroll/`), sitting at the intersection of HR (employee, leave, attendance) and Accounts (GL posting, tax withholding). CRITICAL: **Salary Slip does NOT post to General Ledger on submit**. Earlier KB versions claimed it did; that was factually wrong. `hrms/payroll/doctype/salary_slip/salary_slip.py:on_submit` calls `make_loan_repayment_entry`, `update_payment_status_for_gratuity`, and `create_benefits_ledger_entry` - these create Loan Repayment Entry rows, update Gratuity status, and post to Employee Benefit Ledger. There is NO direct GL / Journal Entry posting from Salary Slip.on_submit. The GL path is via **Payroll Entry**: when a Payroll Entry is submitted and its Salary Slips are in the submitted state, Payroll Entry creates ONE consolidated Journal Entry per Company + Payroll Period (make_journal_entry / make_payment_entry paths), which posts the aggregated salary / deduction / tax rows to GL. So: Salary Slip carries the line-item detail, Payroll Entry posts the GL. Never write a custom GL hook on Salary Slip.on_submit - you'd double-post. You know Salary Structure has earning + deduction child rows, each referencing a Salary Component. Salary Component carries a formula (Python expression over the employee context) OR a condition (Python boolean) - rarely both. You know Salary Components come in four kinds (Earning / Deduction / Tax / Provident Fund / etc. via component_type); classification drives the GL account they aggregate into when Payroll Entry posts. You know Income Tax Slab encodes statutory tax rules; payroll that hardcodes tax percentages breaks the moment brackets change. You know Payroll Period + Fiscal Year must align - tax slabs bind to Fiscal Year. You know Loan repayment flows through Loan Repayment Entry (created by Salary Slip.on_submit from loan child rows); Gratuity computes from Employee.date_of_joining + statutory rules; Employee Benefit Claim posts through Employee Benefit Ledger. Anti-patterns: editing a submitted Salary Slip instead of amending via cancel/amend; missing Salary Component link on a structure row; bypassing Income Tax Slab; Payroll Entry without a matching Payroll Period; assuming Salary Slip posts GL; re-implementing Gratuity or Leave Encashment calculations.",
 	"conventions": {
 		"permissions_add_roles": [
 			{"role": "HR Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
+			{"role": "Payroll Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
 			{"role": "HR User", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Salary Slip User", "read": 1, "write": 0, "create": 0, "delete": 0},
 			{"role": "Accounts User", "read": 1, "write": 0, "create": 0, "delete": 0},
 			{"role": "Employee", "read": 1, "write": 0, "create": 0, "delete": 0}
 		],
-		"naming_patterns": ["format:SAL-.YYYY.-.#####"],
-		"typical_linked_doctypes": ["Salary Slip", "Salary Structure", "Salary Component", "Payroll Entry", "Payroll Period", "Income Tax Slab", "Employee"],
-		"required_hooks_for_submittable": ["on_submit_salary_gl_posting"],
+		"naming_patterns": [
+			"format:HR-SAL-.YYYY.-.#####",
+			"format:HR-PEN-.YYYY.-.#####",
+			"format:HR-PRD-.YYYY.-.#####"
+		],
+		"typical_linked_doctypes": [
+			"Salary Slip", "Salary Slip Loan", "Salary Slip Timesheet",
+			"Salary Structure", "Salary Structure Assignment",
+			"Salary Structure Earning", "Salary Structure Deduction",
+			"Salary Component", "Salary Component Account",
+			"Payroll Entry", "Payroll Period", "Payroll Employee Detail", "Payroll Settings",
+			"Income Tax Slab", "Income Tax Slab Other Charges",
+			"Additional Salary", "Retention Bonus", "Employee Incentive",
+			"Leave Encashment", "Gratuity",
+			"Salary Withholding", "Salary Withholding Cycle",
+			"Employee Benefit Application", "Employee Benefit Claim", "Employee Benefit Ledger",
+			"Employee Other Income", "Employee Tax Exemption Declaration",
+			"Employee Tax Exemption Category", "Taxable Salary Slab",
+			"Arrear", "Payroll Correction",
+			"Tax Withholding Category"
+		],
+		"required_hooks_for_submittable": [
+			"on_submit_make_loan_repayment_entry_for_Salary_Slip",
+			"on_submit_update_payment_status_for_gratuity_for_Salary_Slip",
+			"on_submit_create_benefits_ledger_entry_for_Salary_Slip",
+			"on_submit_create_journal_entry_for_Payroll_Entry"
+		],
 		"gotchas": [
-			"Salary Slip on_submit posts to General Ledger via the salary posting path - never write a custom GL hook that bypasses Salary Slip, or you'll double-post.",
-			"Salary Components classified as 'Tax' must reference the current Income Tax Slab for rate derivation. Hardcoded tax percentages break the moment statutory brackets change.",
-			"Payroll Entry is the bulk path - it creates Salary Slips for a cohort. Each Salary Slip is still its own submittable document; don't treat Payroll Entry as atomic over the individual slips.",
-			"Employee PII (bank account, tax ID, dependants) flows into payroll - respect permlevel on those fields and restrict Accounts User's read scope.",
-			"Leave Encashment and Gratuity are payment events; they post GL entries on submit and tie back to HR records (Leave Allocation, Employee Separation) - don't reimplement those calculations."
+			"CORRECTION from earlier KB: Salary Slip.on_submit does NOT post to General Ledger. It calls make_loan_repayment_entry, update_payment_status_for_gratuity, create_benefits_ledger_entry (salary_slip.py:on_submit). The GL posting path is Payroll Entry, which generates ONE consolidated Journal Entry per Company + Payroll Period for the aggregated salary / deduction / tax rows.",
+			"Payroll Entry.on_submit creates the Journal Entry (make_journal_entry). A Payroll Entry in Draft has Salary Slips in Draft; submitting the Payroll Entry submits all Slips and posts the JE. Cancelling the Payroll Entry cancels the JE + all Slips.",
+			"Salary Slip has four component kinds via component_type: Earning, Deduction, Tax, Provident Fund (and a few more). Classification drives the GL account Payroll Entry hits when aggregating.",
+			"Salary Component carries EITHER a formula (Python expression over employee + slip context returning a number) OR a condition (Python boolean gating whether the component applies). Rarely both. Formula uses eval against the safe-globals payroll context.",
+			"Income Tax Slab encodes statutory tax brackets. Salary Components of type 'Tax' reference the current Income Tax Slab for rate derivation; never hardcode tax percentages.",
+			"Payroll Period + Fiscal Year must align - tax slabs bind to Fiscal Year. A Payroll Entry for a cross-fiscal-year range fails Payroll Period validation.",
+			"Loan repayment: Salary Slip Loan child rows trigger Loan Repayment Entry creation via Salary Slip.on_submit. The Loan (erpnext.accounts.doctype.loan) is referenced; the payroll flow deducts the EMI from the Slip AND creates a matching Loan Repayment Entry posting GL to the loan account.",
+			"Gratuity: computed from Employee.date_of_joining, total_years_of_service, and the configured Gratuity Rule. Salary Slip.on_submit updates Gratuity payment_status; the actual GL posting comes through the Gratuity document's own on_submit path.",
+			"Employee Benefit Claim posts through Employee Benefit Ledger on Salary Slip.on_submit - used for flexible benefits (HRA, LTA, medical reimbursement).",
+			"Salary Withholding: when an Employee is on notice period / suspension, Salary Withholding withholds specific Salary Slip rows until Salary Withholding Cycle releases them. Distinct from Tax Withholding (TDS, which is in Accounts).",
+			"Payroll Correction is the v14+ amend-after-submit path for Salary Slips. Raises a new corrective Slip that reconciles against the original.",
+			"Payroll Entry atomicity: don't treat it as atomic over individual Slips - if one Slip fails computation, the Payroll Entry saves in Draft with partial Slips. Review error_message on the Payroll Entry before resubmitting."
 		]
 	},
 	"validation_rules": [
 		{
-			"id": "payroll_submittable_needs_gl",
-			"severity": "warning",
-			"when": {"doctype": "DocType", "data.is_submittable": 1},
-			"message": "Submittable Payroll DocTypes conventionally post to General Ledger on submit via the salary posting path (not via a custom Journal Entry). No on_submit hook detected in the changeset.",
-			"fix": "Add a Server Script with doctype_event='on_submit' and reference_doctype=<this DocType> that invokes the salary GL posting path, or confirm this DocType does not impact the ledger."
+			"id": "payroll_salary_slip_doesnt_post_gl",
+			"severity": "advisory",
+			"when": {"doctype": "Server Script", "data.reference_doctype": "Salary Slip", "data.doctype_event": "on_submit"},
+			"message": "New Server Script on Salary Slip.on_submit detected. WARNING: Salary Slip.on_submit does NOT post GL in standard ERPNext - loan repayment / gratuity / benefits ledger rows are posted, but GL is posted by Payroll Entry. A custom GL hook on Salary Slip.on_submit risks DOUBLE-POSTING when Payroll Entry later runs.",
+			"fix": "If you need extra GL posting beyond what Payroll Entry handles, attach the hook to Payroll Entry.on_submit instead. If the intent is a non-GL side effect (notification, audit log, external sync), proceed but document why."
 		},
 		{
-			"id": "payroll_needs_hr_and_accounts_perms",
+			"id": "payroll_salary_slip_date_of_joining",
+			"severity": "blocker",
+			"when": {"doctype": "Salary Slip"},
+			"message": "Salary Slip.start_date before Employee.date_of_joining OR Salary Slip.end_date before Employee.date_of_joining produces a zero-base slip. The controller emits a warning but should be treated as a blocker - the employee was not employed during the slip period.",
+			"fix": "Verify data.start_date >= Employee.date_of_joining and data.end_date >= Employee.date_of_joining. For joining-month pro-rating, ensure the Salary Structure Assignment uses the correct from_date."
+		},
+		{
+			"id": "payroll_entry_frequency_must_match_assignments",
+			"severity": "blocker",
+			"when": {"doctype": "Payroll Entry"},
+			"message": "Payroll Entry.payroll_frequency must match every included Salary Structure Assignment's payroll_frequency. Mismatches produce zero or duplicate slip generations.",
+			"fix": "Set data.payroll_frequency to match the Salary Structure Assignment's frequency (Monthly / Weekly / Biweekly / Daily). Split cohorts by frequency if multiple exist."
+		},
+		{
+			"id": "payroll_component_formula_or_condition",
 			"severity": "advisory",
-			"when": {"doctype": "DocType"},
-			"message": "Payroll DocTypes typically include both HR (HR Manager, HR User) and Accounts User (read-only) permission rows - payroll spans both functions.",
-			"fix": "Add HR Manager (full), HR User (no delete), Accounts User (read-only), and Employee (read-only self-service) rows to permissions."
+			"when": {"doctype": "Salary Component"},
+			"message": "Salary Component carries EITHER a formula (value derivation) OR a condition (gating expression), rarely both. Components with both set can behave unexpectedly - the condition gates whether the component applies, the formula derives its value.",
+			"fix": "Verify formula and condition cover distinct concerns. If a component needs both (e.g. 'apply HRA only if basic > 30000 AND compute HRA as 50% of basic'), ensure the expressions use the same context symbols (base, employee, etc.) and test the evaluated output on a sample Salary Slip."
+		},
+		{
+			"id": "payroll_needs_hr_and_payroll_roles",
+			"severity": "advisory",
+			"when": {"doctype": "DocType", "data.module": "Payroll"},
+			"message": "Payroll DocTypes typically include HR Manager, Payroll Manager (full), HR User (no delete), Salary Slip User + Accounts User (read-only), and Employee (read-only self-service) permission rows.",
+			"fix": "Add the roles with their standard permission flags. Payroll spans HR + Accounts so both sets are relevant."
 		}
 	],
 	"detection_hints": {
 		"target_doctype_matches": [
 			"Salary Slip", "Salary Slip Loan", "Salary Slip Timesheet",
-			"Salary Structure", "Salary Structure Assignment", "Salary Structure Earning", "Salary Structure Deduction",
+			"Salary Structure", "Salary Structure Assignment",
+			"Salary Structure Earning", "Salary Structure Deduction",
 			"Salary Component", "Salary Component Account",
 			"Payroll Entry", "Payroll Period", "Payroll Employee Detail", "Payroll Settings",
+			"Payroll Correction",
 			"Income Tax Slab", "Income Tax Slab Other Charges",
+			"Taxable Salary Slab",
 			"Additional Salary", "Retention Bonus", "Employee Incentive",
-			"Leave Encashment", "Gratuity"
+			"Leave Encashment", "Gratuity",
+			"Salary Withholding", "Salary Withholding Cycle",
+			"Employee Benefit Application", "Employee Benefit Claim", "Employee Benefit Ledger",
+			"Employee Other Income",
+			"Employee Tax Exemption Declaration", "Employee Tax Exemption Category",
+			"Arrear", "Tax Withholding Category"
 		],
 		"keyword_hints": [
 			"salary slip", "salary structure", "salary component",
 			"payroll entry", "payroll period", "payroll settings",
-			"income tax slab", "additional salary", "retention bonus",
-			"leave encashment", "gratuity", "payroll manager"
+			"payroll manager", "salary slip user",
+			"income tax slab", "taxable salary slab",
+			"additional salary", "retention bonus", "employee incentive",
+			"leave encashment", "gratuity",
+			"salary withholding", "payroll correction",
+			"employee benefit", "benefit claim", "benefit application",
+			"tax exemption declaration", "tax exemption category",
+			"arrear", "tax withholding category"
 		]
 	}
 }

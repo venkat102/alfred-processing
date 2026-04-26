@@ -1,39 +1,25 @@
-"""Mode orchestrator - decides how a prompt flows through the pipeline.
-
-Alfred supports four modes:
-  - dev: run the agent crew and produce a deployable changeset
-  - plan: run the 3-agent planning crew and produce a plan doc
-  - insights: read-only Q&A about the site state
-  - chat: pure conversational reply, no crew, no tools
-
-This module is the decision point. It returns one of those four modes per
-prompt, taking into account:
-  - the raw prompt text
-  - optional conversation memory context (so follow-ups like "build it" can
-    be resolved against a proposed plan from an earlier turn)
-  - an optional manual override the user set in the chat UI header switcher
-  - the site's LLM config (for the classifier LLM call)
+"""Mode classification — decides which of dev / plan / insights / chat
+handles a given prompt (TD-H2 split from ``alfred/orchestrator.py``).
 
 Design notes:
   - Pre-classification fast path handles obvious cases (greetings, build
     verbs, common read-only query phrasings) without an LLM call. Cheap
     and deterministic.
-  - LLM classification uses the same litellm pattern as `enhance_prompt` -
-    one streaming call, low max_tokens, temp 0, JSON-shaped output.
-  - Confidence-based fallback: on low confidence or parse failure, pick the
-    SAFEST mode. That's "dev" if there's an active plan in memory (user is
-    continuing planned work) else "chat" (conversational is cheap to
-    re-route; crew runs are expensive and noisy).
+  - LLM classification uses the same ollama_chat client as
+    ``enhance_prompt`` - one call, low max_tokens, temp 0, JSON output.
+  - Confidence-based fallback: on low confidence or parse failure, pick
+    the SAFEST mode. That's "dev" if there's an active plan in memory
+    (user is continuing planned work) else "chat" (conversational is
+    cheap to re-route; crew runs are expensive and noisy).
   - Plan mode is the only output the fast-path never produces - plan
-    classification is harder to do with string matching and benefits from
-    an LLM call reading the whole sentence for design-question cues.
+    classification is harder to do with string matching and benefits
+    from an LLM call reading the whole sentence for design-question cues.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -41,7 +27,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
 	from alfred.state.conversation_memory import ConversationMemory
 
-logger = logging.getLogger("alfred.orchestrator")
+logger = logging.getLogger("alfred.orchestrator.mode")
 
 _VALID_MODES = ("dev", "plan", "insights", "chat")
 _VALID_OVERRIDES = ("auto", "dev", "plan", "insights")
@@ -57,13 +43,21 @@ _MEMORY_CONTEXT_CHAR_CAP = 1000
 def is_enabled() -> bool:
 	"""Feature-flag check for the mode orchestrator.
 
-	Off by default. Accepts 1/true/yes (case-insensitive) - matches the
-	parsing convention used by ALFRED_REFLECTION_ENABLED and
-	ALFRED_TRACING_ENABLED.
+	Default is False (see alfred.config.Settings). Pydantic coerces
+	"1"/"true"/"yes"/"on" to True; anything else — including garbage
+	strings like "maybe" or empty "" that would otherwise raise
+	ValidationError at Settings construction — is treated as disabled.
 	"""
-	return os.environ.get("ALFRED_ORCHESTRATOR_ENABLED", "").strip().lower() in {
-		"1", "true", "yes", "on",
-	}
+	from pydantic import ValidationError
+
+	from alfred.config import get_settings
+	try:
+		return get_settings().ALFRED_ORCHESTRATOR_ENABLED
+	except ValidationError:
+		# Malformed flag value in the env should never crash the
+		# pipeline; default to the safe off state.
+		return False
+
 
 # Exact-match greetings and short conversational turns. Hit here means no
 # LLM call. Keep this set small and obvious - anything borderline should
@@ -214,7 +208,7 @@ def _normalize_mode(mode: str | None) -> str | None:
 	return val if val in _VALID_MODES else None
 
 
-def _has_active_plan(memory: "ConversationMemory | None") -> bool:
+def _has_active_plan(memory: ConversationMemory | None) -> bool:
 	"""Check if the conversation has an active plan the user could reference.
 
 	Phase C adds a proper `active_plan` slot on ConversationMemory. Until
@@ -290,13 +284,26 @@ def _parse_classifier_output(text: str) -> tuple[str | None, str, str]:
 
 	try:
 		parsed = json.loads(cleaned)
-	except Exception:
+	except json.JSONDecodeError:
+		# Local model wrapped JSON in prose; try the first balanced
+		# {...} block in the cleaned text.
 		match = _JSON_OBJECT_RE.search(cleaned)
 		if not match:
+			# Log once so prompt regressions are visible — the fallback
+			# path silently picked "low" confidence for weeks before
+			# (master c124f9b).
+			logger.warning(
+				"mode classifier JSON parse failed, no object match in output: %r",
+				cleaned[:160],
+			)
 			return None, "", "low"
 		try:
 			parsed = json.loads(match.group(0))
-		except Exception:
+		except json.JSONDecodeError:
+			logger.warning(
+				"mode classifier JSON parse failed on regex-extracted object: %r",
+				match.group(0)[:160],
+			)
 			return None, "", "low"
 
 	if not isinstance(parsed, dict):
@@ -352,24 +359,28 @@ async def _classify_with_llm(
 		)
 		logger.debug("Orchestrator classifier raw output: %r", raw[:300])
 		return _parse_classifier_output(raw)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — LLM-boundary contract; tests (test_llm_fallbacks etc) mock ollama_chat with RuntimeError to verify any backend failure falls back to low-confidence rather than crashing the orchestrator
 		logger.warning("Orchestrator classifier call failed: %s: %s", type(e).__name__, e)
 		return None, "", "low"
 
 
 async def classify_mode(
 	prompt: str,
-	memory: "ConversationMemory | None",
+	memory: ConversationMemory | None,
 	manual_override: str | None,
 	site_config: dict,
+	force_dev_override: bool = False,
 ) -> ModeDecision:
 	"""Decide which mode should handle this prompt.
 
 	Priority order:
-	  1. Manual override (if != "auto") - LLM skipped
-	  2. Fast-path match (greetings, imperative build prefixes) - LLM skipped
-	  3. LLM classifier call
-	  4. Confidence-based fallback if classifier fails or returns low confidence
+	  1. Analytics-shape redirect: if manual override is "dev" but the prompt
+	     is a read-side analytics / Q&A phrasing, redirect to insights (unless
+	     ``force_dev_override`` is set — the user clicked "Run in Dev anyway").
+	  2. Manual override (if != "auto") - LLM skipped
+	  3. Fast-path match (greetings, imperative build prefixes) - LLM skipped
+	  4. LLM classifier call
+	  5. Confidence-based fallback if classifier fails or returns low confidence
 
 	Never raises - always returns a valid ModeDecision. On complete failure
 	returns a safe-default chat decision. Every decision increments the
@@ -377,18 +388,43 @@ async def classify_mode(
 	can see whether the classifier LLM is actually running in production
 	vs always falling back.
 	"""
+	# Imported lazily to avoid a circular import at module load time
+	# (orchestrator.intent re-uses the analytics-query detector).
 	from alfred.obs.metrics import orchestrator_decisions_total
+	from alfred.orchestrator.intent import _looks_like_analytics_query
 
 	def _record(decision: ModeDecision) -> ModeDecision:
 		try:
 			orchestrator_decisions_total.labels(
 				source=decision.source, mode=decision.mode,
 			).inc()
-		except Exception:
+		except Exception:  # noqa: BLE001 — metrics best-effort; must not block the mode decision from reaching the caller
 			pass
 		return decision
 
 	override = _normalize_override(manual_override)
+
+	# Hybrid redirect: "Dev" override + analytics-shape prompt → route to
+	# insights and surface a banner source so the UI can offer a one-click
+	# "Run in Dev anyway" that re-sends with force_dev_override=True.
+	# Without this, a user with the Dev toggle flipped on asks an analytics
+	# question and the generic Developer hallucinates a changeset.
+	if (
+		override == "dev"
+		and not force_dev_override
+		and _looks_like_analytics_query(prompt)
+	):
+		return _record(ModeDecision(
+			mode="insights",
+			reason=(
+				"Prompt looks like an analytics / Q&A request; routed to "
+				"Insights even though Dev was selected. Click 'Run in Dev "
+				"anyway' to override."
+			),
+			confidence="high",
+			source="analytics_redirect",
+		))
+
 	if override != "auto":
 		return _record(ModeDecision(
 			mode=override,
@@ -410,15 +446,21 @@ async def classify_mode(
 	if memory is not None:
 		try:
 			memory_context = memory.render_for_prompt()
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001 — memory is a duck-typed input (test_memory_render_failure_does_not_crash uses a custom class that raises RuntimeError); render must never crash classify_mode regardless of which subclass the caller provided
 			logger.warning("memory.render_for_prompt failed: %s", e)
 			memory_context = ""
 
 	try:
-		mode, reason, confidence = await _classify_with_llm(
+		# Lazy re-import so tests that patch
+		# ``alfred.orchestrator._classify_with_llm`` affect this call
+		# site. Without the indirection, classify_mode would resolve
+		# the local-module attribute and bypass the package-level
+		# patch that existed before the TD-H2 split.
+		from alfred.orchestrator import _classify_with_llm as _llm
+		mode, reason, confidence = await _llm(
 			prompt, memory_context, site_config or {}
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — defensive; _classify_with_llm catches its own LLM/network exceptions and never raises in normal use, but a logic bug here must not crash the whole mode decision
 		logger.warning("Orchestrator classifier wrapper raised: %s", e)
 		mode, reason, confidence = None, "", "low"
 
@@ -549,7 +591,7 @@ async def classify_intent(prompt: str, site_config: dict) -> IntentDecision:
 			confidence="medium" if tag != "unknown" else "low",
 			source="classifier",
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — classifier boundary; LLM/network/parse failures must degrade to intent=unknown so the pipeline still runs
 		logger.warning("Intent classifier failed: %s", e)
 		return IntentDecision(
 			intent="unknown",
@@ -632,6 +674,7 @@ async def detect_module(
 	registry = _ModuleRegistry.load()
 	module_key, confidence = registry.detect(prompt=prompt, target_doctype=target_doctype)
 	if module_key is not None:
+		assert confidence is not None  # detect() pairs them
 		return ModuleDecision(
 			module=module_key,
 			reason=f"matched heuristic ({confidence}) for {module_key}",
@@ -654,7 +697,7 @@ async def detect_module(
 			confidence="medium",
 			source="classifier",
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — classifier boundary; LLM/network/parse failures must degrade to module=None so the pipeline still runs
 		logger.warning("Module classifier failed: %s", e)
 		return ModuleDecision(
 			module=None,
@@ -733,7 +776,7 @@ async def detect_modules(
 			reason=f"LLM classifier returned {tag}",
 			confidence="medium", source="classifier",
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — classifier boundary; LLM/network/parse failures must degrade to module=None so the pipeline still runs
 		logger.warning("Multi-module classifier failed: %s", e)
 		return ModulesDecision(
 			module=None, secondary_modules=[],

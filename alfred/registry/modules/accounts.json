@@ -1,48 +1,123 @@
 {
 	"module": "accounts",
+	"family": "transactions",
 	"display_name": "Accounts",
 	"frappe_module_key": "Accounts",
-	"backstory": "You are the Alfred ERPNext Accounts domain authority. You know GL posting on_submit of submittable documents, Cost Center / Party Type / Account Head conventions, multi-currency handling and exchange rate sources, Accounts Manager vs Accounts User role separation, period-lock and fiscal-year and posting-date discipline. The anti-patterns you catch include bypassing GL, skipping party validation, and hardcoding currency without an exchange_rate field.",
+	"backstory": "You are the Alfred ERPNext Accounts domain authority. You know that Sales Invoice, Purchase Invoice, Journal Entry, and Payment Entry are the ONLY Accounts DocTypes that post to General Ledger on submit - other submittables (Sales Order, Purchase Order, Delivery Note, Purchase Receipt) post to the Stock Ledger, not GL. You know the Payment Schedule vs Payment Terms Template split: Payment Terms Template is the RULE SET (frequency, condition) that generates Payment Schedule rows, which are the LEDGER of when amounts are due against an invoice. You know Payment Entry has no direct GL posting path - it reconciles against existing invoices via the advances child table; the actual GL rows live in Advance Payment Ledger Entry (accounts/doctype/advance_payment_ledger_entry). You know Tax Withholding (TDS / VAT) fires from Supplier.tax_withholding_category OR Supplier.tax_withholding_group - two distinct paths both checked via PurchaseTaxWithholding.on_validate (purchase_invoice.py:302); either source of truth is valid but the specialist must emit the correct one. You know multi-currency requires conversion_rate AND company_currency; accounts_controller.py:2977 surfaces a warning when currency != company_currency but conversion_rate is 1.0. You know POS Invoice extends Sales Invoice with is_consolidated semantics - consolidated POS Invoices bypass loyalty point recompute (sales_invoice.py:516-525). You know Subscription auto-renews billing cycles with service_stop_date driving deferred-revenue handling. Anti-patterns you catch: bypassing party_type/party validation; hardcoding currency without exchange_rate; posting GL from non-GL-posting DocTypes; missing release_date on on_hold=1 Purchase Invoice.",
 	"conventions": {
 		"permissions_add_roles": [
 			{"role": "Accounts Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
-			{"role": "Accounts User", "read": 1, "write": 1, "create": 1, "delete": 0}
+			{"role": "Accounts User", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Sales Manager", "read": 1, "write": 0, "create": 0, "delete": 0},
+			{"role": "Purchase Manager", "read": 1, "write": 0, "create": 0, "delete": 0}
 		],
-		"naming_patterns": ["format:ACC-.YYYY.-.####"],
-		"typical_linked_doctypes": ["Customer", "Supplier", "Item", "Cost Center", "Account"],
-		"required_hooks_for_submittable": ["on_submit_gl_posting"],
+		"naming_patterns": [
+			"format:ACC-JV-.YYYY.-.#####",
+			"format:ACC-PAY-.YYYY.-.#####",
+			"format:ACC-SINV-.YYYY.-.#####",
+			"format:ACC-PINV-.YYYY.-.#####",
+			"format:ACC-GL-.YYYY.-.#####"
+		],
+		"typical_linked_doctypes": [
+			"Customer", "Supplier", "Item", "Cost Center", "Account",
+			"Advance Payment Ledger Entry", "Tax Category",
+			"Subscription", "Payment Terms Template",
+			"Tax Withholding Category", "Fiscal Year"
+		],
+		"required_hooks_for_submittable": [
+			"on_submit_gl_posting_for_Sales_Invoice",
+			"on_submit_gl_posting_for_Purchase_Invoice",
+			"on_submit_gl_posting_for_Journal_Entry",
+			"on_submit_gl_posting_for_Payment_Entry_via_advance_ledger"
+		],
 		"gotchas": [
-			"All submittable DocTypes should post to General Ledger via on_submit hook",
-			"Multi-currency fields require explicit exchange_rate and validation",
-			"Posting date controls GL entry sequencing - never set it from the client",
-			"Fiscal year must be derived, not user-provided"
+			"Only Sales Invoice, Purchase Invoice, Journal Entry, and Payment Entry post to GL on submit. Sales Order / Purchase Order / Delivery Note / Purchase Receipt post to Stock Ledger instead - teaching the agent to add on_submit GL hooks to non-GL doctypes is wrong.",
+			"Payment Schedule is the DUE-AMOUNT LEDGER generated from Payment Terms Template on each Sales Invoice / Purchase Invoice. Users who ask about 'payment terms' usually mean the template; users who ask about 'payment due dates' usually mean the schedule.",
+			"Payment Entry advances table is a reconciliation ledger, NOT GL. Advance Payment Ledger Entry is the actual GL posting path.",
+			"Multi-currency: conversion_rate must be set AND company_currency != currency (accounts_controller.py:2974-2980). If conversion_rate=1.0 with different currencies, ERPNext emits a msgprint warning; blocker at the Party Account Currency level (2442-2466).",
+			"Sales Invoice.is_return=1 requires return_against linking a submittable SI/DN (sales_invoice.py:358). Return without return_against rejects at validate.",
+			"Purchase Invoice.apply_tds=1 requires tax_withholding_category OR tax_withholding_group sourced from Supplier (purchase_invoice.py:248,302).",
+			"Purchase Invoice.on_hold=1 requires release_date (purchase_invoice.py:316-318). on_hold blocks GL posting until release_date passes.",
+			"POS Invoice with is_consolidated=1 bypasses loyalty point recompute to prevent double-counting (sales_invoice.py:514-526). Do NOT treat a consolidated POS Invoice like a standalone Sales Invoice.",
+			"Subscription lifecycle: auto-renewal billing cycles, service_stop_date drives deferred revenue. Subscription Plans bind recurring billing to Customer + Item + Quantity.",
+			"Tax Category is tax-rule-by-counterparty (customer / supplier), distinct from Sales / Purchase Taxes and Charges Templates (which are rate lists). Both cascade into the final invoice tax rows.",
+			"Posting date controls GL entry sequencing. Never set posting_date from the client - derive it from submission context or leave it blank (Frappe defaults to today).",
+			"Fiscal Year must be derived from the posting date via get_fiscal_year, not user-provided. Cross-fiscal-year entries fail period-close validation."
 		]
 	},
 	"validation_rules": [
 		{
-			"id": "accounts_submittable_needs_gl",
+			"id": "accounts_sales_invoice_return_needs_return_against",
+			"severity": "blocker",
+			"when": {"doctype": "Sales Invoice", "data.is_return": 1},
+			"message": "Sales Invoice with is_return=1 MUST link a return_against (another submitted Sales Invoice or Delivery Note). sales_invoice.py:358 rejects the save otherwise.",
+			"fix": "Set data.return_against to the original Sales Invoice or Delivery Note the return is against."
+		},
+		{
+			"id": "accounts_purchase_invoice_tds_needs_category",
 			"severity": "warning",
-			"when": {"doctype": "DocType", "data.is_submittable": 1},
-			"message": "Submittable Accounts DocTypes conventionally post GL entries on submit. No on_submit hook detected in the changeset.",
-			"fix": "Add a Server Script with doctype_event='on_submit' and reference_doctype=<this DocType> that inserts a GL Entry."
+			"when": {"doctype": "Purchase Invoice", "data.apply_tds": 1},
+			"message": "Purchase Invoice with apply_tds=1 expects tax_withholding_category OR tax_withholding_group sourced from the Supplier. Without either, PurchaseTaxWithholding.on_validate (purchase_invoice.py:302) errors if the threshold is exceeded.",
+			"fix": "Set data.tax_withholding_category (or tax_withholding_group) on the Supplier so the invoice inherits it on onload, or set it explicitly on the Purchase Invoice."
+		},
+		{
+			"id": "accounts_multicurrency_conversion_rate_check",
+			"severity": "warning",
+			"when": {"doctype": "Sales Invoice", "data.currency": "!=company_currency", "data.conversion_rate": 1},
+			"message": "Sales Invoice with currency != company_currency but conversion_rate=1.0 almost certainly means the rate was not fetched. accounts_controller.py:2977 emits a msgprint warning at validate.",
+			"fix": "Fetch the exchange rate via erpnext.setup.utils.get_exchange_rate(from_currency, to_currency, transaction_date) and set conversion_rate on the invoice."
+		},
+		{
+			"id": "accounts_purchase_invoice_on_hold_needs_release_date",
+			"severity": "blocker",
+			"when": {"doctype": "Purchase Invoice", "data.on_hold": 1},
+			"message": "Purchase Invoice with on_hold=1 REQUIRES release_date. purchase_invoice.py:316-318 rejects the save otherwise. on_hold blocks payment until release_date passes.",
+			"fix": "Set data.release_date to the date after which the on-hold invoice can be paid."
+		},
+		{
+			"id": "accounts_pos_invoice_needs_pos_profile",
+			"severity": "blocker",
+			"when": {"doctype": "POS Invoice"},
+			"message": "POS Invoice requires pos_profile to be set. Without it the document cannot render the POS UI and payment mode defaults fail.",
+			"fix": "Set data.pos_profile to an existing POS Profile for the target Company."
+		},
+		{
+			"id": "accounts_submittable_non_posting_doctype",
+			"severity": "advisory",
+			"when": {"doctype": "DocType", "data.is_submittable": 1, "data.module": "Accounts"},
+			"message": "New submittable Accounts DocType detected. Only Sales Invoice, Purchase Invoice, Journal Entry, and Payment Entry post to GL on submit in standard ERPNext. If this DocType is meant to post GL entries, add an explicit Server Script with doctype_event='on_submit'.",
+			"fix": "Add a Server Script reference_doctype=<this DocType>, doctype_event='on_submit', script that inserts GL Entry rows with the correct debit / credit sides."
 		},
 		{
 			"id": "accounts_needs_accounts_manager_perm",
 			"severity": "advisory",
-			"when": {"doctype": "DocType"},
-			"message": "Accounts DocTypes typically include an 'Accounts Manager' permission row.",
-			"fix": "Add {role: 'Accounts Manager', read: 1, write: 1, create: 1, delete: 1} to permissions."
+			"when": {"doctype": "DocType", "data.module": "Accounts"},
+			"message": "Accounts DocTypes typically include Accounts Manager (full) and Accounts User (no delete) permission rows.",
+			"fix": "Add {role: 'Accounts Manager', read: 1, write: 1, create: 1, delete: 1} and {role: 'Accounts User', read: 1, write: 1, create: 1, delete: 0} to permissions."
 		}
 	],
 	"detection_hints": {
 		"target_doctype_matches": [
 			"Sales Invoice", "Purchase Invoice", "Journal Entry", "Payment Entry",
-			"GL Entry", "Cost Center", "Account", "Fiscal Year", "Currency Exchange"
+			"GL Entry", "Cost Center", "Account", "Fiscal Year", "Currency Exchange",
+			"Subscription", "Subscription Plan",
+			"Payment Schedule", "Payment Terms Template",
+			"POS Invoice", "POS Profile",
+			"Tax Category", "Tax Withholding Category", "Tax Rule",
+			"Loyalty Program", "Loyalty Point Entry",
+			"Budget", "Accounting Period", "Period Closing Voucher",
+			"Advance Payment Ledger Entry",
+			"Bank Account", "Bank Transaction", "Bank Statement"
 		],
 		"keyword_hints": [
-			"accounting", "ledger", "gl", "invoice", "journal entry",
-			"payment entry", "cost center", "fiscal year", "currency exchange",
-			"general ledger", "account head"
+			"accounting", "ledger", "gl", "general ledger", "invoice",
+			"journal entry", "payment entry", "payment schedule", "payment terms",
+			"cost center", "fiscal year", "currency exchange", "account head",
+			"subscription", "subscription plan", "recurring invoice",
+			"pos invoice", "pos profile", "point of sale",
+			"tax category", "tax rule", "tax withholding", "tds", "vat",
+			"loyalty program", "loyalty points",
+			"budget", "period close", "bank account", "bank transaction"
 		]
 	}
 }

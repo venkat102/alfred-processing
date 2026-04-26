@@ -29,8 +29,8 @@ the tracer doesn't natively expose.
 
 from __future__ import annotations
 
-from prometheus_client import CollectorRegistry, Counter, Histogram
 from prometheus_client import REGISTRY as DEFAULT_REGISTRY
+from prometheus_client import CollectorRegistry, Counter, Histogram
 
 # Using the default registry so make_asgi_app() finds everything without
 # explicit threading. If tests need isolation they can reset via the
@@ -89,6 +89,38 @@ crew_rescue_total = Counter(
 	labelnames=("outcome",),
 )
 
+rate_limit_block_total = Counter(
+	"alfred_rate_limit_block_total",
+	"Requests blocked by the per-user rate limit. source=rest|websocket "
+	"distinguishes the entry path; a spike on websocket with rest flat "
+	"usually means a compromised client is flooding prompts (LLM DoS / "
+	"cost exhaustion).",
+	labelnames=("source",),
+)
+
+ssrf_block_total = Counter(
+	"alfred_ssrf_block_total",
+	"Outbound LLM URLs rejected by the SSRF allow-list. reason=bad_scheme "
+	"|no_host|dns_fail|private_ip|host_not_allowed. A spike on private_ip "
+	"usually means a compromised client is probing for internal services "
+	"(cloud metadata, Redis, admin portals).",
+	labelnames=("reason",),
+)
+
+# Rate limiting degrades to fail-open when Redis is unavailable (the
+# decision we made: a transient Redis blip must not hard-block every
+# user request). That's operationally correct but invisible - this
+# counter makes it visible so operators can alert on a sustained
+# non-zero rate. A brief spike during a Redis restart is fine; a
+# sustained rate means rate limiting is effectively off.
+rate_limit_degraded_total = Counter(
+	"alfred_rate_limit_degraded_total",
+	"Rate-limit checks that bypassed enforcement because Redis was "
+	"unavailable. reason is 'no_client' (no redis was ever configured) "
+	"or 'redis_error' (call raised an exception).",
+	labelnames=("reason",),
+)
+
 
 def reset_for_tests() -> None:
 	"""Reset all metric samples. Call from test setup only.
@@ -104,8 +136,14 @@ def reset_for_tests() -> None:
 		llm_errors_total,
 		crew_drift_total,
 		crew_rescue_total,
+		rate_limit_block_total,
+		ssrf_block_total,
+		rate_limit_degraded_total,
 	):
 		try:
-			m._metrics.clear()  # type: ignore[attr-defined]
-		except Exception:
+			m._metrics.clear()
+		except AttributeError:
+			# prometheus_client renamed/removed the private _metrics dict
+			# in this version. Test reset is best-effort; let metrics
+			# accumulate across tests rather than crash the suite.
 			pass

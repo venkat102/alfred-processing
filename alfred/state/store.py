@@ -20,6 +20,13 @@ logger = logging.getLogger("alfred.state")
 # Maximum events per conversation stream to prevent unbounded growth
 DEFAULT_STREAM_MAXLEN = 10_000
 
+# Default key-level TTL for event streams. Refreshed on every push, so an
+# active conversation's stream stays indefinitely while a conversation
+# idle for >7 days auto-expires. Caps Redis memory against the pathology
+# of "every conversation ever created, kept forever even after abandoned"
+# - maxlen alone only bounds entries-per-stream, not stream count.
+DEFAULT_STREAM_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
 # Regex for valid identifiers (alphanumeric, hyphens, dots, underscores)
 _VALID_ID = re.compile(r"^[a-zA-Z0-9._-]+$")
 
@@ -40,9 +47,18 @@ class StateStore:
 	isolation between customer sites.
 	"""
 
-	def __init__(self, redis: aioredis.Redis, stream_maxlen: int = DEFAULT_STREAM_MAXLEN):
+	def __init__(
+		self,
+		redis: aioredis.Redis,
+		stream_maxlen: int = DEFAULT_STREAM_MAXLEN,
+		stream_ttl_seconds: int = DEFAULT_STREAM_TTL_SECONDS,
+	):
 		self._redis = redis
 		self._stream_maxlen = stream_maxlen
+		# TTL of 0 disables auto-expiry (opt-out for tests or specialised
+		# deployments that want permanent event retention); negative values
+		# are treated the same. Normal runs use the 7-day default.
+		self._stream_ttl_seconds = stream_ttl_seconds if stream_ttl_seconds > 0 else 0
 
 	def _key(self, site_id: str, *parts: str) -> str:
 		"""Build a namespaced Redis key."""
@@ -51,16 +67,25 @@ class StateStore:
 
 	# ── Task State CRUD ──────────────────────────────────────────────
 
-	async def set_task_state(self, site_id: str, task_id: str, state_dict: dict[str, Any]) -> None:
-		"""Store or update task state as JSON.
+	async def set_task_state(
+		self,
+		site_id: str,
+		task_id: str,
+		state_dict: dict[str, Any],
+		ttl_seconds: int | None = None,
+	) -> None:
+		"""Store or update task state as JSON with a TTL.
 
 		Args:
 			site_id: Customer site identifier.
 			task_id: Unique task identifier.
 			state_dict: Serializable dict representing the task state.
+			ttl_seconds: Override the default TTL (Settings.TASK_STATE_TTL_SECONDS,
+				7 days). Must be > 0. Without a TTL the blob lives forever and
+				Redis eventually OOMs — see TD-H5 in docs/tech-debt-backlog.md.
 
 		Raises:
-			ValueError: If site_id or task_id is invalid.
+			ValueError: If site_id, task_id, or ttl_seconds is invalid.
 			TypeError: If state_dict is not JSON-serializable.
 			redis.exceptions.ConnectionError: If Redis is unavailable.
 		"""
@@ -71,8 +96,16 @@ class StateStore:
 		except (TypeError, ValueError) as e:
 			raise TypeError(f"state_dict is not JSON-serializable: {e}") from e
 
-		await self._redis.set(key, value)
-		logger.debug("Set task state: %s", key)
+		if ttl_seconds is None:
+			# Late import so this module stays independent of app config
+			# when used in unit tests that don't want to load Settings.
+			from alfred.config import get_settings
+			ttl_seconds = get_settings().TASK_STATE_TTL_SECONDS
+		if ttl_seconds <= 0:
+			raise ValueError(f"ttl_seconds must be positive, got {ttl_seconds}")
+
+		await self._redis.setex(key, ttl_seconds, value)
+		logger.debug("Set task state: %s (ttl=%ds)", key, ttl_seconds)
 
 	async def get_task_state(self, site_id: str, task_id: str) -> dict[str, Any] | None:
 		"""Retrieve task state.
@@ -129,6 +162,20 @@ class StateStore:
 			{"data": event_json},
 			maxlen=self._stream_maxlen,
 		)
+		# Refresh key-level TTL on every push. An active conversation that
+		# keeps emitting events stays alive; a stream that goes silent for
+		# stream_ttl_seconds gets reaped automatically. Cheap second call
+		# to the same Redis node; no pipelining to avoid tangling the
+		# xadd return value we just promised the caller.
+		if self._stream_ttl_seconds > 0:
+			try:
+				await self._redis.expire(key, self._stream_ttl_seconds)
+			except Exception as e:  # noqa: BLE001 — pre-existing master broad catch (best-effort path; revisit in TD-H3 follow-up)
+				# Expiry refresh is best-effort; a Redis hiccup here must
+				# not fail the event push itself. Worst case the stream
+				# keeps the previous TTL (or none), which is the
+				# pre-feature behaviour.
+				logger.debug("Failed to refresh stream TTL for %s: %s", key, e)
 		logger.debug("Pushed event to %s: id=%s", key, entry_id)
 		return entry_id
 
@@ -150,8 +197,9 @@ class StateStore:
 
 		try:
 			entries = await self._redis.xrange(key, min=f"({since_id}" if since_id != "0" else "-", max="+")
-		except Exception:
-			# If since_id is invalid or stream doesn't exist, return from beginning
+		except aioredis.ResponseError:
+			# Invalid since_id (malformed stream ID) - retry without it.
+			# Other RedisError types (connection failures etc.) propagate.
 			logger.warning("Failed to read from %s since %s, reading from start", key, since_id)
 			entries = await self._redis.xrange(key, min="-", max="+")
 
@@ -199,6 +247,8 @@ class StateStore:
 		"""Check if Redis is reachable by sending a PING command."""
 		try:
 			return await self._redis.ping()
-		except Exception as e:
+		except (aioredis.RedisError, OSError) as e:
+			# RedisError covers connection/auth/timeout from the redis client.
+			# OSError covers underlying socket failures that escape the wrapper.
 			logger.error("Redis health check failed: %s", e)
 			return False

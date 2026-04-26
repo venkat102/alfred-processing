@@ -27,6 +27,8 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
 if TYPE_CHECKING:
 	from alfred.api.websocket import ConnectionState
 
@@ -74,7 +76,9 @@ def _parse_plan_doc_json(raw: str) -> dict | None:
 		parsed = json.loads(cleaned)
 		if isinstance(parsed, dict):
 			return parsed
-	except Exception:
+	except json.JSONDecodeError:
+		# Local model wrapped JSON in prose — fall through to the
+		# balanced-block scan below.
 		pass
 
 	# Fallback: find the first balanced { ... } block via JSONDecoder.
@@ -86,7 +90,8 @@ def _parse_plan_doc_json(raw: str) -> dict | None:
 			parsed, _end = decoder.raw_decode(cleaned[idx:])
 			if isinstance(parsed, dict):
 				return parsed
-		except Exception:
+		except json.JSONDecodeError:
+			# This `{` didn't open a valid JSON object — keep scanning.
 			continue
 	return None
 
@@ -102,12 +107,18 @@ def _validate_as_plan_doc(raw_obj: dict, user_prompt: str) -> dict:
 	try:
 		plan = PlanDoc.model_validate(raw_obj)
 		return plan.model_dump()
-	except Exception as e:
+	except ValidationError as e:
+		# Pydantic schema mismatch — fall back to the stub plan rather
+		# than surface a 30-line traceback to the user. Other Exception
+		# types here would be a logic bug; let them propagate.
 		logger.warning(
 			"Plan doc validation failed: %s. Raw keys=%s",
 			e,
 			list(raw_obj.keys()) if isinstance(raw_obj, dict) else "(not a dict)",
 		)
+		preview = ""
+		if isinstance(raw_obj, dict):
+			preview = json.dumps(raw_obj)[:500]
 		stub = PlanDoc.stub(
 			title="Plan could not be parsed",
 			summary=(
@@ -115,21 +126,23 @@ def _validate_as_plan_doc(raw_obj: dict, user_prompt: str) -> dict:
 				"expected shape. Try rephrasing your request, or switch to "
 				"Dev mode if you want to go straight to a build."
 			),
+			parse_failed=True,
+			parse_failure_detail=(
+				f"Schema validation failed: {e}. Raw output (truncated): {preview}"
+				if preview
+				else f"Schema validation failed: {e}"
+			),
 		)
 		# Keep whatever we can salvage from the raw output in open_questions
 		# so the user has SOMETHING to look at.
-		if isinstance(raw_obj, dict):
-			preview = json.dumps(raw_obj)[:400]
-			if preview:
-				stub.open_questions = [
-					f"Raw agent output (truncated): {preview}"
-				]
+		if preview:
+			stub.open_questions = [f"Raw agent output (truncated): {preview}"]
 		return stub.model_dump()
 
 
 async def handle_plan(
 	prompt: str,
-	conn: "ConnectionState",
+	conn: ConnectionState,
 	conversation_id: str,
 	user_context: dict,
 	event_callback=None,
@@ -183,7 +196,7 @@ async def handle_plan(
 			site_config=conn.site_config or {},
 			custom_tools=custom_tools,
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — CrewAI builder boundary; same as handlers/insights.py for build_insights_crew. 3rd-party agent factory; degrade to stub plan.
 		logger.warning("Failed to build plan crew: %s", e, exc_info=True)
 		return PlanDoc.stub(
 			title="Plan unavailable",
@@ -191,6 +204,8 @@ async def handle_plan(
 				"I couldn't spin up the planning crew just now. "
 				"Try again in a moment."
 			),
+			parse_failed=True,
+			parse_failure_detail=f"Crew build failed: {e}",
 		).model_dump()
 
 	try:
@@ -202,7 +217,7 @@ async def handle_plan(
 			conversation_id=conversation_id,
 			event_callback=event_callback,
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — CrewAI run_crew boundary; same as handlers/insights.py. LLM/tool/Redis raises must degrade to a stub plan rather than crash the chat.
 		logger.warning("Plan crew run raised: %s", e, exc_info=True)
 		return PlanDoc.stub(
 			title="Plan crew failed",
@@ -210,6 +225,8 @@ async def handle_plan(
 				"The planning agents hit an error partway through. "
 				f"Try again in a moment. Details: {e}"
 			),
+			parse_failed=True,
+			parse_failure_detail=f"Plan crew raised: {e}",
 		).model_dump()
 
 	if not isinstance(result, dict) or result.get("status") != "completed":
@@ -220,6 +237,10 @@ async def handle_plan(
 			summary=(
 				"The planning crew didn't produce a usable plan. "
 				+ (f"Details: {err}" if err else "Try rephrasing your request.")
+			),
+			parse_failed=True,
+			parse_failure_detail=(
+				f"Crew status was not 'completed': {err or 'unknown'}"
 			),
 		).model_dump()
 
@@ -235,6 +256,10 @@ async def handle_plan(
 			summary=(
 				"The planning agents produced output but I couldn't parse "
 				"it as JSON. Try rephrasing your request."
+			),
+			parse_failed=True,
+			parse_failure_detail=(
+				f"JSON parse failed. Raw output (truncated): {raw_text[:500]}"
 			),
 		).model_dump()
 

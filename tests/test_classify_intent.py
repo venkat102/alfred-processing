@@ -101,3 +101,66 @@ async def test_heuristic_matches_build_a_report():
 	)
 	assert decision.intent == "create_report"
 	assert decision.source == "heuristic"
+
+
+# ── Analytics guardrail (dev-side Insights short-circuit) ─────────
+
+
+@pytest.mark.asyncio
+async def test_analytics_prompt_short_circuits_to_unknown():
+	# Regression: "Show top 10 customers by revenue this quarter" used to
+	# hit the LLM classifier which mis-picked create_workflow (or any of
+	# the 22 intents), and the Builder specialist then hallucinated a
+	# full Workflow changeset. Dev-side guardrail must catch it even
+	# when mode somehow landed on dev.
+	with patch(
+		"alfred.orchestrator._classify_intent_llm",
+		new=AsyncMock(return_value="create_workflow"),
+	) as llm:
+		decision = await classify_intent(
+			"Show top 10 customers by revenue this quarter", site_config={},
+		)
+		llm.assert_not_awaited()
+		assert decision.intent == "unknown"
+		assert decision.source == "analytics_guardrail"
+		assert decision.confidence == "high"
+
+
+@pytest.mark.asyncio
+async def test_interrogative_prompt_short_circuits_to_unknown():
+	with patch(
+		"alfred.orchestrator._classify_intent_llm",
+		new=AsyncMock(return_value="create_doctype"),
+	) as llm:
+		decision = await classify_intent(
+			"What DocTypes do I have on this site?", site_config={},
+		)
+		llm.assert_not_awaited()
+		assert decision.intent == "unknown"
+		assert decision.source == "analytics_guardrail"
+
+
+@pytest.mark.asyncio
+async def test_list_my_prompt_short_circuits_to_unknown():
+	with patch(
+		"alfred.orchestrator._classify_intent_llm",
+		new=AsyncMock(return_value="create_notification"),
+	) as llm:
+		decision = await classify_intent(
+			"List my active notifications", site_config={},
+		)
+		llm.assert_not_awaited()
+		assert decision.intent == "unknown"
+		assert decision.source == "analytics_guardrail"
+
+
+@pytest.mark.asyncio
+async def test_build_verb_still_beats_analytics_shape():
+	# Analytics guardrail must not swallow explicit build requests that
+	# happen to mention analytics nouns. "Create a report for top X"
+	# still routes to create_report via the heuristic pass.
+	decision = await classify_intent(
+		"Create a report listing top customers by revenue", site_config={},
+	)
+	assert decision.intent == "create_report"
+	assert decision.source == "heuristic"

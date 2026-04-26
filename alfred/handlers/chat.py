@@ -57,7 +57,7 @@ Rules:
 
 async def handle_chat(
 	prompt: str,
-	memory: "ConversationMemory | None",
+	memory: ConversationMemory | None,
 	user_context: dict,
 	site_config: dict,
 ) -> str:
@@ -80,7 +80,7 @@ async def handle_chat(
 	if memory is not None:
 		try:
 			memory_context = memory.render_for_prompt()
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001 — memory is duck-typed; same reasoning as alfred.orchestrator.classify_mode (broad catch is contractual per test_memory_render_failure_does_not_crash)
 			logger.warning("memory.render_for_prompt failed in chat handler: %s", e)
 
 	system_parts = [_SYSTEM_PROMPT]
@@ -103,7 +103,7 @@ async def handle_chat(
 		)
 		if reply and reply.strip():
 			return reply.strip()
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — LLM-boundary contract; any backend failure (OllamaError, timeout, runtime error from mocks) degrades to the canned fallback reply rather than surfacing the error to chat
 		logger.warning("Chat handler LLM call failed: %s", e)
 
 	return (

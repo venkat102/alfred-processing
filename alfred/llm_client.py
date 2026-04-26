@@ -15,9 +15,11 @@ NOT used by: CrewAI agent calls (CrewAI manages its own litellm internally).
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
+import threading
 import urllib.error
 import urllib.request
 from typing import Any
@@ -28,6 +30,40 @@ logger = logging.getLogger("alfred.llm_client")
 TIER_TRIAGE = "triage"
 TIER_REASONING = "reasoning"
 TIER_AGENT = "agent"
+
+
+# TD-H6 Phase 1: dedicated executor for LLM calls. Lazy-initialised on
+# first use so the pool size can be read from Settings (which needs the
+# FastAPI lifespan to set API_SECRET_KEY etc. in test environments).
+# Threads are named `alfred-llm-*` so ps/jstack output distinguishes
+# LLM-bound threads from FastAPI's default workers.
+_llm_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_llm_executor_lock = threading.Lock()
+
+
+def _get_llm_executor() -> concurrent.futures.ThreadPoolExecutor:
+	"""Return the singleton LLM executor, initialising on first call.
+
+	Read LLM_POOL_SIZE from Settings; fall back to 16 if Settings
+	refuses to load (e.g., standalone script use without .env).
+	"""
+	global _llm_executor
+	if _llm_executor is not None:
+		return _llm_executor
+	with _llm_executor_lock:
+		if _llm_executor is not None:  # double-check inside the lock
+			return _llm_executor
+		try:
+			from alfred.config import get_settings
+			size = get_settings().LLM_POOL_SIZE
+		except Exception:  # noqa: BLE001 — fail-open boot path; ImportError, pydantic.ValidationError, AttributeError, or any Settings-load failure should fall back to the safe default rather than block offline utility scripts
+			size = 16
+		_llm_executor = concurrent.futures.ThreadPoolExecutor(
+			max_workers=size,
+			thread_name_prefix="alfred-llm",
+		)
+		logger.info("LLM executor initialised with %d workers", size)
+		return _llm_executor
 
 
 class OllamaError(RuntimeError):
@@ -116,6 +152,18 @@ def ollama_chat_sync(
     model, base_url, num_ctx = _resolve_ollama_config_for_tier(site_config, tier)
     ollama_model = model.removeprefix("ollama/")
 
+    # SSRF gate: client-supplied site_config.llm_base_url passes through
+    # here verbatim; validate before any network I/O. Block scheme / private-
+    # IP misuse so a compromised client can't point Alfred at cloud metadata
+    # or internal services. See alfred/security/url_allowlist.py for policy.
+    from alfred.security.url_allowlist import SsrfPolicyError, validate_llm_url
+    try:
+        validate_llm_url(base_url)
+    except SsrfPolicyError as e:
+        raise OllamaError(
+            f"LLM URL rejected by SSRF policy ({e.reason}): {e}"
+        ) from e
+
     if num_ctx_override is not None:
         num_ctx = num_ctx_override
     elif num_ctx <= 0 and model.startswith("ollama/"):
@@ -153,7 +201,7 @@ def ollama_chat_sync(
             llm_errors_total.labels(
                 tier=tier or "default", error_type=error_type,
             ).inc()
-        except Exception:
+        except Exception:  # noqa: BLE001 — metrics best-effort; must never shadow the actual LLM error from the caller
             pass
 
     try:
@@ -163,7 +211,9 @@ def ollama_chat_sync(
         body = ""
         try:
             body = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
+        except (OSError, AttributeError):
+            # OSError on socket-side body-read failure; AttributeError
+            # if the HTTPError has no readable body in this urllib path.
             pass
         _record_error("http_error")
         raise OllamaError(
@@ -211,8 +261,15 @@ async def ollama_chat(
     tier: str | None = None,
     **kwargs,
 ) -> str:
-    """Async wrapper - runs ollama_chat_sync in a thread executor."""
+    """Async wrapper - runs ollama_chat_sync in the dedicated LLM pool.
+
+    TD-H6 Phase 1: uses its own ThreadPoolExecutor (see
+    ``_get_llm_executor``) instead of FastAPI's default. A spike of
+    concurrent LLM calls can't starve the rest of the event loop's
+    blocking work (heartbeat, health checks, admin calls).
+    """
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
-        None, lambda: ollama_chat_sync(messages, site_config, tier=tier, **kwargs)
+        _get_llm_executor(),
+        lambda: ollama_chat_sync(messages, site_config, tier=tier, **kwargs),
     )

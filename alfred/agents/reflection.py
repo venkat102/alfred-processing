@@ -33,12 +33,9 @@ Not in scope:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import os
 import re
-from typing import Any
 
 logger = logging.getLogger("alfred.reflection")
 
@@ -77,7 +74,8 @@ Return a single raw JSON object on one line:
 
 def _reflection_enabled() -> bool:
 	"""Feature flag check. Default off for cautious rollout."""
-	return os.environ.get("ALFRED_REFLECTION_ENABLED", "").lower() in {"1", "true", "yes"}
+	from alfred.config import get_settings
+	return get_settings().ALFRED_REFLECTION_ENABLED
 
 
 def _describe_item(item: dict) -> str:
@@ -201,7 +199,12 @@ async def reflect_minimality(
 			num_ctx_override=8192,
 			timeout=int(site_config.get("llm_timeout") or 30),
 		)
-		logger.info("Reflection raw response (first 300): %r", (raw or "")[:300])
+		# Reflection LLM output is derived from the user's changeset, which
+		# is derived from their prompt - logging 300 chars at INFO leaks
+		# user context into whatever logging pipeline production ships to.
+		# Lengths at INFO, verbatim at DEBUG.
+		logger.info("Reflection raw response: chars=%d", len(raw or ""))
+		logger.debug("Reflection raw response (first 300): %r", (raw or "")[:300])
 
 		indices, reasons = _parse_indices_strict(raw, len(changeset))
 		if not indices:
@@ -235,6 +238,6 @@ async def reflect_minimality(
 			[(r["index"], r["reason"]) for r in removed],
 		)
 		return kept, removed
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — module-level fail-safe contract per docstring: "on any parse error, timeout, or LLM failure the changeset passes through unchanged". Tests inject RuntimeError to verify the broad guarantee.
 		logger.warning("Reflection step failed, changeset passes through: %s", e)
 		return changeset, []

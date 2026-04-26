@@ -1,45 +1,103 @@
 {
 	"module": "buying",
+	"family": "transactions",
 	"display_name": "Buying",
 	"frappe_module_key": "Buying",
-	"backstory": "You are the Alfred ERPNext Buying domain authority. You know Supplier / Supplier Group / Request for Quotation / Supplier Quotation / Purchase Order / Purchase Taxes and Charges Template conventions. You know the buying lifecycle runs Material Request (Stock) -> Request for Quotation -> Supplier Quotation -> Purchase Order -> Purchase Receipt (Stock) -> Purchase Invoice (Accounts), and touching any doctype has implications for the chain. You know Buying submittable DocTypes commit procurement intent (demand reservation toward a Supplier); GL posting lives in Accounts at Purchase Invoice. You know supplier payment terms and tax withholding (TDS / VAT) are real compliance concerns. You catch anti-patterns: bypassing supplier/party validation, hardcoding currency without exchange_rate, missing tax template, letting grand_total be user-edited instead of derived from items + taxes, skipping supplier_warehouse on a drop-ship scenario.",
+	"backstory": "You are the Alfred ERPNext Buying domain authority. You know the buying lifecycle runs Material Request (Stock) -> Request for Quotation -> Supplier Quotation -> Purchase Order -> Purchase Receipt (Stock) -> Purchase Invoice (Accounts). Ledger impact diverges: Purchase Order COMMITS procurement intent (reserves supplier capacity); Purchase Receipt posts to the STOCK LEDGER via update_stock_ledger() on submit (buying_controller.py:53-67) AND to the stock/asset account if perpetual inventory is on; Purchase Invoice posts to the GENERAL LEDGER. This two-stage ledger split (PR = stock account; PI = payable + expense account) is a common source of confusion. You know Purchase Invoice can stand alone (services) OR reference a Purchase Receipt (goods) - update_stock=1 on PI without PR reference only works for service items. You know Purchase Invoice.on_hold=1 blocks GL posting until release_date passes (purchase_invoice.py:316-318) - a unique Buying-only feature. You know Subcontracting: PO with is_subcontracted=1 creates a Subcontracting Order that reserves raw materials in PO.supplied_items; Subcontracting Receipt must be raised before PI (buying_controller.py:50-67). You know Tax Withholding fires from Supplier.tax_withholding_category OR Supplier.tax_withholding_group via PurchaseTaxWithholding.on_validate (purchase_invoice.py:302). You know Landed Cost Voucher allocates post-receipt costs (freight, customs, insurance) to existing PRs - typically submitted after the PR it amends. You know Supplier Scorecard evaluates PO / PI contribution into scorecard variables at submission. Anti-patterns you catch: missing release_date on on_hold PI; PI.update_stock=1 without warehouse on a stock row (WarehouseMissingError purchase_invoice.py:47-48); re-allocating PI items without linking the PR via pr_detail causing billing mismatch (purchase_invoice.py:309).",
 	"conventions": {
 		"permissions_add_roles": [
 			{"role": "Purchase Manager", "read": 1, "write": 1, "create": 1, "delete": 1},
 			{"role": "Purchase User", "read": 1, "write": 1, "create": 1, "delete": 0},
-			{"role": "Purchase Master Manager", "read": 1, "write": 1, "create": 1, "delete": 0}
+			{"role": "Purchase Master Manager", "read": 1, "write": 1, "create": 1, "delete": 0},
+			{"role": "Accounts User", "read": 1, "write": 1, "create": 1, "delete": 0}
 		],
-		"naming_patterns": ["format:BUY-.YYYY.-.#####"],
-		"typical_linked_doctypes": ["Supplier", "Supplier Group", "Item", "Purchase Taxes and Charges Template", "Currency"],
-		"required_hooks_for_submittable": [],
+		"naming_patterns": [
+			"format:PUR-ORD-.YYYY.-.#####",
+			"format:MAT-PRE-.YYYY.-.#####",
+			"format:ACC-PINV-.YYYY.-.#####",
+			"format:PUR-SQTN-.YYYY.-.#####",
+			"format:PUR-RFQ-.YYYY.-.#####"
+		],
+		"typical_linked_doctypes": [
+			"Supplier", "Supplier Group", "Supplier Scorecard",
+			"Item", "Purchase Taxes and Charges Template", "Currency",
+			"Purchase Receipt", "Landed Cost Voucher",
+			"Subcontracting Order", "Subcontracting Receipt",
+			"Tax Withholding Category", "Warehouse"
+		],
+		"required_hooks_for_submittable": [
+			"on_submit_commit_procurement_for_Purchase_Order",
+			"on_submit_stock_ledger_posting_for_Purchase_Receipt",
+			"on_submit_create_subcontracting_order_when_is_subcontracted"
+		],
 		"gotchas": [
-			"Buying submittables commit procurement intent. GL posting happens downstream at Purchase Invoice in Accounts.",
-			"Every buying transaction needs a Supplier link + currency. Supplier is the party, not the organisation.",
-			"Totals (grand_total, net_total) should derive from items + taxes, never be user-editable directly.",
-			"Purchase Taxes and Charges Template encodes tax withholding and deduction rules - apply the template rather than listing tax rows ad-hoc."
+			"Two-stage ledger: Purchase Receipt posts to Stock Ledger + stock account (on perpetual inventory); Purchase Invoice posts to payable + expense account in GL. Teaching 'post GL on_submit' to Purchase Receipt is wrong - the stock account posting is via Stock Ledger, not GL.",
+			"Purchase Invoice.update_stock=1 without a referenced Purchase Receipt only works for service items. Stock items require either PR reference or update_stock=0 with a separate PR flow. Missing warehouse on a stock row raises WarehouseMissingError (purchase_invoice.py:47-48).",
+			"Purchase Invoice.on_hold=1 REQUIRES release_date (purchase_invoice.py:316-318). on_hold blocks GL posting + payment until release_date passes; a unique Buying feature for vendor disputes / quality holds.",
+			"Subcontracting flow: PO.is_subcontracted=1 creates a Subcontracting Order that reserves raw materials in PO.supplied_items. Subcontracting Receipt MUST be raised before the PI, otherwise GL posting fails consistency checks (buying_controller.py:50-67).",
+			"Tax Withholding: Supplier.tax_withholding_category OR Supplier.tax_withholding_group drives PI.apply_tds. Either path is valid; the controller picks whichever is set via onload. Omitting both on a TDS-applicable supplier raises the category-required error only when the threshold is exceeded.",
+			"Supplier Payment Terms cascade from Supplier record + Payment Terms Template into PI.due_date (purchase_invoice.py:345-349). Users asking to 'change the due date' often want to update the Payment Terms Template, not the invoice itself.",
+			"Landed Cost Voucher amends PR post-submission to allocate freight / customs / insurance costs to the received items' valuation. It is a POST-PR document, not a pre-receipt cost sheet.",
+			"Totals (grand_total, net_total) should derive from items + taxes. Never user-edit them directly; the controller recomputes at validate.",
+			"Supplier Scorecard evaluates submitted PO / PI rows into scorecard variables (on-time delivery, quality, price variance). Changes to PO / PI submission discipline affect scorecard scores weeks later."
 		]
 	},
 	"validation_rules": [
 		{
+			"id": "buying_pi_on_hold_needs_release_date",
+			"severity": "blocker",
+			"when": {"doctype": "Purchase Invoice", "data.on_hold": 1},
+			"message": "Purchase Invoice with on_hold=1 REQUIRES release_date. purchase_invoice.py:316-318 rejects the save. on_hold blocks GL posting + payment until release_date passes.",
+			"fix": "Set data.release_date to the date after which the invoice can be paid."
+		},
+		{
+			"id": "buying_pi_update_stock_needs_warehouse",
+			"severity": "blocker",
+			"when": {"doctype": "Purchase Invoice", "data.update_stock": 1},
+			"message": "Purchase Invoice with update_stock=1 requires every stock-item row to carry a warehouse. purchase_invoice.py:47-48 raises WarehouseMissingError otherwise.",
+			"fix": "Set warehouse on every Purchase Invoice Item with is_stock_item=1, or set update_stock=0 and raise a separate Purchase Receipt."
+		},
+		{
+			"id": "buying_subcontracted_po_needs_supplied_items",
+			"severity": "warning",
+			"when": {"doctype": "Purchase Order", "data.is_subcontracted": 1},
+			"message": "Purchase Order with is_subcontracted=1 requires supplied_items reservation; buying_controller.py:50-63 creates Subcontracting Order entries during validate. Missing supplied_items produces a PO that cannot create a valid Subcontracting Receipt.",
+			"fix": "Populate data.supplied_items with the raw material rows (bom, main_item_code, stock_uom, conversion_factor, required_qty)."
+		},
+		{
+			"id": "buying_pi_tds_threshold",
+			"severity": "warning",
+			"when": {"doctype": "Purchase Invoice", "data.apply_tds": 1},
+			"message": "Purchase Invoice with apply_tds=1 but no Supplier tax_withholding_category or tax_withholding_group set will fail PurchaseTaxWithholding.on_validate (purchase_invoice.py:302) if the threshold is exceeded.",
+			"fix": "Ensure the Supplier has tax_withholding_category (or tax_withholding_group) set, or disable apply_tds if the supplier is below threshold."
+		},
+		{
 			"id": "buying_needs_purchase_manager_perm",
 			"severity": "advisory",
-			"when": {"doctype": "DocType"},
-			"message": "Buying DocTypes typically include Purchase Manager, Purchase User, and Purchase Master Manager permission rows.",
-			"fix": "Add Purchase Manager (full), Purchase User (no delete), and Purchase Master Manager (no delete) rows to permissions."
+			"when": {"doctype": "DocType", "data.module": "Buying"},
+			"message": "Buying DocTypes typically include Purchase Manager (full), Purchase User (no delete), Purchase Master Manager (no delete), and Accounts User (for Purchase Invoice edit access) permission rows.",
+			"fix": "Add the four roles with their standard permission flags."
 		}
 	],
 	"detection_hints": {
 		"target_doctype_matches": [
 			"Supplier", "Supplier Group", "Supplier Scorecard",
 			"Request for Quotation", "Supplier Quotation",
-			"Purchase Order", "Buying Settings",
-			"Purchase Taxes and Charges Template", "Purchase Taxes and Charges"
+			"Purchase Order", "Purchase Receipt",
+			"Buying Settings", "Purchase Taxes and Charges Template", "Purchase Taxes and Charges",
+			"Landed Cost Voucher",
+			"Subcontracting Order", "Subcontracting Receipt", "Subcontracting BOM",
+			"Tax Withholding Category",
+			"Purchase Order Item", "Purchase Receipt Item"
 		],
 		"keyword_hints": [
-			"supplier", "purchase order", "purchase manager", "purchase user",
-			"request for quotation", "supplier quotation",
+			"supplier", "purchase order", "purchase receipt", "purchase manager", "purchase user",
+			"request for quotation", "rfq", "supplier quotation",
 			"purchase taxes", "supplier group", "supplier scorecard",
-			"buying settings"
+			"buying settings", "subcontracting", "subcontracted",
+			"landed cost voucher", "landed cost",
+			"tax withholding", "tds", "payment terms on supplier",
+			"on hold purchase invoice", "release date"
 		]
 	}
 }

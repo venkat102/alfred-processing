@@ -15,22 +15,52 @@ import copy
 import logging
 
 from alfred.models.agent_outputs import Changeset, ChangesetItem, FieldMeta
-from alfred.registry.loader import IntentRegistry
+from alfred.registry.loader import IntentRegistry, UnknownIntentError
 from alfred.registry.module_loader import ModuleRegistry, UnknownModuleError
 
 logger = logging.getLogger("alfred.handlers.post_build.backfill")
 
 
-def backfill_defaults(changeset: Changeset) -> Changeset:
+def _schema_for(intent: str | None, doctype: str | None) -> dict | None:
+	"""Resolve which intent registry to apply to a change.
+
+	When ``intent`` is provided, backfill is gated on the classified
+	intent: only items whose ``doctype`` equals the intent's target
+	doctype are backfilled. This prevents, for example, a ``create_doctype``
+	intent that happens to emit a Custom Field row from getting that row
+	filled with the 22 ``create_custom_field`` defaults.
+
+	When ``intent`` is None (no classification context available), fall
+	back to legacy behaviour: look up the intent by ``doctype`` alone.
+	"""
+	registry = IntentRegistry.load()
+	if intent:
+		try:
+			schema = registry.get(intent)
+		except UnknownIntentError:
+			return None
+		if doctype and schema.get("doctype") == doctype:
+			return schema
+		return None
+	return registry.for_doctype(doctype) if doctype else None
+
+
+def backfill_defaults(
+	changeset: Changeset, *, intent: str | None = None,
+) -> Changeset:
 	"""Return a new Changeset with registry fields backfilled and annotated.
 
 	Typed entry point. Pipeline code that works with raw dicts (as produced
 	by ``_extract_changes``) should call :func:`backfill_defaults_raw` instead.
+
+	When ``intent`` is supplied, only items whose doctype matches that
+	intent's target doctype receive backfill. Callers without an intent
+	classification (legacy tests, ad-hoc usage) omit it and get the
+	legacy by-doctype lookup.
 	"""
-	registry = IntentRegistry.load()
 	new_items: list[ChangesetItem] = []
 	for item in changeset.items:
-		schema = registry.for_doctype(item.doctype)
+		schema = _schema_for(intent, item.doctype)
 		if schema is None:
 			new_items.append(item)
 			continue
@@ -41,6 +71,7 @@ def backfill_defaults(changeset: Changeset) -> Changeset:
 def backfill_defaults_raw(
 	changes: list[dict],
 	*,
+	intent: str | None = None,
 	module: str | None = None,
 	secondary_modules: list[str] | None = None,
 ) -> list[dict]:
@@ -60,13 +91,17 @@ def backfill_defaults_raw(
 	the primary's rows. Primary's naming pattern always wins - secondary
 	modules never override naming.
 
-	Unknown module keys (primary or secondary) are skipped silently.
+	Intent gating: when ``intent`` is provided, only items whose doctype
+	matches the intent's target doctype are backfilled; all other items
+	pass through untouched. When ``intent`` is None, legacy by-doctype
+	lookup applies.
+
+	Unknown intent / module keys are skipped silently.
 	"""
-	registry = IntentRegistry.load()
 	out: list[dict] = []
 	for change in changes:
 		doctype = change.get("doctype")
-		schema = registry.for_doctype(doctype) if doctype else None
+		schema = _schema_for(intent, doctype)
 		if schema is None:
 			out.append(change)
 			continue

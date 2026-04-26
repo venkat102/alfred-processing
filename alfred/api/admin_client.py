@@ -60,7 +60,11 @@ class AdminClient:
 					await self.redis.setex(cache_key, PLAN_CACHE_TTL, json.dumps(result))
 
 				return result
-		except Exception as e:
+		except (httpx.HTTPError, OSError) as e:
+			# httpx.HTTPError covers connect/timeout/HTTP-status-error
+			# raised via raise_for_status. OSError covers raw socket
+			# failure that escapes httpx. Anything else is a logic bug —
+			# propagate so it gets noticed.
 			logger.warning("Admin Portal unreachable for plan check: %s", e)
 			# Fall back to cached or default allow
 			return {"allowed": True, "tier": "offline", "reason": "Admin Portal unreachable - allowing by default"}
@@ -86,12 +90,15 @@ class AdminClient:
 				)
 				response.raise_for_status()
 				return response.json().get("message", {})
-		except Exception as e:
+		except (httpx.HTTPError, OSError) as e:
+			# Same rationale as check_plan: HTTPError + OSError covers
+			# the realistic failure modes of an httpx call. Queue for
+			# retry rather than lose the usage event.
 			logger.warning("Failed to report usage to Admin Portal: %s - queuing for retry", e)
 			# Queue for later
 			if self.redis:
 				await self.redis.rpush(
-					f"alfred:usage_report_queue",
+					"alfred:usage_report_queue",
 					json.dumps({"payload": payload, "timestamp": time.time()}),
 				)
 			return {"status": "queued", "error": str(e)}
@@ -107,7 +114,8 @@ class AdminClient:
 				)
 				response.raise_for_status()
 				return response.json().get("message", {})
-		except Exception as e:
+		except (httpx.HTTPError, OSError) as e:
+			# Same rationale as the other admin-client httpx wrappers.
 			logger.warning("Failed to register site: %s", e)
 			return {"status": "error", "error": str(e)}
 
@@ -135,7 +143,11 @@ class AdminClient:
 					)
 					response.raise_for_status()
 					flushed += 1
-			except Exception as e:
+			except (httpx.HTTPError, OSError, json.JSONDecodeError, KeyError) as e:
+				# httpx.HTTPError + OSError covers the network paths;
+				# JSONDecodeError + KeyError covers a malformed queue
+				# item (older format, partial write). Either way, re-
+				# queue and break the flush loop.
 				# Put it back at the end of the queue
 				await self.redis.rpush(queue_key, item)
 				logger.warning("Failed to flush usage report: %s - re-queued", e)

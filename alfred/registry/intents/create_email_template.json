@@ -1,0 +1,48 @@
+{
+	"intent": "create_email_template",
+	"display_name": "Create Email Template",
+	"doctype": "Email Template",
+	"fields": [
+		{
+			"key": "name",
+			"label": "Template name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "subject",
+			"label": "Subject (Jinja)",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "use_html",
+			"label": "HTML body",
+			"type": "check",
+			"default": 1,
+			"rationale": "When 1, the body field is response_html (HTML with Jinja) and email_signature / email_footer from the sending EmailAccount are auto-injected. When 0, the body field is response (rich text editor). Default 1 for transactional email; set 0 only for plain-text workflows."
+		},
+		{
+			"key": "response",
+			"label": "Response body (when use_html=0)",
+			"type": "text",
+			"default": "",
+			"rationale": "Rich-text Jinja body. Required when use_html=0. Reference doc fields via {{ doc.fieldname }}. Only the `doc` context is passed to Jinja - NO frappe.session, NO arbitrary frappe.* calls. Use frappe.utils.get_url() via a pre-computed variable if needed."
+		},
+		{
+			"key": "response_html",
+			"label": "Response body HTML (when use_html=1)",
+			"type": "text",
+			"default": "",
+			"rationale": "HTML Jinja body. Required when use_html=1. Same `doc`-only Jinja context as response. validate_template checks syntax at save. Email signature and footer from the EmailAccount are auto-injected at send time."
+		},
+		{
+			"key": "reference_doctype",
+			"label": "Reference DocType (for Jinja tooling)",
+			"type": "link",
+			"link_doctype": "DocType",
+			"default": "",
+			"rationale": "Optional but strongly recommended. When set, Desk's Jinja editor offers autocomplete for fields on this DocType when editing subject / response. It also scopes the template to that DocType for discoverability in the Notification / Email Template picker. Empty means the template is generic. The template still renders correctly at send time regardless, but downstream users have to remember which DocType's fields to reference."
+		}
+	]
+}

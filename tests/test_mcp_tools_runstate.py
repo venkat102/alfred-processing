@@ -13,10 +13,11 @@ a live client connection.
 """
 
 import json
-import pytest
 
 from alfred.tools.mcp_tools import (
-	_mcp_call, init_run_state, DEFAULT_CALL_BUDGET,
+	DEFAULT_CALL_BUDGET,
+	_mcp_call,
+	init_run_state,
 )
 
 

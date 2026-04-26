@@ -21,6 +21,9 @@ from __future__ import annotations
 import json
 import logging
 import time
+from typing import Any
+
+import redis.asyncio as aioredis
 
 from alfred.llm_client import ollama_chat as _ollama_chat
 from alfred.models.agent_outputs import ValidationNote
@@ -38,7 +41,7 @@ def _rule_applies(when: dict, item: dict) -> bool:
 	  {"doctype": "DocType", "data.is_submittable": 1} -> both must hold.
 	"""
 	for key, expected in when.items():
-		actual = item
+		actual: Any = item
 		for part in key.split("."):
 			if not isinstance(actual, dict):
 				return False
@@ -77,7 +80,7 @@ def run_rule_validation(
 						fix=rule.get("fix"),
 						changeset_index=idx,
 					))
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001 — rule body is YAML-derived eval; broad catch isolates one bad rule from skipping the whole validation pass
 				logger.warning(
 					"Module rule %s failed while evaluating change %d: %s",
 					rule.get("id", "<unknown>"), idx, e,
@@ -113,7 +116,9 @@ def _parse_llm_note_list(raw: str) -> list[dict] | None:
 		parsed = json.loads(cleaned)
 		if isinstance(parsed, list):
 			return parsed
-	except Exception:
+	except json.JSONDecodeError:
+		# LLM wrapped the array in prose; fall through to the
+		# balanced-block scan below.
 		pass
 
 	decoder = json.JSONDecoder()
@@ -124,21 +129,36 @@ def _parse_llm_note_list(raw: str) -> list[dict] | None:
 			parsed, _ = decoder.raw_decode(cleaned[idx:])
 			if isinstance(parsed, list):
 				return parsed
-		except Exception:
+		except json.JSONDecodeError:
+			# This `[` didn't open a valid array — keep scanning.
 			continue
 	return None
 
 
 _CONTEXT_CACHE_TTL_SECONDS = 300  # 5 minutes, per spec
 
+# Families change far less frequently than per-module conventions, so
+# we cache the family-level snippet for longer. 15 minutes keeps the LLM
+# call rate low without making iterations on family KBs painful.
+_FAMILY_CONTEXT_CACHE_TTL_SECONDS = 900
+
 # Process-local fallback cache. Used when the pipeline cannot supply a
 # Redis client (local dev without Redis, Redis reachability loss mid-run).
 # Redis is the primary backend and lets multiple workers share a hit.
 _context_cache: dict[tuple[str, str, str], tuple[float, str]] = {}
 
+# Family cache keyed on (family_name, intent). Family snippets don't
+# vary by target_doctype - they're cross-module invariants that apply
+# to the whole family regardless of the specific DocType in play.
+_family_context_cache: dict[tuple[str, str], tuple[float, str]] = {}
+
 
 def _cache_key_str(module: str, intent: str, target_doctype: str | None) -> str:
 	return f"alfred:module_ctx:{module}:{intent}:{target_doctype or ''}"
+
+
+def _family_cache_key_str(family: str, intent: str) -> str:
+	return f"alfred:family_ctx:{family}:{intent}"
 
 
 def _context_cache_get_inmem(key: tuple[str, str, str]) -> str | None:
@@ -159,7 +179,7 @@ def _context_cache_set_inmem(key: tuple[str, str, str], value: str) -> None:
 async def _context_cache_get_redis(redis, key_str: str) -> str | None:
 	try:
 		return await redis.get(key_str)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — cache-boundary contract (test_provide_context_redis_failure_falls_back_to_llm_and_inmem): any Redis read failure must degrade to the LLM path; tests inject RuntimeError via AsyncMock to exercise exactly this tolerance.
 		logger.debug("Module context cache Redis read failed: %s", e)
 		return None
 
@@ -167,17 +187,136 @@ async def _context_cache_get_redis(redis, key_str: str) -> str | None:
 async def _context_cache_set_redis(redis, key_str: str, value: str) -> None:
 	try:
 		await redis.setex(key_str, _CONTEXT_CACHE_TTL_SECONDS, value)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — same cache-boundary contract: Redis writes are best-effort and must never block the pipeline. Tests inject RuntimeError to force this fallthrough.
 		logger.debug("Module context cache Redis write failed: %s", e)
 
 
 def _context_cache_clear() -> None:
-	"""Test helper - clears the in-memory cache.
+	"""Test helper - clears the in-memory caches (module + family).
 
 	Redis cache is not cleared here because tests that use Redis mock it
 	explicitly. For real Redis-connected runs, entries expire via TTL.
 	"""
 	_context_cache.clear()
+	_family_context_cache.clear()
+
+
+def _family_cache_get_inmem(key: tuple[str, str]) -> str | None:
+	entry = _family_context_cache.get(key)
+	if entry is None:
+		return None
+	expires_at, value = entry
+	if time.time() > expires_at:
+		_family_context_cache.pop(key, None)
+		return None
+	return value
+
+
+def _family_cache_set_inmem(key: tuple[str, str], value: str) -> None:
+	_family_context_cache[key] = (
+		time.time() + _FAMILY_CONTEXT_CACHE_TTL_SECONDS, value,
+	)
+
+
+async def _family_cache_get_redis(redis, key_str: str) -> str | None:
+	try:
+		return await redis.get(key_str)
+	except (aioredis.RedisError, OSError) as e:
+		# Same rationale as the module-context cache above.
+		logger.debug("Family context cache Redis read failed: %s", e)
+		return None
+
+
+async def _family_cache_set_redis(redis, key_str: str, value: str) -> None:
+	try:
+		await redis.setex(key_str, _FAMILY_CONTEXT_CACHE_TTL_SECONDS, value)
+	except (aioredis.RedisError, OSError) as e:
+		# Cache write best-effort; next request just recomputes.
+		logger.debug("Family context cache Redis write failed: %s", e)
+
+
+async def provide_family_context(
+	*,
+	family: str,
+	intent: str,
+	site_config: dict,
+	redis=None,
+) -> str:
+	"""Family pre-pass. Returns a prompt snippet for the family-level context.
+
+	Summarises the cross_module_invariants + backstory of a family KB
+	(one of transactions / operations / people / engagement) relevant
+	to the current intent. The snippet is prepended to the per-module
+	snippet in the pipeline so intent specialists see both layers.
+
+	Cache: same Redis + in-memory shape as ``provide_context`` but
+	keyed on (family, intent) and with a 15-minute TTL. Family KBs
+	change much less than module KBs.
+	"""
+	try:
+		kb = ModuleRegistry.load().get_family(family)
+	except KeyError:
+		return ""
+
+	inmem_key = (family, intent)
+	redis_key = _family_cache_key_str(family, intent)
+
+	if redis is not None:
+		cached = await _family_cache_get_redis(redis, redis_key)
+		if cached is not None:
+			logger.info(
+				"Family context provided: family=%s intent=%s cached=redis chars=%d",
+				family, intent, len(cached),
+			)
+			return cached
+	cached = _family_cache_get_inmem(inmem_key)
+	if cached is not None:
+		logger.info(
+			"Family context provided: family=%s intent=%s cached=inmem chars=%d",
+			family, intent, len(cached),
+		)
+		return cached
+
+	invariants = kb.get("cross_module_invariants", [])
+	invariants_block = "\n".join(f"- {inv}" for inv in invariants)
+	user_msg = (
+		f"Intent: {intent}\n"
+		f"Family cross-module invariants:\n{invariants_block}\n\n"
+		"Summarise the subset of these family-level invariants that matter "
+		"for this intent. 3-5 sentences, concrete, no prose intro, no JSON, "
+		"no markdown headers. These are cross-module rules shared by every "
+		"member module of the family."
+	)
+
+	try:
+		reply = await _ollama_chat(
+			messages=[
+				{"role": "system", "content": kb["backstory"]},
+				{"role": "user", "content": user_msg},
+			],
+			site_config=site_config,
+			tier=site_config.get("llm_tier", "triage"),
+			max_tokens=350,
+			temperature=0.2,
+		)
+		result = (reply or "").strip()
+		if result:
+			if redis is not None:
+				await _family_cache_set_redis(redis, redis_key, result)
+			_family_cache_set_inmem(inmem_key, result)
+			logger.info(
+				"Family context provided: family=%s intent=%s cached=miss chars=%d",
+				family, intent, len(result),
+			)
+		else:
+			logger.info(
+				"Family context provided: family=%s intent=%s cached=miss chars=0 (empty reply)",
+				family, intent,
+			)
+		return result
+	except Exception as e:  # noqa: BLE001 — provide_family_context wrapper; LLM, registry, cache layers can each raise heterogeneously. Empty context is the safe degraded mode (pipeline runs without family hints).
+		logger.warning("Family specialist provide_family_context failed (%s): %s", family, e)
+		return ""
 
 
 async def provide_context(
@@ -261,7 +400,7 @@ async def provide_context(
 				module, intent, target_doctype,
 			)
 		return result
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — provide_context wrapper; same shape as provide_family_context above. Empty context = degraded but functional.
 		logger.warning("Module specialist provide_context failed (%s): %s", module, e)
 		return ""
 
@@ -307,7 +446,7 @@ async def validate_output(
 			max_tokens=600,
 			temperature=0.1,
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — LLM-boundary contract (same as orchestrator classifier wrappers); any backend failure returns the rule-only notes rather than crash validation
 		logger.warning("Module specialist validate_output LLM failed (%s): %s", module, e)
 		return notes
 
@@ -342,7 +481,11 @@ async def validate_output(
 				fix=entry.get("fix"),
 			))
 			llm_added += 1
-		except Exception as e:
+		except (KeyError, TypeError, ValueError, AttributeError) as e:
+			# LLM emitted a note that's not the expected dict shape:
+			# KeyError (missing required), TypeError (wrong type at
+			# construction), AttributeError (entry isn't a dict),
+			# ValueError (ValidationNote rejects a field value).
 			logger.debug("Dropping malformed LLM note %r: %s", entry, e)
 
 	logger.info(

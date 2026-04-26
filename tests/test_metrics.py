@@ -35,7 +35,8 @@ from alfred.obs.metrics import (
 @pytest.fixture
 def app():
 	import os
-	os.environ["API_SECRET_KEY"] = "test-secret"
+	# 48-char test key - above the 32-byte floor enforced by alfred.config.
+	os.environ["API_SECRET_KEY"] = "test-a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4"
 	return create_app()
 
 
@@ -280,12 +281,24 @@ class TestCrewRecoveryCounters:
 
 
 class TestLlmErrorCounter:
+	@pytest.fixture(autouse=True)
+	def _bypass_ssrf_for_fake_hosts(self):
+		# Tests use ``http://x`` which the SSRF check would reject
+		# (DNS fail) before urlopen is ever reached, so the urlopen
+		# error paths the counters hang off would never fire.
+		from unittest.mock import patch
+		with patch(
+			"alfred.security.url_allowlist.validate_llm_url",
+			return_value=None,
+		):
+			yield
+
 	def test_http_error_increments_counter(self):
+		import io
 		import urllib.error
+		from unittest.mock import patch
 
 		from alfred.llm_client import ollama_chat_sync
-		import io
-		from unittest.mock import patch
 
 		err = urllib.error.HTTPError(
 			"http://x/api/chat", 500, "Server Error", {}, io.BytesIO(b"boom"),
@@ -305,8 +318,9 @@ class TestLlmErrorCounter:
 		assert any(s.value == 1.0 for s in samples)
 
 	def test_timeout_error_increments_counter(self):
-		from alfred.llm_client import ollama_chat_sync
 		from unittest.mock import patch
+
+		from alfred.llm_client import ollama_chat_sync
 
 		with patch(
 			"alfred.llm_client.urllib.request.urlopen",

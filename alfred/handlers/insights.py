@@ -46,7 +46,7 @@ _INSIGHTS_TOOL_BUDGET = 5
 
 async def handle_insights(
 	prompt: str,
-	conn: "ConnectionState",
+	conn: ConnectionState,
 	conversation_id: str,
 	user_context: dict,
 	event_callback=None,
@@ -105,7 +105,7 @@ async def handle_insights(
 			site_config=conn.site_config or {},
 			insights_tools=insights_tools,
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — handler boundary; build_insights_crew failures (LLM init / tool registration) must degrade to canned reply, not crash insights mode
 		logger.warning("Failed to build insights crew: %s", e, exc_info=True)
 		return InsightsResult(reply=(
 			"I wasn't able to spin up the Insights agent just now. "
@@ -121,7 +121,7 @@ async def handle_insights(
 			conversation_id=conversation_id,
 			event_callback=event_callback,
 		)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — handler boundary; crew runtime failures (LLM/tool/MCP) must degrade to canned reply, not crash insights mode
 		logger.warning("Insights crew run raised: %s", e, exc_info=True)
 		return InsightsResult(reply=(
 			"I hit an error while looking that up on your site. "
@@ -166,7 +166,7 @@ async def handle_insights(
 		from alfred.handlers.insights_candidate import extract_report_candidate
 		try:
 			report_candidate = extract_report_candidate(prompt=prompt, reply=reply)
-		except Exception as e:
+		except Exception as e:  # noqa: BLE001 — extraction is opportunistic; failure leaves report_candidate=None and the user just sees the regular reply
 			logger.warning(
 				"report_candidate extraction failed: %s", e, exc_info=True,
 			)

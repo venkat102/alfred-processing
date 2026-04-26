@@ -310,7 +310,7 @@ async def save_crew_state(store, site_id: str, conversation_id: str, state: Crew
 	try:
 		await store.set_task_state(site_id, key, state.to_dict())
 		logger.debug("Saved crew state for %s/%s", site_id, conversation_id)
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — best-effort crew-state checkpoint; failure must not abort the crew (resume won't work, that's the trade-off)
 		logger.error("Failed to save crew state: %s (crew will continue but resume won't work)", e)
 
 
@@ -416,14 +416,66 @@ INSIGHTS_TASK_DESCRIPTION = (
 	"   have access to: lookup_doctype, lookup_pattern, get_site_info,\n"
 	"   get_doctypes, get_existing_customizations, get_user_context,\n"
 	"   check_permission, has_active_workflow, check_has_records,\n"
-	"   validate_name_available. Prefer `lookup_doctype` with `layer=\"site\"`\n"
-	"   or `layer=\"both\"` over `get_doctype_schema`.\n"
-	"3. Budget your tool calls - you have a hard cap of 5 calls per turn. If you\n"
+	"   get_list, run_query, validate_name_available. Prefer\n"
+	"   `lookup_doctype` with `layer=\"site\"` or `layer=\"both\"` over\n"
+	"   `get_doctype_schema`.\n"
+	"3. PICK THE RIGHT TOOL FOR THE QUESTION SHAPE:\n"
+	"   - 'explain the Customer doctype', 'what fields are on X' -> lookup_doctype.\n"
+	"   - 'list of active customers', 'recent projects', 'show me open\n"
+	"     invoices' -> get_list with the right filters. Example:\n"
+	"     get_list(\"Customer\", filters='{{\"disabled\": 0}}', fields='[\"name\",\n"
+	"     \"customer_name\"]', limit=50).\n"
+	"   - 'count of pending invoices' -> get_list(\"Sales Invoice\",\n"
+	"     filters='{{\"status\": \"Unpaid\"}}', limit=500) and report len(rows),\n"
+	"     noting truncated if true.\n"
+	"   - 'top N X by Y', 'average X per Y', 'count of X by Y', 'X joined\n"
+	"     with Y' -> run_query. The LLM-friendly JSON shape covers SUM /\n"
+	"     AVG / MIN / MAX / COUNT / COUNT_DISTINCT plus left/inner joins\n"
+	"     across doctypes. Example (top 5 customers by total sales this\n"
+	"     year):\n"
+	"       run_query('{{\"from_doctype\": \"Sales Invoice\", \"select\":\n"
+	"       [{{\"field\": \"customer\"}}, {{\"field\": \"grand_total\",\n"
+	"       \"agg\": \"sum\", \"alias\": \"total\"}}], \"where\":\n"
+	"       [{{\"field\": \"status\", \"op\": \"=\", \"value\": \"Paid\"}}],\n"
+	"       \"group_by\": [\"customer\"], \"order_by\": [{{\"field\":\n"
+	"       \"total\", \"dir\": \"desc\"}}], \"limit\": 5}}')\n"
+	"   - 'who has access to X' -> check_permission / get_user_context.\n"
+	"   DO NOT call lookup_doctype when the user asked for actual records.\n"
+	"   Reporting the schema when asked for a list is WRONG and the user will\n"
+	"   see through it immediately.\n"
+	"4. run_query's spec language cannot express window functions,\n"
+	"   recursive CTEs, subqueries in WHERE/HAVING, UNION, or raw\n"
+	"   expressions. If the question truly needs one of those, DO NOT\n"
+	"   fabricate an answer from schema and DO NOT pretend the spec can\n"
+	"   handle it. Reply with exactly this shape:\n"
+	"     'I can aggregate and join across doctypes but this needs\n"
+	"     [window function / recursive query / raw SQL expression] which\n"
+	"     isn't supported in Insights mode. You can either:\n"
+	"     - rephrase as a simpler aggregation or join, or\n"
+	"     - switch to Dev mode and I'll help you build a saved Report\n"
+	"       for this.'\n"
+	"   Substitute the specific operation you can't do.\n"
+	"5. Budget your tool calls - you have a hard cap of 5 calls per turn. If you\n"
 	"   cannot get the full answer in 5 calls, say what you found and what's\n"
 	"   missing.\n"
-	"4. Ground every factual claim in a tool response. If you cannot verify a\n"
+	"6. Ground every factual claim in a tool response. If you cannot verify a\n"
 	"   fact with a tool, say so explicitly - never guess about the user's site.\n"
-	"5. If the user's question cannot be answered with read-only tools (e.g.\n"
+	"7. NEVER claim a tool 'has limitations', 'cannot be used', or 'is\n"
+	"   unavailable' without first attempting the call. If a tool returns an\n"
+	"   error, quote the error code and message verbatim from the tool's\n"
+	"   response. Example: 'run_query returned permission_denied: You do not\n"
+	"   have read permission on Sales Invoice.' Do NOT paraphrase tool errors\n"
+	"   as 'technical limitations with the query tools', 'system limitations',\n"
+	"   or 'check with your system administrator'. The user needs the actual\n"
+	"   error code to act on it. If you ran out of your 5-call budget before\n"
+	"   reaching the right tool, say exactly that: 'I used my tool budget on\n"
+	"   X / Y / Z and didn't get to run the aggregation - try asking again\n"
+	"   more directly.'\n"
+	"8. If get_list returns rows=[] it may mean 'no matches' or 'no read\n"
+	"   access'. Say 'I found no records matching that criteria (which may\n"
+	"   also mean you don't have read access to this DocType).' - don't\n"
+	"   assume either.\n"
+	"9. If the user's question cannot be answered with read-only tools (e.g.\n"
 	"   they are asking you to build something), respond with a short note\n"
 	"   suggesting they rephrase as a build request.\n\n"
 	"OUTPUT FORMAT (STRICT):\n"
@@ -496,9 +548,14 @@ def build_insights_crew(
 		verbose=True,
 	)
 
-	description = INSIGHTS_TASK_DESCRIPTION.format(
-		prompt=user_prompt,
-		user_context=json.dumps(user_context, indent=2),
+	# The template contains literal JSON examples like ``{"disabled": 0}``
+	# inside the tool-selection guide. ``str.format`` would trip on those
+	# as unknown format keys, so we splice the two real placeholders in
+	# by hand instead of doubling every literal brace in the template.
+	description = (
+		INSIGHTS_TASK_DESCRIPTION
+		.replace("{prompt}", user_prompt)
+		.replace("{user_context}", json.dumps(user_context, indent=2))
 	)
 
 	task = Task(
@@ -654,8 +711,8 @@ def build_alfred_crew(
 	}
 
 	# Create tasks - skip already completed ones on resume
-	tasks = []
-	task_map = {}
+	tasks: list = []
+	task_map: dict = {}
 
 	# Pydantic output models - kept for reference and downstream parsing,
 	# but NOT wired into CrewAI's output_json because local models (Ollama)
@@ -780,7 +837,6 @@ async def run_crew(
 
 		def _ws_input(prompt_text=""):
 			"""Replacement for builtins.input() that routes through WebSocket."""
-			import concurrent.futures
 			loop = asyncio.new_event_loop()
 			try:
 				return loop.run_until_complete(human_input_handler(prompt_text))
@@ -908,6 +964,10 @@ def _get_specialist_developer_agent(
 	if not _per_intent_builders_enabled():
 		return None
 	if not intent or intent == "unknown":
+		logger.info(
+			"No specialist builder for intent=%r; falling back to generic Developer",
+			intent,
+		)
 		return None
 
 	if intent == "create_doctype":
@@ -932,6 +992,10 @@ def _get_specialist_developer_agent(
 		)
 		return agent
 
+	logger.warning(
+		"No builder registered for intent=%r; falling back to generic Developer",
+		intent,
+	)
 	return None
 
 

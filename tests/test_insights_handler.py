@@ -13,9 +13,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from alfred.handlers.insights import _INSIGHTS_TOOL_BUDGET, handle_insights
 
@@ -48,7 +46,7 @@ class TestHandleInsights:
 			 patch("alfred.tools.mcp_tools.init_run_state") as init_state, \
 			 patch("alfred.agents.crew.build_insights_crew", return_value=(MagicMock(), MagicMock())), \
 			 patch("alfred.agents.crew.run_crew", side_effect=fake_run):
-			reply = _run(
+			result = _run(
 				handle_insights(
 					prompt="what DocTypes do I have?",
 					conn=conn,
@@ -57,7 +55,7 @@ class TestHandleInsights:
 				)
 			)
 
-		assert "You have 12 DocTypes" in reply
+		assert "You have 12 DocTypes" in result.reply
 		# Budget must have been set to the tight insights cap
 		init_state.assert_called_once()
 		call_kwargs = init_state.call_args.kwargs
@@ -99,7 +97,7 @@ class TestHandleInsights:
 
 		with patch("alfred.agents.crew.build_insights_crew", return_value=(MagicMock(), MagicMock())), \
 			 patch("alfred.agents.crew.run_crew", side_effect=fake_run):
-			reply = _run(
+			result = _run(
 				handle_insights(
 					prompt="what modules exist?",
 					conn=conn,
@@ -107,7 +105,7 @@ class TestHandleInsights:
 					user_context={"user": "tester"},
 				)
 			)
-		assert reply == "reply from llm"
+		assert result.reply == "reply from llm"
 
 	def test_run_failure_returns_fallback(self):
 		conn = _make_conn()
@@ -119,7 +117,7 @@ class TestHandleInsights:
 			 patch("alfred.tools.mcp_tools.init_run_state"), \
 			 patch("alfred.agents.crew.build_insights_crew", return_value=(MagicMock(), MagicMock())), \
 			 patch("alfred.agents.crew.run_crew", side_effect=boom):
-			reply = _run(
+			result = _run(
 				handle_insights(
 					prompt="what DocTypes do I have?",
 					conn=conn,
@@ -127,8 +125,8 @@ class TestHandleInsights:
 					user_context={"user": "tester"},
 				)
 			)
-		assert reply is not None
-		assert "try again" in reply.lower() or "error" in reply.lower()
+		assert result is not None
+		assert "try again" in result.reply.lower() or "error" in result.reply.lower()
 
 	def test_empty_result_returns_friendly_fallback(self):
 		conn = _make_conn()
@@ -140,7 +138,7 @@ class TestHandleInsights:
 			 patch("alfred.tools.mcp_tools.init_run_state"), \
 			 patch("alfred.agents.crew.build_insights_crew", return_value=(MagicMock(), MagicMock())), \
 			 patch("alfred.agents.crew.run_crew", side_effect=empty):
-			reply = _run(
+			result = _run(
 				handle_insights(
 					prompt="weird question",
 					conn=conn,
@@ -148,7 +146,7 @@ class TestHandleInsights:
 					user_context={"user": "tester"},
 				)
 			)
-		assert "rephrase" in reply.lower() or "didn't get" in reply.lower()
+		assert "rephrase" in result.reply.lower() or "didn't get" in result.reply.lower()
 
 	def test_non_completed_status_returns_fallback(self):
 		conn = _make_conn()
@@ -160,7 +158,7 @@ class TestHandleInsights:
 			 patch("alfred.tools.mcp_tools.init_run_state"), \
 			 patch("alfred.agents.crew.build_insights_crew", return_value=(MagicMock(), MagicMock())), \
 			 patch("alfred.agents.crew.run_crew", side_effect=failed_run):
-			reply = _run(
+			result = _run(
 				handle_insights(
 					prompt="what workflows exist?",
 					conn=conn,
@@ -168,8 +166,8 @@ class TestHandleInsights:
 					user_context={"user": "tester"},
 				)
 			)
-		assert "couldn't" in reply.lower() or "couldn" in reply.lower()
-		assert "crew state bad" in reply
+		assert "couldn't" in result.reply.lower() or "couldn" in result.reply.lower()
+		assert "crew state bad" in result.reply
 
 	def test_code_fences_are_stripped(self):
 		conn = _make_conn()
@@ -184,7 +182,7 @@ class TestHandleInsights:
 			 patch("alfred.tools.mcp_tools.init_run_state"), \
 			 patch("alfred.agents.crew.build_insights_crew", return_value=(MagicMock(), MagicMock())), \
 			 patch("alfred.agents.crew.run_crew", side_effect=fenced):
-			reply = _run(
+			result = _run(
 				handle_insights(
 					prompt="how many workflows?",
 					conn=conn,
@@ -192,7 +190,7 @@ class TestHandleInsights:
 					user_context={"user": "tester"},
 				)
 			)
-		assert reply == "You have 3 workflows."
+		assert result.reply == "You have 3 workflows."
 
 	def test_build_crew_failure_returns_fallback(self):
 		conn = _make_conn()
@@ -200,7 +198,7 @@ class TestHandleInsights:
 		with patch("alfred.tools.mcp_tools.build_mcp_tools", return_value={"insights": []}), \
 			 patch("alfred.tools.mcp_tools.init_run_state"), \
 			 patch("alfred.agents.crew.build_insights_crew", side_effect=RuntimeError("bad build")):
-			reply = _run(
+			result = _run(
 				handle_insights(
 					prompt="anything",
 					conn=conn,
@@ -208,8 +206,8 @@ class TestHandleInsights:
 					user_context={"user": "tester"},
 				)
 			)
-		assert "Insights agent" in reply
-		assert "try again" in reply.lower() or "rephrase" in reply.lower()
+		assert "Insights agent" in result.reply
+		assert "try again" in result.reply.lower() or "rephrase" in result.reply.lower()
 
 	def test_event_callback_threaded_through(self):
 		"""event_callback must reach run_crew so the UI gets crew_started events."""

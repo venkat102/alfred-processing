@@ -1,0 +1,37 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"title": "Alfred ERPNext Module Family Schema",
+	"type": "object",
+	"required": ["name", "display_name", "member_modules", "backstory", "cross_module_invariants"],
+	"additionalProperties": false,
+	"properties": {
+		"name": {"type": "string", "enum": ["transactions", "operations", "people", "engagement"]},
+		"display_name": {"type": "string", "minLength": 1},
+		"member_modules": {
+			"type": "array",
+			"minItems": 1,
+			"items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}
+		},
+		"backstory": {"type": "string", "minLength": 100},
+		"cross_module_invariants": {
+			"type": "array",
+			"minItems": 1,
+			"items": {"type": "string", "minLength": 10}
+		},
+		"shared_validation_rules": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"required": ["id", "severity", "when", "message"],
+				"additionalProperties": false,
+				"properties": {
+					"id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+					"severity": {"enum": ["advisory", "warning", "blocker"]},
+					"when": {"type": "object"},
+					"message": {"type": "string", "minLength": 1},
+					"fix": {"type": "string"}
+				}
+			}
+		}
+	}
+}

@@ -12,9 +12,7 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 
 class TestBuildInsightsCrew:
@@ -108,6 +106,24 @@ class TestBuildInsightsCrew:
 		# Sanity check that the agent knows which tools are available
 		assert "lookup_doctype" in INSIGHTS_TASK_DESCRIPTION
 
+	def test_task_description_forbids_fake_tool_limitations(self):
+		"""Regression: an Insights run produced 'technical limitations with the
+		query tools' and told the user to consult their admin, when run_query
+		was right there in its tool list. The prompt must explicitly forbid
+		that failure mode and require quoting tool errors verbatim instead.
+		"""
+		from alfred.agents.crew import INSIGHTS_TASK_DESCRIPTION
+
+		# The rule must name the failure mode it's preventing.
+		assert "NEVER claim" in INSIGHTS_TASK_DESCRIPTION
+		assert "without first attempting the call" in INSIGHTS_TASK_DESCRIPTION
+		# The rule must mandate verbatim error surfacing.
+		assert "quote the error code and message verbatim" in INSIGHTS_TASK_DESCRIPTION
+		# And it must call out the exact paraphrases we saw in the wild,
+		# so the LLM associates them with the forbidden pattern.
+		assert "system limitations" in INSIGHTS_TASK_DESCRIPTION
+		assert "system administrator" in INSIGHTS_TASK_DESCRIPTION
+
 
 class TestInsightsToolAssignments:
 	def test_build_mcp_tools_returns_insights_key(self):
@@ -164,3 +180,57 @@ class TestInsightsToolAssignments:
 		}
 		for tool in expected:
 			assert tool in names, f"Insights tool set missing {tool}"
+
+
+class TestInsightsTaskDescriptionTemplate:
+	"""Regression guard: the task-description template uses str.format() with
+	only two named placeholders (prompt, user_context). Any literal `{` or `}`
+	elsewhere in the template (e.g. JSON example payloads for run_query /
+	get_list) must be doubled to `{{` / `}}` or .format() raises KeyError and
+	the whole crew fails to build - surfaced to the user as "I wasn't able to
+	spin up the Insights agent just now."
+	"""
+
+	def test_template_formats_cleanly_with_production_inputs(self):
+		from alfred.agents.crew import INSIGHTS_TASK_DESCRIPTION
+
+		# The exact two placeholders the handler passes in production.
+		out = INSIGHTS_TASK_DESCRIPTION.format(
+			prompt="list all active customers",
+			user_context='{"user": "tester", "roles": ["System Manager"]}',
+		)
+		assert "list all active customers" in out
+		assert '"user": "tester"' in out
+
+	def test_template_preserves_json_examples(self):
+		"""The JSON examples in the template must survive .format() intact -
+		they're there to teach the LLM how to shape tool calls."""
+		from alfred.agents.crew import INSIGHTS_TASK_DESCRIPTION
+
+		out = INSIGHTS_TASK_DESCRIPTION.format(prompt="q", user_context="{}")
+		# get_list filter example
+		assert '{"disabled": 0}' in out
+		assert '{"status": "Unpaid"}' in out
+		# run_query aggregation example
+		assert '"from_doctype": "Sales Invoice"' in out
+		assert '{"field": "customer"}' in out
+		assert '{"field": "grand_total"' in out
+
+	def test_build_insights_crew_does_not_raise_on_format(self):
+		"""End-to-end smoke: the full crew build path must not raise on
+		template format - the handler wraps build_insights_crew in a try/except
+		that surfaces a generic "spin up" error, which masks the real cause.
+		"""
+		from alfred.agents.crew import build_insights_crew
+
+		crew, state = build_insights_crew(
+			user_prompt="show me customers",
+			user_context={"user": "tester", "roles": []},
+			site_config={"llm_model": "ollama/llama3.1"},
+			insights_tools=[],
+		)
+		assert crew is not None
+		assert len(crew.tasks) == 1
+		desc = crew.tasks[0].description
+		assert "show me customers" in desc
+		assert '{"disabled": 0}' in desc

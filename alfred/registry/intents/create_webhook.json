@@ -1,0 +1,108 @@
+{
+	"intent": "create_webhook",
+	"display_name": "Create Webhook (outbound HTTP)",
+	"doctype": "Webhook",
+	"fields": [
+		{
+			"key": "webhook_doctype",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "webhook_docevent",
+			"label": "Document event",
+			"type": "select",
+			"options": ["after_insert", "on_update", "on_submit", "on_cancel", "on_trash", "on_update_after_submit", "on_change", "workflow_transition"],
+			"default": "after_insert",
+			"rationale": "The event on the target DocType that triggers the outbound HTTP call. on_update fires on every save; after_insert fires only on first insert. workflow_transition fires on every Workflow state change (regardless of Save / Submit)."
+		},
+		{
+			"key": "condition",
+			"label": "Condition (Python expression)",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional. Python expression evaluated on the target doc at fire time. The webhook fires only when this returns truthy. Example: `doc.amount > 10000`. Empty fires on every matching event."
+		},
+		{
+			"key": "request_url",
+			"label": "Target URL",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "request_method",
+			"label": "HTTP method",
+			"type": "select",
+			"options": ["POST", "PUT", "DELETE", "PATCH", "GET"],
+			"default": "POST",
+			"rationale": "POST is the canonical outbound-webhook method. GET has no body (webhook_data / webhook_json are sent as query params)."
+		},
+		{
+			"key": "request_structure",
+			"label": "Request body shape",
+			"type": "select",
+			"options": ["Form URL-Encoded", "JSON"],
+			"default": "JSON",
+			"rationale": "JSON: body is JSON, either built from webhook_data child table or supplied as webhook_json raw template. Form URL-Encoded: body is URL-encoded key/value pairs from webhook_data. Modern APIs almost always want JSON."
+		},
+		{
+			"key": "webhook_headers",
+			"label": "Custom headers (list of {key, value})",
+			"type": "text",
+			"default": "",
+			"rationale": "Optional. JSON list of {key, value} header rows. Content-Type is auto-set per request_structure. Authorization headers (API keys, bearer tokens) go here."
+		},
+		{
+			"key": "webhook_data",
+			"label": "Payload key/value pairs (list, used when !webhook_json)",
+			"type": "text",
+			"default": "",
+			"rationale": "JSON list of {fieldname, key} pairs. Each row extracts `doc.fieldname` and sends it as `key` in the payload. For simple 1:1 field mapping. Empty when using webhook_json (raw template) instead."
+		},
+		{
+			"key": "webhook_json",
+			"label": "Raw JSON template (Jinja over doc)",
+			"type": "text",
+			"default": "",
+			"rationale": "Alternative to webhook_data. Jinja-templated raw JSON body. Use when the payload shape does not match a flat key/value mapping (nested objects, arrays, computed fields). Example: '{\"invoice\": {\"id\": \"{{ doc.name }}\", \"amount\": {{ doc.grand_total }}}}'. Must render to valid JSON at fire time."
+		},
+		{
+			"key": "enable_security",
+			"label": "HMAC signature",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, Frappe signs each request with the webhook_secret via X-Frappe-Webhook-Signature (HMAC-SHA256 of the body). The receiver can verify authenticity. Default 0; enable for any endpoint outside your network."
+		},
+		{
+			"key": "webhook_secret",
+			"label": "HMAC secret (when enable_security=1)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when enable_security=1. Shared secret used for HMAC-SHA256 signing. Treat as a credential - rotate periodically. Empty when security is disabled."
+		},
+		{
+			"key": "timeout",
+			"label": "Request timeout (seconds)",
+			"type": "int",
+			"default": 5,
+			"rationale": "HTTP request timeout. Default 5s is reasonable for most fire-and-forget webhooks. Raise only when the receiver is known to be slow; fast failure is usually preferable to holding a worker for 30s."
+		},
+		{
+			"key": "background_jobs_queue",
+			"label": "Background queue",
+			"type": "select",
+			"options": ["short", "default", "long"],
+			"default": "short",
+			"rationale": "Frappe fires webhooks as background jobs on the named queue. short (default) is fine for typical webhooks that complete in under a minute. default / long for receivers that take longer."
+		},
+		{
+			"key": "enabled",
+			"label": "Enabled",
+			"type": "check",
+			"default": 1,
+			"rationale": "Default enabled. Disabled webhooks stay in the DB but are skipped when the event fires."
+		}
+	]
+}

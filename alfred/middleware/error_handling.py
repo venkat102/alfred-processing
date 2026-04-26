@@ -10,8 +10,8 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable
 
 logger = logging.getLogger("alfred.errors")
 

@@ -10,9 +10,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, AsyncMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, patch
 
 from alfred.handlers.chat import handle_chat
 from alfred.state.conversation_memory import ConversationMemory

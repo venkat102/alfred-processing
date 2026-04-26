@@ -1,0 +1,212 @@
+{
+	"intent": "create_notification",
+	"display_name": "Create Notification",
+	"doctype": "Notification",
+	"fields": [
+		{
+			"key": "name",
+			"label": "Descriptive name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "document_type",
+			"label": "Target DocType",
+			"type": "link",
+			"link_doctype": "DocType",
+			"required": true
+		},
+		{
+			"key": "event",
+			"label": "Event",
+			"type": "select",
+			"options": [
+				"New",
+				"Save",
+				"Submit",
+				"Cancel",
+				"Value Change",
+				"Days After",
+				"Days Before",
+				"Minutes After",
+				"Minutes Before",
+				"Method"
+			],
+			"default": "New",
+			"rationale": "Load-bearing. Use New to alert approvers BEFORE they act (their submit is what fires the event, so Submit on the approver would email them about their own click). Use Submit for post-approval downstream notifications. Value Change fires when value_changed (specific field) mutates. Days After / Days Before require date_changed AND fire via the daily scheduler - the date_changed field must be a Date / Datetime field on the DocType. Minutes After / Minutes Before require datetime_changed AND minutes_offset >= 10 (the minimum is enforced because the scheduler tick is coarser than a few minutes). Method fires when a specific method (named in the method field) is called on the document."
+		},
+		{
+			"key": "channel",
+			"label": "Channel",
+			"type": "select",
+			"options": ["Email", "Slack", "SMS", "System Notification"],
+			"default": "Email",
+			"rationale": "Email is the canonical channel. System Notification is free (no SMTP / gateway) but only visible inside Desk. Slack requires slack_webhook_url. SMS requires an SMS gateway configured in System Settings. set_only_once - cannot swap channels on a saved Notification."
+		},
+		{
+			"key": "date_changed",
+			"label": "Date field (for Days After / Days Before)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when event is Days After or Days Before. Names a Date / Datetime field on the target DocType. Empty for other events."
+		},
+		{
+			"key": "days_in_advance",
+			"label": "Days offset",
+			"type": "int",
+			"default": 0,
+			"rationale": "Number of days before (for Days Before) or after (for Days After) the date_changed value. Default 0 (same day)."
+		},
+		{
+			"key": "value_changed",
+			"label": "Field to watch (for Value Change)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when event is Value Change. Names the field whose mutation triggers the notification. Empty for other events."
+		},
+		{
+			"key": "method",
+			"label": "Method name (for event='Method')",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when event=Method. Names the method on the document that, when called, triggers the notification. Empty for other events."
+		},
+		{
+			"key": "recipients",
+			"label": "Recipients (list)",
+			"type": "text",
+			"default": "",
+			"rationale": "At least one recipient row is required UNLESS send_to_all_assignees=1 or channel=Slack (Slack uses slack_webhook_url instead). Each row is either `{receiver_by_document_field: 'expense_approver'}` (dynamic: Link field on the target resolves to a User), `{receiver_by_role: 'Accounts Manager'}` (static: every user with that role), or `{email: 'ops@example.com'}` (fully static). Prefer dynamic receiver_by_document_field for per-document routing."
+		},
+		{
+			"key": "subject",
+			"label": "Subject (Jinja)",
+			"type": "data",
+			"default": "",
+			"rationale": "Jinja-rendered over the target document. Reference fields via {{ doc.fieldname }}. validate_template checks syntax at save time - a malformed Jinja subject is rejected. Empty defaults to a generic system subject for Email."
+		},
+		{
+			"key": "message",
+			"label": "Message body (Jinja HTML)",
+			"type": "text",
+			"default": "",
+			"rationale": "Jinja-rendered body. validate_template checks syntax at save. Keep short and actionable. {{ frappe.utils.get_url() }} for stable site URLs."
+		},
+		{
+			"key": "condition_type",
+			"label": "Condition type",
+			"type": "select",
+			"options": ["Python", "Filters"],
+			"default": "Python",
+			"rationale": "Python uses the `condition` field (a Python expression evaluated with frappe.safe_eval on a dummy doc at save and on the real doc at fire time). Filters uses the `filters` field (JSON filter-triple list evaluated via evaluate_filters). Switching condition_type automatically clears the OTHER field on save."
+		},
+		{
+			"key": "condition",
+			"label": "Condition (Python expression)",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional Python expression used when condition_type=Python. Example: `doc.amount > 10000`. Evaluated with frappe.safe_eval (no imports, limited globals). False / exception suppresses the notification silently. Empty means fire on every matching event."
+		},
+		{
+			"key": "enabled",
+			"label": "Enabled",
+			"type": "check",
+			"default": 1,
+			"rationale": "Default enabled. Flip off for staging. is_standard=1 + enabled=1 outside developer_mode is rejected."
+		},
+		{
+			"key": "send_system_notification",
+			"label": "Also send System Notification",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, creates a Notification Log entry even if channel is Email / Slack / SMS. Useful when you want both an email AND a Desk notification bell alert."
+		},
+		{
+			"key": "is_standard",
+			"label": "Standard (developer_mode / versioned)",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default 0 (site-local, DB-only). Setting 1 requires developer_mode, writes the Notification to an app's filesystem, and rejects enabled=1 outside developer_mode. Flip only when shipping the notification in an app."
+		},
+		{
+			"key": "sender",
+			"label": "Sender (Email Account)",
+			"type": "link",
+			"link_doctype": "Email Account",
+			"default": "",
+			"rationale": "Only meaningful for channel='Email'. Names an Email Account whose identity is used as the From. Empty uses the default outgoing Email Account."
+		},
+		{
+			"key": "datetime_changed",
+			"label": "Datetime field (for Minutes After / Before)",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when event is 'Minutes After' or 'Minutes Before'. Names a Datetime field on the target DocType. Empty for other events."
+		},
+		{
+			"key": "minutes_offset",
+			"label": "Minutes offset (Minutes After / Before only)",
+			"type": "int",
+			"default": 0,
+			"rationale": "Required when event is 'Minutes After' or 'Minutes Before'. Controller REJECTS values < 10 because the scheduler tick is coarser than a few minutes. Default 0 is invalid for those events - specialists must supply >= 10."
+		},
+		{
+			"key": "filters",
+			"label": "Filters JSON (when condition_type=Filters)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required when condition_type='Filters'. JSON list of Frappe filter triples. The Notification fires only for documents matching these filters (evaluate_filters on the live doc). Switching condition_type back to Python clears this field on save."
+		},
+		{
+			"key": "attach_print",
+			"label": "Attach rendered print format to email",
+			"type": "check",
+			"default": 0,
+			"rationale": "Only meaningful for channel='Email'. When 1, the Notification attaches a PDF render of the target document using print_format. Default 0 (no attachment)."
+		},
+		{
+			"key": "print_format",
+			"label": "Print Format (when attach_print=1)",
+			"type": "link",
+			"link_doctype": "Print Format",
+			"default": "",
+			"rationale": "Required when attach_print=1. Names an existing Print Format for the target DocType. Empty uses Frappe's standard print format for that DocType."
+		},
+		{
+			"key": "attach_files",
+			"label": "Attach File DocType rows",
+			"type": "select",
+			"options": ["", "From Field", "All"],
+			"default": "",
+			"rationale": "Only meaningful for channel='Email'. 'All' attaches every File attached to the target document; 'From Field' attaches only the File named by from_attach_field. Empty for no attachments."
+		},
+		{
+			"key": "from_attach_field",
+			"label": "Field holding a File link (when attach_files='From Field')",
+			"type": "data",
+			"default": "",
+			"rationale": "Required when attach_files='From Field'. Names an Attach / Link-to-File field on the target DocType. Empty for other attach_files modes."
+		},
+		{
+			"key": "send_to_all_assignees",
+			"label": "Send to all assignees of the document",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, recipients are resolved dynamically from the document's ToDo assignments (via _assign). Makes recipients optional (if send_to_all_assignees=1, empty recipients is accepted). Default 0."
+		},
+		{
+			"key": "set_property_after_alert",
+			"label": "Field to auto-update after sending",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional. Names a field on the target document to update AFTER the notification fires. Paired with property_value. Respects allow_on_submit - cannot update non-allow_on_submit fields on already-submitted documents."
+		},
+		{
+			"key": "property_value",
+			"label": "Value to set (paired with set_property_after_alert)",
+			"type": "data",
+			"default": "",
+			"rationale": "The new value for set_property_after_alert. Plain string; no Jinja. Empty pairs with empty set_property_after_alert (no post-alert update)."
+		}
+	]
+}

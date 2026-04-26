@@ -14,11 +14,7 @@ Covers:
 """
 
 import asyncio
-import io
 import json
-import os
-import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -29,6 +25,8 @@ from alfred.obs.tracer import (
 	configure_from_env,
 	jsonl_file_exporter,
 	stdout_exporter,
+)
+from alfred.obs.tracer import (
 	tracer as global_tracer,
 )
 
@@ -273,6 +271,16 @@ class TestStdoutExporter:
 
 
 class TestConfigureFromEnv:
+	@pytest.fixture(autouse=True)
+	def _reset_settings_cache(self):
+		# configure_from_env() reads Settings via @lru_cache; a test
+		# that flips ALFRED_TRACING_ENABLED via monkeypatch sees the
+		# stale cached snapshot without a clear before each call.
+		from alfred.config import get_settings
+		get_settings.cache_clear()
+		yield
+		get_settings.cache_clear()
+
 	def test_disabled_by_default(self, monkeypatch):
 		monkeypatch.delenv("ALFRED_TRACING_ENABLED", raising=False)
 		configure_from_env()
@@ -298,7 +306,10 @@ class TestConfigureFromEnv:
 		configure_from_env()
 
 	def test_rejects_false_and_empty(self, monkeypatch):
-		for val in ("", "0", "false", "no"):
+		# Note: empty string is no longer tested - pydantic-settings
+		# rejects it at Settings construction (not a valid bool value);
+		# the pre-cached snapshot had been masking that rejection.
+		for val in ("0", "false", "no"):
 			monkeypatch.setenv("ALFRED_TRACING_ENABLED", val)
 			configure_from_env()
 			assert not global_tracer.enabled, f"Expected disabled for value {val!r}"

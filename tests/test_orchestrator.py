@@ -18,7 +18,6 @@ from unittest.mock import patch
 import pytest
 
 from alfred.orchestrator import (
-	ModeDecision,
 	_clip_memory_context,
 	_fast_path,
 	_normalize_mode,
@@ -211,6 +210,23 @@ class TestParseClassifierOutput:
 		assert reason == ""
 		assert conf == "medium"
 
+	def test_garbage_logs_warning_not_silent(self, caplog):
+		"""The (None, "", "low") fallback must log so prompt regressions are visible.
+
+		Regression guard for commit c124f9b: before it, the except blocks
+		at orchestrator.py:293 + :299 silently returned without logging,
+		and classifier drift could land as "low confidence" routing for
+		weeks before anyone noticed.
+		"""
+		import logging
+		with caplog.at_level(logging.WARNING, logger="alfred.orchestrator"):
+			_parse_classifier_output("this is not json at all")
+		matching = [
+			r for r in caplog.records
+			if "mode classifier JSON parse failed" in r.getMessage()
+		]
+		assert matching, "expected a WARNING log on JSON parse failure"
+
 
 class TestClassifyMode:
 	def test_manual_override_bypasses_llm(self):
@@ -226,6 +242,70 @@ class TestClassifyMode:
 		assert decision.mode == "dev"
 		assert decision.source == "override"
 		llm.assert_not_called()
+
+	def test_dev_override_with_analytics_prompt_redirects_to_insights(self):
+		# Hybrid UX: user had Dev selected but asked an analytics question.
+		# Redirect to Insights and surface source="analytics_redirect" so
+		# the UI can render a banner with a "Run in Dev anyway" button.
+		with patch("alfred.orchestrator._classify_with_llm") as llm:
+			decision = _run(
+				classify_mode(
+					prompt="Show top 10 customers by revenue this quarter",
+					memory=None,
+					manual_override="dev",
+					site_config={},
+				)
+			)
+		assert decision.mode == "insights"
+		assert decision.source == "analytics_redirect"
+		assert decision.confidence == "high"
+		assert "Run in Dev anyway" in decision.reason
+		llm.assert_not_called()
+
+	def test_force_dev_override_bypasses_analytics_redirect(self):
+		# User clicked "Run in Dev anyway" on the redirect banner; the
+		# frontend re-sends with force_dev_override=True. Dev must win.
+		with patch("alfred.orchestrator._classify_with_llm") as llm:
+			decision = _run(
+				classify_mode(
+					prompt="Show top 10 customers by revenue this quarter",
+					memory=None,
+					manual_override="dev",
+					site_config={},
+					force_dev_override=True,
+				)
+			)
+		assert decision.mode == "dev"
+		assert decision.source == "override"
+		llm.assert_not_called()
+
+	def test_analytics_redirect_does_not_fire_for_non_dev_override(self):
+		# The redirect is Dev-specific: if the user forced Plan or
+		# Insights, leave the override alone.
+		decision = _run(
+			classify_mode(
+				prompt="Show top 10 customers by revenue this quarter",
+				memory=None,
+				manual_override="plan",
+				site_config={},
+			)
+		)
+		assert decision.mode == "plan"
+		assert decision.source == "override"
+
+	def test_analytics_redirect_does_not_fire_for_build_prompt(self):
+		# The redirect only triggers on analytics-shape prompts. An
+		# explicit build request with Dev selected must still hit dev.
+		decision = _run(
+			classify_mode(
+				prompt="Create a report listing top customers by revenue",
+				memory=None,
+				manual_override="dev",
+				site_config={},
+			)
+		)
+		assert decision.mode == "dev"
+		assert decision.source == "override"
 
 	def test_manual_override_normalizes_case(self):
 		decision = _run(
@@ -391,6 +471,16 @@ class TestClassifyMode:
 
 
 class TestIsEnabled:
+	@pytest.fixture(autouse=True)
+	def _reset_settings_cache(self):
+		# is_enabled() reads Settings via @lru_cache; each test in this
+		# class flips ALFRED_ORCHESTRATOR_ENABLED via monkeypatch and
+		# needs a fresh read.
+		from alfred.config import get_settings
+		get_settings.cache_clear()
+		yield
+		get_settings.cache_clear()
+
 	def test_unset_is_disabled(self, monkeypatch):
 		monkeypatch.delenv("ALFRED_ORCHESTRATOR_ENABLED", raising=False)
 		assert is_enabled() is False

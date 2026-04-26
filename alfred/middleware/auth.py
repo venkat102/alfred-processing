@@ -5,6 +5,7 @@ JWT verification is required for WebSocket connections to extract user identity
 and site_id for namespace isolation.
 """
 
+import hmac
 import logging
 import time
 
@@ -46,7 +47,15 @@ async def verify_api_key(
 	api_key = credentials.credentials
 	expected_key = _get_api_secret_key(request)
 
-	if api_key != expected_key:
+	# Constant-time comparison: `!=` short-circuits on first differing byte,
+	# which leaks key-byte positions via response-latency timing. Attacker
+	# with network access can brute-force the key one byte at a time. Use
+	# hmac.compare_digest so the comparison runs in O(len(input)) regardless
+	# of where the mismatch is. Encode to bytes explicitly so the compare
+	# is byte-level rather than relying on str-level Unicode equivalence.
+	if not hmac.compare_digest(
+		api_key.encode("utf-8"), expected_key.encode("utf-8"),
+	):
 		logger.warning("Invalid API key from %s", request.client.host if request.client else "unknown")
 		raise HTTPException(
 			status_code=401,
@@ -56,35 +65,71 @@ async def verify_api_key(
 	return api_key
 
 
-def verify_jwt_token(token: str, secret_key: str) -> dict:
+def verify_jwt_token(
+	token: str,
+	secret_key: str,
+	*,
+	issuer: str | None = None,
+	audience: str | None = None,
+) -> dict:
 	"""Verify a JWT token and extract the payload.
 
 	Args:
 		token: The JWT token string.
 		secret_key: The secret key used to sign the token.
+		issuer: If provided, require the token's ``iss`` claim to match.
+			TD-M1 — prevents token-replay across Alfred instances that
+			share a signing key. Unset = no enforcement (backward-compat).
+		audience: If provided, require the token's ``aud`` claim to
+			match. Same rationale as issuer.
 
 	Returns:
 		Dict with keys: user, roles, site_id, iat, exp.
 
 	Raises:
 		ValueError: If the token is empty, expired, tampered, signed with a
-			different algorithm, or missing any required claim (user, roles,
-			site_id, exp).
+			different algorithm, missing any required claim (user, roles,
+			site_id, exp), or fails iss/aud check when those are enforced.
 	"""
 	if not token:
 		raise ValueError("JWT token is empty")
 
+	# Build PyJWT's decode options: always require exp; require iss/aud
+	# when the caller is enforcing them (so a missing claim doesn't
+	# silently pass). When NOT enforcing, we also have to set
+	# verify_iss/verify_aud=False — otherwise a token that happens to
+	# carry those claims fails verification because PyJWT has no
+	# expected value to compare against.
+	required: list[str] = ["exp"]
+	options: dict = {"require": required}
+	if issuer:
+		required.append("iss")
+	else:
+		options["verify_iss"] = False
+	if audience:
+		required.append("aud")
+	else:
+		options["verify_aud"] = False
+
+	decode_kwargs: dict = {
+		"algorithms": ["HS256"],
+		"options": options,
+	}
+	if audience:
+		decode_kwargs["audience"] = audience
+	if issuer:
+		decode_kwargs["issuer"] = issuer
+
 	try:
-		# require=["exp"] rejects tokens that lack an expiry - without this,
-		# a handcrafted token with valid signature would never expire.
-		payload = jwt.decode(
-			token, secret_key, algorithms=["HS256"],
-			options={"require": ["exp"]},
-		)
+		payload = jwt.decode(token, secret_key, **decode_kwargs)
 	except jwt.ExpiredSignatureError:
 		raise ValueError("JWT token has expired")
 	except jwt.InvalidSignatureError:
 		raise ValueError("JWT signature verification failed - token may be tampered")
+	except jwt.InvalidIssuerError:
+		raise ValueError(f"JWT iss claim does not match expected issuer {issuer!r}")
+	except jwt.InvalidAudienceError:
+		raise ValueError(f"JWT aud claim does not match expected audience {audience!r}")
 	except jwt.MissingRequiredClaimError as e:
 		raise ValueError(f"JWT missing required claim: {e.claim}")
 	except jwt.DecodeError:
@@ -110,7 +155,16 @@ def verify_jwt_token(token: str, secret_key: str) -> dict:
 	}
 
 
-def create_jwt_token(user: str, roles: list[str], site_id: str, secret_key: str, exp_hours: int = 24) -> str:
+def create_jwt_token(
+	user: str,
+	roles: list[str],
+	site_id: str,
+	secret_key: str,
+	exp_hours: int = 24,
+	*,
+	issuer: str | None = None,
+	audience: str | None = None,
+) -> str:
 	"""Create a signed JWT token. Used for testing and by the client app.
 
 	Args:
@@ -119,16 +173,23 @@ def create_jwt_token(user: str, roles: list[str], site_id: str, secret_key: str,
 		site_id: Customer site identifier.
 		secret_key: Secret key for signing.
 		exp_hours: Token validity in hours.
+		issuer: If provided, include as ``iss`` claim. TD-M1 — pair with
+			the issuer passed to verify_jwt_token on the verifier side.
+		audience: If provided, include as ``aud`` claim. Same rationale.
 
 	Returns:
 		Signed JWT token string.
 	"""
 	now = int(time.time())
-	payload = {
+	payload: dict = {
 		"user": user,
 		"roles": roles,
 		"site_id": site_id,
 		"iat": now,
 		"exp": now + (exp_hours * 3600),
 	}
+	if issuer:
+		payload["iss"] = issuer
+	if audience:
+		payload["aud"] = audience
 	return jwt.encode(payload, secret_key, algorithm="HS256")

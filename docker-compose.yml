@@ -25,13 +25,20 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8000
-      - WORKERS=${WORKERS:-2}
+      # TD-H7: WORKERS=1 per container (per-connection state is in-process
+      # memory). Scale via multiple container replicas behind a sticky
+      # WebSocket LB, not by bumping this number. See Dockerfile comment
+      # for the full rationale.
+      - WORKERS=${WORKERS:-1}
       - API_SECRET_KEY=${API_SECRET_KEY:?Set API_SECRET_KEY in .env}
+      # JWT_SIGNING_KEY empty = legacy shared-key mode with deprecation
+      # warning at boot. Set to a distinct 32+ byte secret (TD-C2).
+      - JWT_SIGNING_KEY=${JWT_SIGNING_KEY:-}
       - REDIS_URL=redis://redis:6379/0
       - FALLBACK_LLM_MODEL=${FALLBACK_LLM_MODEL:-}
       - FALLBACK_LLM_API_KEY=${FALLBACK_LLM_API_KEY:-}
       - FALLBACK_LLM_BASE_URL=${FALLBACK_LLM_BASE_URL:-}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:?Set ALLOWED_ORIGINS in .env — explicit origin list required (e.g. https://app.example.com). `*` is rejected at startup.}
       - ADMIN_PORTAL_URL=${ADMIN_PORTAL_URL:-}
       - ADMIN_SERVICE_KEY=${ADMIN_SERVICE_KEY:-}
       - DEBUG=${DEBUG:-false}
@@ -39,8 +46,12 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # curl is already installed in the image (Dockerfile:7). The inline
+    # Python healthcheck used to work but spins up a Python interpreter
+    # every 30s just to do an HTTP GET - wasteful, inconsistent with the
+    # other services in this compose file which use curl.
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 5s
       retries: 3

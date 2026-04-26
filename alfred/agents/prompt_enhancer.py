@@ -118,6 +118,6 @@ async def enhance_prompt(
         )
         logger.info("Prompt enhanced: original=%d chars, enhanced=%d chars", len(raw_prompt), len(enhanced))
         return enhanced if enhanced else raw_prompt
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — LLM-boundary contract; any backend failure (OllamaError, timeout, runtime error from mocks) degrades to the original prompt rather than crash the pipeline
         logger.warning("Prompt enhancement failed, using original: %s", e)
         return raw_prompt

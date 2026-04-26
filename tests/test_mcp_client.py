@@ -8,7 +8,6 @@ import pytest
 from alfred.tools.mcp_client import MCPClient
 from alfred.tools.user_interaction import UserInteractionHandler
 
-
 # ── Mock WebSocket ────────────────────────────────────────────────
 
 class MockWebSocket:
@@ -234,7 +233,6 @@ class TestMCPClient:
 		"""call_sync must work when invoked from a non-main-loop thread (the
 		CrewAI tool dispatch path). This is the core cross-thread scenario
 		that the ThreadPoolExecutor-based _run_async previously got wrong."""
-		import threading
 
 		# Capture the main loop so handle_response runs cleanly via call_soon_threadsafe
 		client._main_loop = asyncio.get_running_loop()

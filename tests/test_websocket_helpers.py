@@ -5,10 +5,12 @@ extraction, tool-call description mapping, and the pipeline-mode precedence
 resolution. The full pipeline is exercised in test_api_gateway.py / manual QA.
 """
 
-import pytest
 
 from alfred.api.websocket import (
-	_extract_changes, _describe_tool_call, _TOOL_ACTIVITY, _validate_changeset_shape,
+	_TOOL_ACTIVITY,
+	_describe_tool_call,
+	_extract_changes,
+	_validate_changeset_shape,
 )
 
 

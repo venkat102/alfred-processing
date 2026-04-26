@@ -1,0 +1,181 @@
+{
+	"intent": "create_print_format",
+	"display_name": "Create Print Format",
+	"doctype": "Print Format",
+	"fields": [
+		{
+			"key": "name",
+			"label": "Print format name",
+			"type": "data",
+			"required": true
+		},
+		{
+			"key": "print_format_for",
+			"label": "Target kind",
+			"type": "select",
+			"options": ["DocType", "Report"],
+			"default": "DocType",
+			"rationale": "DocType is the common case (per-document layout). Report formats render Report Builder output; they auto-set custom_format=1 because Report output cannot be templated via the visual Print Format Builder."
+		},
+		{
+			"key": "doc_type",
+			"label": "Target DocType (when print_format_for='DocType')",
+			"type": "link",
+			"link_doctype": "DocType",
+			"default": "",
+			"rationale": "Required when print_format_for='DocType'. Empty when print_format_for='Report'."
+		},
+		{
+			"key": "report",
+			"label": "Target Report (when print_format_for='Report')",
+			"type": "link",
+			"link_doctype": "Report",
+			"default": "",
+			"rationale": "Required when print_format_for='Report'. The controller rejects the save if empty in that case."
+		},
+		{
+			"key": "custom_format",
+			"label": "Custom (non-Builder) format",
+			"type": "check",
+			"default": 1,
+			"rationale": "When 1, the print format is hand-authored (Jinja HTML or raw printer commands) - the html or raw_commands field is required. When 0, the format uses the visual Print Format Builder (drag-and-drop). Report formats force custom_format=1 at save."
+		},
+		{
+			"key": "print_format_type",
+			"label": "Template type (when custom_format=1)",
+			"type": "select",
+			"options": ["Jinja", "JS"],
+			"default": "Jinja",
+			"rationale": "Jinja is the canonical path: validate_template() checks syntax at save. JS is deprecated (legacy JavaScript-rendered formats); avoid unless explicitly required. Ignored when custom_format=0."
+		},
+		{
+			"key": "raw_printing",
+			"label": "Raw printing (thermal / label printers)",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, bypass HTML rendering and use raw_commands (native printer commands like ESC/POS, ZPL). Used for thermal receipts and label printers. When 0, the html field is used. Mutually exclusive with html being present."
+		},
+		{
+			"key": "html",
+			"label": "Jinja HTML body (when !raw_printing)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required when custom_format=1 AND raw_printing=0. Full Jinja HTML referencing `doc.<field>`. The Jinja context is ONLY the doc object plus a small set of helpers - no frappe.session, no arbitrary frappe.* calls. Use doc.get_formatted('field') for currency / date formatting. validate_template checks syntax at save."
+		},
+		{
+			"key": "raw_commands",
+			"label": "Raw printer commands (when raw_printing=1)",
+			"type": "text",
+			"default": "",
+			"rationale": "Required when raw_printing=1. Native printer language commands (ESC/POS for thermal receipts, ZPL for Zebra labels). Jinja-rendered on the server side like html but output straight to the printer."
+		},
+		{
+			"key": "standard",
+			"label": "Standard",
+			"type": "select",
+			"options": ["No", "Yes"],
+			"default": "No",
+			"rationale": "'No' = site-local (DB-only). 'Yes' writes to an app's filesystem and requires developer_mode AND the caller cannot be in migrate / install / test context - the controller rejects saves of standard formats outside those explicit flows."
+		},
+		{
+			"key": "default",
+			"label": "Default for DocType",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default 0. When 1, this format replaces the DocType's built-in default print format. Setting default=1 on a new format does NOT auto-clear default=1 on existing formats - the user sees two 'defaults' until one is manually cleared."
+		},
+		{
+			"key": "letter_head",
+			"label": "Letter head",
+			"type": "link",
+			"link_doctype": "Letter Head",
+			"default": "",
+			"rationale": "Optional. Names an existing Letter Head whose content / footer wraps this print format. Empty means no letter head wrapper."
+		},
+		{
+			"key": "pdf_generator",
+			"label": "PDF generator",
+			"type": "select",
+			"options": ["wkhtmltopdf", "chrome"],
+			"default": "wkhtmltopdf",
+			"rationale": "wkhtmltopdf is the default and works for most layouts. chrome uses headless Chromium and renders modern CSS better (flexbox, grid) but is slower and has a heavier runtime dependency."
+		},
+		{
+			"key": "disabled",
+			"label": "Disabled",
+			"type": "check",
+			"default": 0,
+			"rationale": "Default enabled. Disabled formats are hidden from the Print dialog but kept in the DB for restoration."
+		},
+		{
+			"key": "margin_top",
+			"label": "Top margin (mm)",
+			"type": "int",
+			"default": 15,
+			"rationale": "Page margin in millimetres. Frappe default 15mm fits most business documents. Lower margins (5-10mm) for dense invoices; raise for letterhead-only print formats."
+		},
+		{
+			"key": "margin_bottom",
+			"label": "Bottom margin (mm)",
+			"type": "int",
+			"default": 15,
+			"rationale": "Bottom margin; must accommodate the footer content. Default 15mm."
+		},
+		{
+			"key": "margin_left",
+			"label": "Left margin (mm)",
+			"type": "int",
+			"default": 15,
+			"rationale": "Left margin. Default 15mm. Asymmetric margins (e.g. larger left for binding) are common for printed reports."
+		},
+		{
+			"key": "margin_right",
+			"label": "Right margin (mm)",
+			"type": "int",
+			"default": 15,
+			"rationale": "Right margin. Default 15mm."
+		},
+		{
+			"key": "font",
+			"label": "Google Font name",
+			"type": "data",
+			"default": "",
+			"rationale": "Optional. Names a Google Font to load in the rendered HTML (e.g. 'Inter', 'Roboto'). Empty uses the system default (usually Helvetica / Arial fallback). Not applied when custom_format=1 + print_format_type='Jinja' with inline styling."
+		},
+		{
+			"key": "font_size",
+			"label": "Base font size (pt)",
+			"type": "int",
+			"default": 14,
+			"rationale": "Base point size for body text. Default 14pt. Lower (10-12pt) for dense reports; raise for accessibility."
+		},
+		{
+			"key": "css",
+			"label": "Additional CSS",
+			"type": "text",
+			"default": "",
+			"rationale": "Custom CSS rules appended to the rendered print HTML. Use for brand styling (borders, colours, spacing) that the Jinja template doesn't express inline. Empty for unstyled defaults."
+		},
+		{
+			"key": "align_labels_right",
+			"label": "Right-align field labels",
+			"type": "check",
+			"default": 0,
+			"rationale": "Cosmetic: when 1, field labels align to the right of their columns. Common in RTL layouts and formal letterhead styles."
+		},
+		{
+			"key": "show_section_headings",
+			"label": "Show section break headings",
+			"type": "check",
+			"default": 0,
+			"rationale": "When 1, Section Break labels render as printed headings. Useful for long documents where section boundaries help readers; noise for short invoices."
+		},
+		{
+			"key": "absolute_value",
+			"label": "Show negatives as positive (for credit notes)",
+			"type": "check",
+			"default": 0,
+			"rationale": "Niche: when 1, negative values in Currency / Quantity / Count fields render as their absolute value. Used on Credit Note / refund print formats where the negativity is implicit in the document type, not shown in the number."
+		}
+	]
+}

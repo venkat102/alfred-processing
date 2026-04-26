@@ -47,11 +47,46 @@ def test_user_provided_fields_preserved():
 
 
 def test_item_with_no_matching_registry_passes_through_untouched():
+	# Use a doctype that genuinely has no intent registry entry.
+	# (Custom Field did when this test was written, but a create_custom_field
+	# registry has since landed - the "no matching registry" assertion has
+	# to be anchored to a truly unregistered doctype to stay meaningful.)
 	cs = Changeset(
-		items=[ChangesetItem(operation="create", doctype="Custom Field", data={"fieldname": "x"})]
+		items=[ChangesetItem(operation="create", doctype="Sales Invoice", data={"customer": "ACME"})]
 	)
 	out = backfill_defaults(cs)
+	assert out.items[0].data == {"customer": "ACME"}
+	assert out.items[0].field_defaults_meta is None
+
+
+def test_intent_gating_skips_items_whose_doctype_is_not_intent_target():
+	# create_doctype intent's target is DocType. A Custom Field item
+	# slipped into the same changeset should NOT receive create_custom_field
+	# defaults - intent classification pins backfill to ONE target doctype.
+	cs = Changeset(items=[
+		ChangesetItem(operation="create", doctype="Custom Field", data={"fieldname": "x"}),
+	])
+	out = backfill_defaults(cs, intent="create_doctype")
 	assert out.items[0].data == {"fieldname": "x"}
+	assert out.items[0].field_defaults_meta is None
+
+
+def test_intent_gating_applies_to_matching_doctype():
+	# Same intent, but the item's doctype DOES match - backfill runs.
+	cs = Changeset(items=[
+		ChangesetItem(operation="create", doctype="DocType", data={"name": "Book", "module": "Custom"}),
+	])
+	out = backfill_defaults(cs, intent="create_doctype")
+	assert out.items[0].data.get("autoname") == "autoincrement"
+	assert out.items[0].field_defaults_meta["autoname"].source == "default"
+
+
+def test_intent_gating_unknown_intent_passes_through():
+	cs = Changeset(items=[
+		ChangesetItem(operation="create", doctype="DocType", data={"name": "Book"}),
+	])
+	out = backfill_defaults(cs, intent="not_a_real_intent")
+	assert out.items[0].data == {"name": "Book"}
 	assert out.items[0].field_defaults_meta is None
 
 

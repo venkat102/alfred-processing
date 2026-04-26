@@ -2,16 +2,15 @@
 
 import json
 import os
-import time
 
 import pytest
 
 from alfred.agents.crew import (
+	TASK_DESCRIPTIONS,
 	CrewState,
 	build_alfred_crew,
 	load_crew_state,
 	save_crew_state,
-	TASK_DESCRIPTIONS,
 )
 
 
@@ -164,12 +163,13 @@ class TestRedisStatePersistence:
 	@pytest.fixture
 	async def store(self):
 		import redis.asyncio as aioredis
+
 		from alfred.state.store import StateStore
 
 		try:
 			client = aioredis.from_url("redis://127.0.0.1:11000/2", decode_responses=True)
 			await client.ping()
-		except Exception:
+		except (aioredis.RedisError, OSError):
 			pytest.skip("Redis not available")
 
 		store = StateStore(client)

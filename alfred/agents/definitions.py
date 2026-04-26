@@ -14,7 +14,7 @@ Usage:
 import logging
 import os
 
-from crewai import Agent, LLM
+from crewai import LLM, Agent
 
 from alfred.agents import backstories
 from alfred.agents.tool_stubs import TOOL_ASSIGNMENTS
@@ -248,5 +248,5 @@ def check_llm_health(site_config: dict | None = None) -> dict:
 	try:
 		llm = _resolve_llm(site_config)
 		return {"healthy": True, "model": llm.model}
-	except Exception as e:
+	except Exception as e:  # noqa: BLE001 — health-check boundary; _resolve_llm goes through litellm/crewai factory chain (3rd-party) and any raise must turn into a structured {healthy: False} result rather than propagate
 		return {"healthy": False, "model": "unknown", "error": str(e)}

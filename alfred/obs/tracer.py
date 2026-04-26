@@ -22,18 +22,19 @@ pipeline.
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import logging
 import os
 import sys
+import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger("alfred.tracer")
 
@@ -175,13 +176,73 @@ class Tracer:
 		for fn in self._exporters:
 			try:
 				fn(data)
-			except Exception as e:
+			except Exception as e:  # noqa: BLE001 — exporter is user-supplied callable; any raise must be swallowed or the tracer breaks the pipeline
 				logger.warning("Tracer exporter failed: %s", e)
 
 
 tracer = Tracer()
 
 _jsonl_lock = threading.Lock()
+
+_DEFAULT_TRACE_PATH = "alfred_trace.jsonl"
+
+
+def _safe_trace_path(raw: str) -> str:
+	"""Validate ALFRED_TRACE_PATH against a permitted-root whitelist.
+
+	The env var is typically set by an operator at deploy time, but any
+	attacker who can set process env vars (container injection, CI secret
+	leakage, shell history exposure) could otherwise redirect trace writes
+	to a sensitive path like /etc/systemd/system or clobber an adjacent
+	service's config. This helper resolves the raw input and accepts only
+	paths rooted inside:
+
+	  - the current working directory (standard dev case: ``./alfred_trace.jsonl``)
+	  - the user's home directory (``~/.alfred/trace.jsonl``)
+	  - the system temp dir (``/tmp/trace.jsonl``)
+
+	Anything else falls back to the default filename in CWD, with a
+	WARNING logged so the operator notices. Relative ``..`` components
+	in the raw input are rejected up front because they're the classic
+	traversal signal.
+	"""
+	if ".." in raw.split(os.sep):
+		logger.warning(
+			"Rejecting ALFRED_TRACE_PATH=%r - contains '..' traversal component; "
+			"falling back to default %r", raw, _DEFAULT_TRACE_PATH,
+		)
+		return _DEFAULT_TRACE_PATH
+
+	expanded = os.path.expanduser(raw)
+	# realpath resolves symlinks too - an attacker can't launder a path
+	# through a world-writable symlink that points to /etc/...
+	resolved = os.path.realpath(expanded)
+
+	# Build the allowed-root list and resolve each, because on macOS /tmp
+	# is a symlink to /private/tmp and tempfile.gettempdir() returns a
+	# per-user path under /var/folders - without realpath on both sides,
+	# a legitimate /tmp path would false-reject.
+	allowed_roots = [
+		os.path.realpath(os.getcwd()),
+		os.path.realpath(os.path.expanduser("~")),
+		os.path.realpath(tempfile.gettempdir()),
+		os.path.realpath("/tmp"),
+		os.path.realpath("/var/tmp"),
+	]
+	for root in allowed_roots:
+		try:
+			# commonpath raises ValueError on unrelated drives (windows); catch.
+			if os.path.commonpath([resolved, root]) == root:
+				return resolved
+		except ValueError:
+			continue
+
+	logger.warning(
+		"Rejecting ALFRED_TRACE_PATH=%r (resolved=%r) - outside allowed "
+		"roots (cwd, $HOME, %s); falling back to default %r",
+		raw, resolved, tempfile.gettempdir(), _DEFAULT_TRACE_PATH,
+	)
+	return _DEFAULT_TRACE_PATH
 
 
 def jsonl_file_exporter(path: str) -> Callable[[dict[str, Any]], None]:
@@ -191,7 +252,7 @@ def jsonl_file_exporter(path: str) -> Callable[[dict[str, Any]], None]:
 	parallel via the same uvicorn worker pool. O_APPEND would also work
 	but relies on kernel-level atomicity of short writes.
 	"""
-	path = os.path.expanduser(path)
+	path = _safe_trace_path(path)
 	directory = os.path.dirname(path) or "."
 	try:
 		os.makedirs(directory, exist_ok=True)
@@ -235,21 +296,23 @@ def configure_from_env() -> None:
 	Safe to call multiple times - clears and re-registers exporters each
 	time so test fixtures can reset between runs.
 	"""
+	from alfred.config import get_settings
+	settings = get_settings()
 	tracer.clear_exporters()
-	if os.environ.get("ALFRED_TRACING_ENABLED", "").lower() not in {"1", "true", "yes"}:
+	if not settings.ALFRED_TRACING_ENABLED:
 		tracer.disable()
 		return
 	tracer.enable()
 
-	path = os.environ.get("ALFRED_TRACE_PATH") or "alfred_trace.jsonl"
+	path = settings.ALFRED_TRACE_PATH or "alfred_trace.jsonl"
 	tracer.register_exporter(jsonl_file_exporter(path))
 
-	if os.environ.get("ALFRED_TRACE_STDOUT", "").lower() in {"1", "true", "yes"}:
+	if settings.ALFRED_TRACE_STDOUT:
 		tracer.register_exporter(stdout_exporter)
 
 	logger.info(
 		"Tracing enabled: jsonl=%s stdout=%s",
-		path, "ALFRED_TRACE_STDOUT" in os.environ,
+		path, settings.ALFRED_TRACE_STDOUT,
 	)
 
 
