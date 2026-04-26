@@ -30,7 +30,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from alfred.api.lifecycle import is_shutting_down, track_pipeline
 from alfred.api.websocket.extract import _describe_tool_call
-from alfred.middleware.auth import verify_jwt_token
+from alfred.middleware.auth import resolve_jwt_signing_key, verify_jwt_token
 from alfred.obs.logging_setup import bind_request_context, clear_request_context
 from alfred.obs.tasks import spawn_logged
 
@@ -278,20 +278,35 @@ async def _authenticate_handshake(
 			pass
 		return None
 
+	settings = websocket.app.state.settings
 	api_key = payload.api_key
-	expected_key = websocket.app.state.settings.API_SECRET_KEY
 	# Constant-time comparison defeats timing attacks - a naive != leaks the
 	# prefix match length via response latency. hmac.compare_digest accepts
 	# str/str or bytes/bytes, but TypeErrors on mismatched types if the
 	# client sent a non-string, so we coerce both sides to str first.
-	if not hmac.compare_digest(str(api_key), str(expected_key)):
+	if not hmac.compare_digest(str(api_key), str(settings.API_SECRET_KEY)):
 		logger.warning("WS auth failed: invalid API key for conversation=%s", conversation_id)
 		await websocket.close(code=WS_CLOSE_AUTH_FAILED, reason="Invalid API key")
 		return None
 
+	# JWT verification uses the SEPARATELY-resolved signing key, NOT the
+	# API_SECRET_KEY. An earlier version reused the API key here, which
+	# meant rotating JWT_SIGNING_KEY accepted new-key tokens on REST but
+	# silently rejected them on WS. resolve_jwt_signing_key is the single
+	# source of truth - both transports must go through it.
+	jwt_signing_key = resolve_jwt_signing_key(settings)
 	jwt_token = payload.jwt_token
 	try:
-		jwt_payload = verify_jwt_token(jwt_token, expected_key)
+		jwt_payload = verify_jwt_token(
+			jwt_token,
+			jwt_signing_key,
+			# Same enforcement as the REST path (see verify_rest_jwt) -
+			# when operators set JWT_ISSUER / JWT_AUDIENCE these become
+			# required claims. ``or None`` collapses the unset-default
+			# empty string into "don't enforce".
+			issuer=settings.JWT_ISSUER or None,
+			audience=settings.JWT_AUDIENCE or None,
+		)
 	except ValueError as e:
 		logger.warning("WS auth failed: JWT error for conversation=%s: %s", conversation_id, e)
 		await websocket.close(code=WS_CLOSE_AUTH_FAILED, reason=str(e))

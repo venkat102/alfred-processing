@@ -59,6 +59,12 @@ def _make_ws(settings_api_key: str = API_KEY) -> MagicMock:
 	ws.app.state = MagicMock()
 	ws.app.state.settings = MagicMock()
 	ws.app.state.settings.API_SECRET_KEY = settings_api_key
+	# resolve_jwt_signing_key(settings) reads these; an unattended MagicMock
+	# returns truthy mocks that crash PyJWT's force_bytes. Set explicit
+	# empty strings so the legacy API_SECRET_KEY fallback engages.
+	ws.app.state.settings.JWT_SIGNING_KEY = ""
+	ws.app.state.settings.JWT_ISSUER = ""
+	ws.app.state.settings.JWT_AUDIENCE = ""
 	ws.app.state.redis = None  # rate_limit.check_rate_limit tolerates None
 	return ws
 

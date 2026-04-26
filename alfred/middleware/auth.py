@@ -65,16 +65,27 @@ async def verify_api_key(
 	return api_key
 
 
-def _get_jwt_signing_key(request: Request) -> str:
-	"""Resolve the secret used to verify REST JWTs.
+def resolve_jwt_signing_key(settings) -> str:
+	"""Resolve the secret used to verify per-user JWTs.
 
-	Same fallback chain as the WS handshake (see ``connection.py``):
-	prefer ``JWT_SIGNING_KEY`` once it's configured; otherwise fall back
-	to ``API_SECRET_KEY`` for the legacy shared-key mode TD-C2 is
-	gradually phasing out.
+	Single source of truth for the TD-C2 fallback chain: prefer
+	``JWT_SIGNING_KEY`` once an operator has configured a key separation,
+	otherwise fall back to ``API_SECRET_KEY`` for the legacy shared-key
+	mode that we are gradually phasing out.
+
+	Both transports MUST resolve the JWT key through this helper. A
+	previous version had the WS handshake hardcode ``API_SECRET_KEY`` for
+	JWT verification; rotating ``JWT_SIGNING_KEY`` then accepted new
+	tokens on REST and silently rejected them on WS, breaking rotation.
+	If you find yourself wanting to inline `settings.JWT_SIGNING_KEY or
+	settings.API_SECRET_KEY` somewhere, call this helper instead.
 	"""
-	settings = request.app.state.settings
 	return settings.JWT_SIGNING_KEY or settings.API_SECRET_KEY
+
+
+def _get_jwt_signing_key(request: Request) -> str:
+	"""Request-bound thin wrapper over ``resolve_jwt_signing_key``."""
+	return resolve_jwt_signing_key(request.app.state.settings)
 
 
 async def verify_rest_jwt(
@@ -121,9 +132,21 @@ async def verify_rest_jwt(
 			},
 		)
 
-	secret = _get_jwt_signing_key(request)
+	settings = request.app.state.settings
+	secret = resolve_jwt_signing_key(settings)
 	try:
-		payload = verify_jwt_token(x_jwt, secret)
+		payload = verify_jwt_token(
+			x_jwt,
+			secret,
+			# When operators configure JWT_ISSUER / JWT_AUDIENCE in the
+			# environment, these MUST be enforced - otherwise the docs
+			# (``verify_jwt_token`` docstring + ``config.py`` examples)
+			# describe a TD-M1 cross-instance replay-prevention control
+			# that silently does nothing. ``or None`` collapses the
+			# unset-default empty string into "don't enforce".
+			issuer=settings.JWT_ISSUER or None,
+			audience=settings.JWT_AUDIENCE or None,
+		)
 	except ValueError as e:
 		logger.warning(
 			"REST JWT verification failed from %s: %s",

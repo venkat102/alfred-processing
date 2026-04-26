@@ -61,6 +61,12 @@ def _make_ws() -> MagicMock:
 	ws.app.state = MagicMock()
 	ws.app.state.settings = MagicMock()
 	ws.app.state.settings.API_SECRET_KEY = API_KEY
+	# resolve_jwt_signing_key reads JWT_SIGNING_KEY; bare MagicMock returns
+	# a truthy mock that crashes PyJWT. Empty string = legacy fallback to
+	# API_SECRET_KEY (matches every other WS test fixture in this repo).
+	ws.app.state.settings.JWT_SIGNING_KEY = ""
+	ws.app.state.settings.JWT_ISSUER = ""
+	ws.app.state.settings.JWT_AUDIENCE = ""
 	ws.app.state.settings.WS_HEARTBEAT_INTERVAL = 30
 	ws.app.state.redis = None
 	ws.app.state.shutting_down = False

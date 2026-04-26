@@ -66,6 +66,13 @@ def _make_ws() -> MagicMock:
 	ws.app.state = MagicMock()
 	ws.app.state.settings = MagicMock()
 	ws.app.state.settings.API_SECRET_KEY = API_KEY
+	# These need explicit values: connection.py now resolves JWT key
+	# via resolve_jwt_signing_key(settings) and passes settings.JWT_ISSUER /
+	# JWT_AUDIENCE through to verify_jwt_token. A bare MagicMock returns
+	# a MagicMock (truthy) for missing attrs, which crashes PyJWT.
+	ws.app.state.settings.JWT_SIGNING_KEY = ""   # legacy fallback to API key
+	ws.app.state.settings.JWT_ISSUER = ""
+	ws.app.state.settings.JWT_AUDIENCE = ""
 	ws.app.state.settings.WS_HEARTBEAT_INTERVAL = 30
 	ws.app.state.redis = None
 	return ws

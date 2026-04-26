@@ -199,3 +199,90 @@ class TestRESTLayeredAuth:
 		assert resp.status_code == 401
 		# Bearer fails first, so the code is AUTH_MISSING not JWT_MISSING.
 		assert resp.json().get("code") == "AUTH_MISSING"
+
+
+class TestRESTJWTIssuerAudience:
+	"""Pin that ``verify_rest_jwt`` threads ``settings.JWT_ISSUER`` and
+	``settings.JWT_AUDIENCE`` into ``verify_jwt_token``. ``test_jwt_iss_aud.py``
+	already covers the helper at the unit level - this class catches
+	the regression class "the helper supports it but the caller forgot
+	to pass it through" (which is exactly what bit us on this surface).
+	"""
+
+	@pytest.fixture
+	def app_with_iss_aud(self, monkeypatch):
+		monkeypatch.setenv("API_SECRET_KEY", API_KEY)
+		monkeypatch.setenv("ALLOWED_ORIGINS", "http://localhost:8001")
+		monkeypatch.setenv("JWT_ISSUER", "admin.example.com")
+		monkeypatch.setenv("JWT_AUDIENCE", "alfred.prod")
+		os.environ.pop("REDIS_URL", None)
+
+		from alfred.config import get_settings
+		get_settings.cache_clear()
+
+		from alfred.main import create_app
+		test_app = create_app()
+		test_app.state.settings = get_settings()
+		fake_redis = MagicMock()
+		fake_redis.pipeline.return_value.execute = AsyncMock(return_value=[0, 0, 1, True])
+		fake_redis.zrange = AsyncMock(return_value=[])
+		fake_redis.zrem = AsyncMock(return_value=0)
+		fake_redis.setex = AsyncMock(return_value=True)
+		fake_redis.get = AsyncMock(return_value=None)
+		test_app.state.redis = fake_redis
+		yield test_app
+		get_settings.cache_clear()
+
+	@pytest.fixture
+	async def iss_aud_client(self, app_with_iss_aud):
+		transport = ASGITransport(app=app_with_iss_aud)
+		async with AsyncClient(transport=transport, base_url="http://test") as ac:
+			yield ac
+
+	@pytest.mark.asyncio
+	async def test_legacy_jwt_without_iss_rejected(self, iss_aud_client):
+		"""When ``JWT_ISSUER`` is configured, a JWT without ``iss``
+		must be rejected. If ``verify_rest_jwt`` had dropped the
+		``issuer=`` kwarg, this token would silently pass."""
+		legacy = create_jwt_token(USER, ROLES, SITE_ID, API_KEY, exp_hours=1)
+		resp = await iss_aud_client.post(
+			"/api/v1/tasks", json=_body(),
+			headers=_headers(jwt=legacy),
+		)
+		assert resp.status_code == 401
+		assert resp.json().get("code") == "JWT_INVALID"
+
+	@pytest.mark.asyncio
+	async def test_jwt_with_wrong_aud_rejected(self, iss_aud_client):
+		token = create_jwt_token(
+			USER, ROLES, SITE_ID, API_KEY, exp_hours=1,
+			issuer="admin.example.com",
+			audience="alfred.staging",   # wrong - server expects alfred.prod
+		)
+		resp = await iss_aud_client.post(
+			"/api/v1/tasks", json=_body(),
+			headers=_headers(jwt=token),
+		)
+		assert resp.status_code == 401
+		assert resp.json().get("code") == "JWT_INVALID"
+
+	@pytest.mark.asyncio
+	async def test_jwt_with_matching_iss_and_aud_accepted(self, iss_aud_client):
+		"""Happy path: when both claims match, the caller threads them
+		through and the token is accepted. Returns 2xx (or 503 if Redis
+		path was missed) - any response that is NOT 401 proves auth
+		passed.
+		"""
+		token = create_jwt_token(
+			USER, ROLES, SITE_ID, API_KEY, exp_hours=1,
+			issuer="admin.example.com",
+			audience="alfred.prod",
+		)
+		resp = await iss_aud_client.post(
+			"/api/v1/tasks", json=_body(),
+			headers=_headers(jwt=token),
+		)
+		assert resp.status_code != 401, (
+			f"JWT with matching iss/aud should not return 401; got "
+			f"{resp.status_code}: {resp.text}"
+		)
