@@ -13,10 +13,10 @@ Usage:
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any
 
-import redis.asyncio as aioredis
 from crewai import Agent, Crew, Process, Task
 
 from alfred.agents.condenser import make_condenser_callback
@@ -310,10 +310,7 @@ async def save_crew_state(store, site_id: str, conversation_id: str, state: Crew
 	try:
 		await store.set_task_state(site_id, key, state.to_dict())
 		logger.debug("Saved crew state for %s/%s", site_id, conversation_id)
-	except (aioredis.RedisError, TypeError, ValueError) as e:
-		# Same shape as conversation_memory save: RedisError = network/
-		# auth/timeout, TypeError = JSON serialise of an item that
-		# slipped into state, ValueError = id-validator on bad inputs.
+	except Exception as e:  # noqa: BLE001 — best-effort crew-state checkpoint; failure must not abort the crew (resume won't work, that's the trade-off)
 		logger.error("Failed to save crew state: %s (crew will continue but resume won't work)", e)
 
 
@@ -714,8 +711,8 @@ def build_alfred_crew(
 	}
 
 	# Create tasks - skip already completed ones on resume
-	tasks = []
-	task_map: dict[str, Task] = {}
+	tasks: list = []
+	task_map: dict = {}
 
 	# Pydantic output models - kept for reference and downstream parsing,
 	# but NOT wired into CrewAI's output_json because local models (Ollama)
@@ -949,8 +946,7 @@ async def run_crew(
 
 
 def _per_intent_builders_enabled() -> bool:
-	from alfred.config import get_settings
-	return get_settings().ALFRED_PER_INTENT_BUILDERS
+	return os.environ.get("ALFRED_PER_INTENT_BUILDERS") == "1"
 
 
 def _get_specialist_developer_agent(
@@ -964,38 +960,20 @@ def _get_specialist_developer_agent(
 	None means "use the generic Developer agent built by build_agents()".
 	Returned Agent slots into agents['developer'] unchanged; the rest of
 	the crew (Tester, Deployer) treats it identically.
-
-	Logs each fallback path so operators can tell apart:
-	  - flag-off (no log; expected)
-	  - classifier punt (intent None / "unknown"): INFO
-	  - intent recognised but no builder registered: WARNING (implies
-	    a drift between the classifier's vocabulary and the builder
-	    catalog - someone added a new intent without adding a builder,
-	    or renamed a builder family without updating the classifier)
 	"""
 	if not _per_intent_builders_enabled():
 		return None
 	if not intent or intent == "unknown":
 		logger.info(
-			"No specialist dispatched: intent=%r - falling back to generic Developer. "
-			"Classifier couldn't match the prompt to a known intent.",
+			"No specialist builder for intent=%r; falling back to generic Developer",
 			intent,
 		)
 		return None
 
-	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS, build_automation_agent
-	from alfred.agents.builders.presentation_builder import (
-		PRESENTATION_INTENTS,
-		build_presentation_agent,
-	)
-	from alfred.agents.builders.reports_builder import REPORTS_INTENTS, build_reports_agent
-	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS, build_schema_agent
-
-	if intent in SCHEMA_INTENTS:
-		agent = build_schema_agent(
-			intent=intent,
-			site_config=site_config,
-			custom_tools=custom_tools,
+	if intent == "create_doctype":
+		from alfred.agents.builders.doctype_builder import build_doctype_builder_agent
+		agent = build_doctype_builder_agent(
+			site_config=site_config, custom_tools=custom_tools
 		)
 		logger.info(
 			"Builder specialist selected: intent=%s agent_role=%r",
@@ -1003,11 +981,10 @@ def _get_specialist_developer_agent(
 		)
 		return agent
 
-	if intent in REPORTS_INTENTS:
-		agent = build_reports_agent(
-			intent=intent,
-			site_config=site_config,
-			custom_tools=custom_tools,
+	if intent == "create_report":
+		from alfred.agents.builders.report_builder import build_report_builder_agent
+		agent = build_report_builder_agent(
+			site_config=site_config, custom_tools=custom_tools
 		)
 		logger.info(
 			"Builder specialist selected: intent=%s agent_role=%r",
@@ -1015,40 +992,9 @@ def _get_specialist_developer_agent(
 		)
 		return agent
 
-	if intent in AUTOMATION_INTENTS:
-		agent = build_automation_agent(
-			intent=intent,
-			site_config=site_config,
-			custom_tools=custom_tools,
-		)
-		logger.info(
-			"Builder specialist selected: intent=%s agent_role=%r",
-			intent, agent.role,
-		)
-		return agent
-
-	if intent in PRESENTATION_INTENTS:
-		agent = build_presentation_agent(
-			intent=intent,
-			site_config=site_config,
-			custom_tools=custom_tools,
-		)
-		logger.info(
-			"Builder specialist selected: intent=%s agent_role=%r",
-			intent, agent.role,
-		)
-		return agent
-
-	# Intent was classified to a non-empty value but no family claims it.
-	# This is the "classifier / builder drift" signal - raise it to WARNING
-	# so it shows up in operator dashboards. The prompt still completes
-	# (generic Developer picks it up) but the specialist stack missed.
 	logger.warning(
-		"No builder registered for intent=%r - falling back to generic Developer. "
-		"Known families: schema=%s, reports=%s, automation=%s, presentation=%s.",
+		"No builder registered for intent=%r; falling back to generic Developer",
 		intent,
-		sorted(SCHEMA_INTENTS), sorted(REPORTS_INTENTS),
-		sorted(AUTOMATION_INTENTS), sorted(PRESENTATION_INTENTS),
 	)
 	return None
 
@@ -1073,41 +1019,16 @@ def _enhance_task_description(
 	if not intent or intent == "unknown":
 		return base_description
 
-	from alfred.agents.builders.automation_builder import AUTOMATION_INTENTS
-	from alfred.agents.builders.automation_builder import (
-		enhance_generate_changeset_description as enhance_automation,
-	)
-	from alfred.agents.builders.presentation_builder import PRESENTATION_INTENTS
-	from alfred.agents.builders.presentation_builder import (
-		enhance_generate_changeset_description as enhance_presentation,
-	)
-	from alfred.agents.builders.reports_builder import REPORTS_INTENTS
-	from alfred.agents.builders.reports_builder import (
-		enhance_generate_changeset_description as enhance_reports,
-	)
-	from alfred.agents.builders.schema_builder import SCHEMA_INTENTS
-	from alfred.agents.builders.schema_builder import (
-		enhance_generate_changeset_description as enhance_schema,
-	)
-
-	if intent in SCHEMA_INTENTS:
-		return enhance_schema(
-			base_description, intent=intent, module_context=module_context,
+	if intent == "create_doctype":
+		from alfred.agents.builders.doctype_builder import enhance_generate_changeset_description
+		return enhance_generate_changeset_description(
+			base_description, module_context=module_context,
 		)
 
-	if intent in REPORTS_INTENTS:
-		return enhance_reports(
-			base_description, intent=intent, module_context=module_context,
-		)
-
-	if intent in AUTOMATION_INTENTS:
-		return enhance_automation(
-			base_description, intent=intent, module_context=module_context,
-		)
-
-	if intent in PRESENTATION_INTENTS:
-		return enhance_presentation(
-			base_description, intent=intent, module_context=module_context,
+	if intent == "create_report":
+		from alfred.agents.builders.report_builder import enhance_generate_changeset_description
+		return enhance_generate_changeset_description(
+			base_description, module_context=module_context,
 		)
 
 	return base_description
