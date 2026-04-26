@@ -39,6 +39,29 @@ Threat model: the client is NOT fully trusted. Authenticated clients
 can still be compromised or misconfigured, and this module assumes so.
 Infrastructure-level egress rules (VPC security groups, egress firewall)
 are the outer defence; this is the application-level inner defence.
+
+Scope (read this before adding a new caller):
+  This module gates ``site_config['llm_base_url']`` and similar
+  client-supplied LLM endpoint URLs. It does NOT gate:
+
+    - MCP outbound calls. The MCP transport runs in alfred_client
+      (the Frappe app), not here, and its destinations are the
+      Frappe site itself + tools the site exposes — controlled by
+      the operator, not the client. If a future change ever lets a
+      processing-side agent call an external HTTP endpoint, that
+      caller MUST add a ``validate_llm_url`` check or an analogous
+      one with the same fail-closed default.
+    - The processing app's own outbound HTTP for known-static targets
+      (e.g. health checks, metric pushes to a configured collector).
+      Those endpoints come from server config, not the client, so
+      the SSRF threat does not apply.
+    - Webhook URLs configured via the admin portal. Those are
+      out-of-band and have their own validation in alfred_admin.
+
+  Bottom line: adding a new path that takes a URL from the client
+  without calling ``validate_llm_url`` re-introduces the SSRF
+  hole. Pin the call site with a unit test (see
+  ``tests/test_url_allowlist.py`` for patterns).
 """
 
 from __future__ import annotations
