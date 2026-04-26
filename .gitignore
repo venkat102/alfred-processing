@@ -32,3 +32,10 @@ benchmarks/*.log
 
 # Local Claude Code state (per-machine; never commit)
 .claude/
+
+# CHANGELOG.md is intentionally NOT maintained in this repo - the git
+# log + commit message style is the history of record. See TD-L5 in
+# docs/tech-debt-backlog.md (marked Won't do) for the decision. Listed
+# here so an upstream merge that adds a CHANGELOG.md doesn't silently
+# reintroduce one.
+CHANGELOG.md

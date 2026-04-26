@@ -91,7 +91,9 @@ def test_enforcement_rejects_wrong_aud():
 def test_enforcement_rejects_token_without_iss():
 	# Legacy token (no iss) hitting a server that NOW enforces iss.
 	# This is the migration transition: legacy tokens die after the
-	# flip. Expected + documented in the CHANGELOG rollout.
+	# flip. Operator-facing migration notes live in the rollout commit
+	# message (TD-M1), not in a CHANGELOG - this repo doesn't maintain
+	# one.
 	legacy = create_jwt_token(_USER, _ROLES, _SITE, _KEY)
 	with pytest.raises(ValueError, match="iss"):
 		verify_jwt_token(

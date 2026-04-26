@@ -1474,19 +1474,28 @@ same mechanism as TD-M1 (once RS256 lands).
 
 ---
 
-## TD-L5 — Process hygiene: CHANGELOG + release notes
+## TD-L5 — Process hygiene: CHANGELOG + release notes (WON'T DO)
 
 **Severity:** Low
 **Area:** DevOps / Docs
 **Effort:** S
+**Status:** **Won't do.** Closed 2026-04-26.
 
-Add `CHANGELOG.md`. Each release documented with "Added / Changed /
-Fixed / Security" sections. Link commits. Makes upgrade review for
-operators trivial.
+Original proposal: maintain a `CHANGELOG.md` documenting each release
+with "Added / Changed / Fixed / Security" sections, gated by release
+PR review.
 
-**Acceptance criteria:**
-- [ ] `CHANGELOG.md` committed, documenting the last 3 releases.
-- [ ] Release PRs require a changelog entry.
+**Why we're not doing this:** Project policy is that the git log and
+commit-message style ARE the history of record. Each commit names its
+type (feat/fix/refactor/test/...), scope, and the why; release notes
+can be derived from `git log <last-tag>..HEAD` at tag time without a
+parallel hand-maintained file that drifts. CHANGELOG.md is gitignored
+(see `.gitignore`) so an upstream merge that adds one cannot silently
+reintroduce it.
+
+If a customer ever needs a human-curated upgrade-impact summary, the
+right move is to generate one from the git log at release time, not
+to maintain a CHANGELOG.md continuously.
 
 ---
 
