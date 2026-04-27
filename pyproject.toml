@@ -19,7 +19,7 @@ dependencies = [
 	# _rescue_regenerate_changeset). Bump deliberately: update this version,
 	# run the full pytest suite + bench tests, confirm no drift/rescue
 	# regression, then commit.
-	"crewai==0.203.2",
+	"crewai==1.14.3",
 	# Range is wide but crewai 0.203.2 pins litellm==1.74.9 exactly, so
 	# the effective installed version is 1.74.9. That version carries 3
 	# CVEs (CVE-2026-35029 admin auth bypass + RCE, CVE-2026-35030 JWT
