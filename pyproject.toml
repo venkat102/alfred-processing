@@ -11,7 +11,7 @@ authors = [
 dependencies = [
 	"fastapi>=0.100,<1.0",
 	"uvicorn[standard]>=0.20,<1.0",
-	"websockets>=12.0,<14.0",
+	"websockets>=12.0,<17.0",
 	# Pinned exactly because CrewAI's API surface churns fast (0.80 -> 0.203
 	# in our original window) and our crew-builder + rescue paths sit on
 	# specific internals (Task.callback shape, crew.tasks iteration, the
