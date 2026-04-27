@@ -109,7 +109,44 @@ async def _dry_run_with_retry(
 		"message": "Validating changeset against live site...",
 	})
 
-	dry_run = await _run(changes)
+	# Static pre-check: catches the four hallucination classes (unknown_field,
+	# duplicate_field, invalid_permlevel, unknown_parent_doctype, ...) before
+	# we burn a savepoint round-trip. Treats a critical pre-check failure as
+	# a dry-run-invalid result so the existing retry loop handles it.
+	# If the pre-check itself errors (infra failure), skip and fall through
+	# to the savepoint dry-run - never block on infra.
+	pre_check_issues: list = []
+	try:
+		pre = await conn.mcp_client.call_tool(
+			"validate_changeset", {"changeset": changes}
+		)
+		if isinstance(pre, dict) and not pre.get("error") and not pre.get("valid"):
+			pre_check_issues = list(pre.get("issues") or [])
+	except Exception as e:  # noqa: BLE001 — match the pattern in _run()
+		logger.warning("Static validate_changeset pre-check failed: %s", e)
+
+	if pre_check_issues:
+		# Normalize pre-check issues into the same shape _run() emits, so the
+		# downstream retry-task description can interleave them with savepoint
+		# issues without separate code paths.
+		normalized = [
+			{
+				"severity": iss.get("severity", "critical"),
+				"issue": iss.get("message") or iss.get("issue") or "",
+				"code": iss.get("code"),
+				"item_index": iss.get("item_index"),
+				"doctype": iss.get("doctype"),
+				"fix_hint": iss.get("fix_hint"),
+			}
+			for iss in pre_check_issues
+		]
+		dry_run = {
+			"valid": False, "status": "invalid",
+			"issues": normalized,
+			"validated": int(pre.get("checked") or 0) if isinstance(pre, dict) else 0,
+		}
+	else:
+		dry_run = await _run(changes)
 
 	if dry_run.get("valid") or state.dry_run_retries >= 1:
 		dry_run["_final_changes"] = changes

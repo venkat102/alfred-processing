@@ -139,3 +139,137 @@ async def test_status_survives_final_changes_assignment():
 	)
 	assert "status" in result
 	assert "_final_changes" in result
+
+
+# ── Schema-grounding pre-check tests ────────────────────────────
+
+
+def _make_conn_per_tool(per_tool: dict):
+	"""Conn with a side_effect that dispatches by tool name.
+
+	`per_tool` maps tool name -> result dict (or callable returning a result).
+	Used by the pre-check tests where we need validate_changeset and
+	dry_run_changeset to return different things in the same run.
+	"""
+	conn = MagicMock()
+	conn.user = "u@x"
+	conn.site_id = "t"
+	mcp = MagicMock()
+
+	async def dispatch(tool_name, args):  # noqa: ARG001
+		if tool_name not in per_tool:
+			raise AssertionError(f"unexpected tool call: {tool_name}")
+		val = per_tool[tool_name]
+		return val(args) if callable(val) else val
+
+	mcp.call_tool = AsyncMock(side_effect=dispatch)
+	conn.mcp_client = mcp
+	return conn
+
+
+@pytest.mark.asyncio
+async def test_pre_check_short_circuits_when_validate_changeset_flags_critical():
+	"""validate_changeset returning valid=False must trigger the retry path
+	without ever calling dry_run_changeset. The pre-check is cheaper, so we
+	short-circuit on it - the savepoint round trip is wasted otherwise."""
+	pre_issue = {
+		"severity": "critical", "item_index": 0,
+		"doctype": "Custom Field", "code": "duplicate_field",
+		"message": "Field 'priority' already exists on 'ToDo'",
+		"fix_hint": "Pick a different fieldname.",
+	}
+	# dry_run_changeset must NOT be called - if it is, the dispatcher raises.
+	conn = _make_conn_per_tool({
+		"validate_changeset": {"valid": False, "issues": [pre_issue], "checked": 1},
+	})
+	state = CrewState()
+	state.dry_run_retries = 1  # skip the developer retry kickoff path
+
+	result = await _dry_run_with_retry(
+		conn, state, changes=[{"op": "create", "doctype": "Custom Field"}],
+		site_config={}, event_callback=AsyncMock(),
+	)
+	assert result["valid"] is False
+	assert result["status"] == "invalid"
+	assert len(result["issues"]) == 1
+	# Pre-check issues get normalized into the same shape as savepoint issues.
+	issue = result["issues"][0]
+	assert issue["severity"] == "critical"
+	assert issue["code"] == "duplicate_field"
+	assert "priority" in issue["issue"]
+
+
+@pytest.mark.asyncio
+async def test_pre_check_falls_through_when_validate_changeset_clean():
+	"""When validate_changeset returns valid=True, the savepoint dry-run
+	must still run - the pre-check is additive, not a replacement."""
+	dry_called = {"n": 0}
+
+	def _dry(args):  # noqa: ARG001
+		dry_called["n"] += 1
+		return {"valid": True, "issues": [], "validated": 1}
+
+	conn = _make_conn_per_tool({
+		"validate_changeset": {"valid": True, "issues": [], "checked": 1},
+		"dry_run_changeset": _dry,
+	})
+	result = await _dry_run_with_retry(
+		conn, CrewState(), changes=[{"op": "create", "doctype": "Custom Field"}],
+		site_config={}, event_callback=AsyncMock(),
+	)
+	assert result["status"] == "ok"
+	assert dry_called["n"] == 1, "dry_run_changeset must run when pre-check is clean"
+
+
+@pytest.mark.asyncio
+async def test_pre_check_infra_failure_falls_through_to_dry_run():
+	"""If the validate_changeset MCP call itself errors (infra failure, not
+	a content verdict), skip the pre-check and run the savepoint dry-run.
+	Never block on infra."""
+	dry_called = {"n": 0}
+
+	def _dry(args):  # noqa: ARG001
+		dry_called["n"] += 1
+		return {"valid": True, "issues": [], "validated": 1}
+
+	# validate_changeset comes back with the {error, message} shape that the
+	# alfred_client _safe_execute wrapper emits on internal_error.
+	conn = _make_conn_per_tool({
+		"validate_changeset": {"error": "internal_error", "message": "boom"},
+		"dry_run_changeset": _dry,
+	})
+	result = await _dry_run_with_retry(
+		conn, CrewState(), changes=[{"op": "create", "doctype": "Custom Field"}],
+		site_config={}, event_callback=AsyncMock(),
+	)
+	# Pre-check infra failure should not be treated as a content verdict.
+	# It should fall through to the savepoint dry-run, which says ok.
+	assert result["status"] == "ok"
+	assert dry_called["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_pre_check_only_warnings_falls_through():
+	"""validate_changeset returning valid=True with only `warning` severity
+	issues is still a green pre-check. Don't promote warnings to retry."""
+	dry_called = {"n": 0}
+
+	def _dry(args):  # noqa: ARG001
+		dry_called["n"] += 1
+		return {"valid": True, "issues": [], "validated": 1}
+
+	# Note: validate_changeset's contract is `valid` is False only for
+	# critical issues. Warnings can coexist with valid=True.
+	conn = _make_conn_per_tool({
+		"validate_changeset": {
+			"valid": True, "checked": 1,
+			"issues": [{"severity": "warning", "code": "warn", "message": "minor"}],
+		},
+		"dry_run_changeset": _dry,
+	})
+	result = await _dry_run_with_retry(
+		conn, CrewState(), changes=[{"op": "create"}],
+		site_config={}, event_callback=AsyncMock(),
+	)
+	assert result["status"] == "ok"
+	assert dry_called["n"] == 1

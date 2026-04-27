@@ -102,3 +102,52 @@ class TestInsightsBundleStaysReadOnly:
 		assert "validate_workflow_tool" not in names
 		assert "validate_changeset_order_tool" not in names
 		assert "check_permissions_tool" not in names
+
+
+class TestSchemaGroundingTools:
+	"""The four schema-grounding tools must be registered on the Developer
+	bundle (where the dominant accuracy problem lives), the Tester bundle
+	(double-checks the Developer's claims), and the Lite bundle (does both
+	architect + developer work in one pass). They should NOT appear on the
+	read-only Insights bundle - they target build-shaped flows."""
+
+	GROUNDING_TOOLS = {
+		"get_doctype_context", "get_doctype_perms",
+		"find_field", "validate_changeset",
+	}
+
+	def test_developer_has_all_grounding_tools(self, mcp_bundles):
+		names = _names(mcp_bundles["developer"])
+		missing = self.GROUNDING_TOOLS - names
+		assert not missing, f"developer bundle missing: {missing}"
+
+	def test_tester_has_all_grounding_tools(self, mcp_bundles):
+		names = _names(mcp_bundles["tester"])
+		missing = self.GROUNDING_TOOLS - names
+		assert not missing, f"tester bundle missing: {missing}"
+
+	def test_lite_has_all_grounding_tools(self, mcp_bundles):
+		names = _names(mcp_bundles["lite"])
+		missing = self.GROUNDING_TOOLS - names
+		assert not missing, f"lite bundle missing: {missing}"
+
+	def test_insights_excludes_grounding_tools(self, mcp_bundles):
+		"""Insights is read-only Q&A; static validate_changeset and the
+		field-targeting fuzzy matcher belong to the build path, not Q&A."""
+		names = _names(mcp_bundles["insights"])
+		# The pure read tools are arguably useful for Insights too, but the
+		# plan kept Insights minimal and exposes the existing
+		# get_site_customization_detail / lookup_doctype instead. Don't
+		# expand Insights surface as part of this change.
+		assert "validate_changeset" not in names
+		assert "find_field" not in names
+
+	def test_validate_changeset_in_lookup_tools_set(self):
+		"""validate_changeset must be in _LOOKUP_TOOLS so that calling it
+		satisfies the "you must look something up before validating"
+		precondition on dry_run_changeset (the misuse-warning guard)."""
+		from alfred.tools.mcp_tools import _LOOKUP_TOOLS
+		assert "validate_changeset" in _LOOKUP_TOOLS
+		assert "get_doctype_context" in _LOOKUP_TOOLS
+		assert "get_doctype_perms" in _LOOKUP_TOOLS
+		assert "find_field" in _LOOKUP_TOOLS

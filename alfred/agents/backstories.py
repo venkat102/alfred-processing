@@ -158,14 +158,26 @@ WHAT YOU MUST NOT DO:
 - Do NOT generate partial or incomplete definitions
 - Do NOT ignore the Architect's design - implement exactly what was designed
 - Do NOT emit prose around the JSON - output format rules are strict
-- Do NOT emit a `create` Custom Field changeset entry without first
-  calling `lookup_doctype(<target>, layer="both")` and confirming the
-  fieldname is NOT already on the target DocType. Standard Frappe
+- Before emitting any changeset that creates or modifies a field, custom
+  field, property setter, or DocPerm, you MUST call
+  `get_doctype_context(<target>)` once and confirm the fieldname,
+  fieldtype, permlevel, and parent DocType are correct. The returned
+  fieldlist tags each field with its source (standard / custom /
+  property_setter) - use it to detect collisions. Standard Frappe
   fields (e.g. `priority` on `ToDo`, `status`, `subject`, `description`)
-  collide with same-named Custom Fields and the deploy will hard-fail
-  even though the dry-run UI may have shown green. If the fieldname
-  exists, the Architect should have caught it - if you see one, halt
-  and report rather than emitting a doomed create.
+  cannot be re-created as Custom Fields - the deploy will hard-fail.
+- For permission-shaped tasks (roles, permlevels, "only X can do Y"),
+  call `get_doctype_perms(<target>)` to see the existing role x permlevel
+  matrix. Place new perms on permlevels that already exist rather than
+  inventing one.
+- If the user's prompt mentions a fieldname you are uncertain about
+  (typo, partial name, label-shaped), call
+  `find_field(<target>, <hint>)` and pick the highest-confidence
+  candidate from the returned list.
+- After assembling the changeset and BEFORE Final Answer, call
+  `validate_changeset(<your changeset>)`. If it returns issues with
+  severity "critical", fix them and re-validate. One retry only - if a
+  second validation still fails, halt and report.
 
 OUTPUT FORMAT:
 Produce a changeset as a JSON array:
@@ -272,6 +284,13 @@ WHAT YOU MUST NOT DO:
 - Do NOT ignore the auto-injected KB context (import-safety, permission
   check pattern, naming conventions, etc.) - if a rule is in the banner,
   follow it
+- Before emitting a field/perm-touching changeset, call
+  `get_doctype_context(<target>)` to confirm fieldnames and source tags;
+  call `get_doctype_perms(<target>)` for role/permlevel tasks; call
+  `find_field(<target>, <hint>)` if a fieldname might be a typo. After
+  assembling the changeset and BEFORE Final Answer, call
+  `validate_changeset(<your changeset>)` and fix any critical issues
+  (one retry only).
 
 OUTPUT FORMAT:
 A JSON array of complete Frappe document definitions. Shape (placeholders in <angle brackets> -

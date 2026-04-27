@@ -56,6 +56,11 @@ _TOOLS_REQUIRING_PRIOR_LOOKUP = {"dry_run_changeset"}
 _LOOKUP_TOOLS = {
 	"lookup_doctype", "get_doctype_schema", "get_doctypes",
 	"lookup_pattern", "get_existing_customizations",
+	# Schema-grounding tools count as "lookup tools" for the misuse guard:
+	# calling them satisfies the "you must look something up before validating"
+	# precondition on dry_run_changeset.
+	"get_doctype_context", "get_doctype_perms", "find_field",
+	"validate_changeset",
 }
 
 
@@ -555,12 +560,107 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 			args["kind"] = kind
 		return _mcp_call(mcp_client, "lookup_frappe_knowledge", args)
 
+	# ── Schema grounding tools (Tier 2) ──────────────────────────────
+	#
+	# These four exist because the Developer agent's dominant failure mode is
+	# "right shape, wrong details" - it picks the right primitive but then
+	# hallucinates fieldnames, types, permlevels, parent paths. The fix is
+	# grounding: feed the agent real get_meta() output before it generates,
+	# plus a static validator pass before the savepoint dry-run.
+
+	@tool
+	def get_doctype_context(doctype: str) -> str:
+		"""Layered meta for a DocType: standard fields, custom fields, property
+		setters, workflow, and one-hop linked DocTypes. Each field carries a
+		`source` tag (standard/custom/property_setter).
+
+		Call this BEFORE generating any changeset that creates or modifies a
+		field, custom field, property setter, or DocPerm. Use the returned
+		fieldlist to verify fieldnames exist (or do not yet exist, when
+		creating new ones) instead of guessing.
+
+		Substitute the DocType from YOUR plan, not from this docstring.
+		Example: get_doctype_context("ToDo")
+		  -> {"doctype": "ToDo", "module": "Desk", "fields": [
+		       {"fieldname": "priority", "fieldtype": "Select",
+		        "options": "Low\\nMedium\\nHigh", "source": "standard"},
+		       ...],
+		      "property_setters": [...], "workflow": {...} | None,
+		      "linked_doctypes": [...], "field_count": N,
+		      "custom_field_count": M}
+
+		Returns {"error": "not_found"} if the DocType isn't on this site,
+		{"error": "permission_denied"} if you can't read it.
+		"""
+		return _mcp_call(mcp_client, "get_doctype_context", {"doctype": doctype})
+
+	@tool
+	def get_doctype_perms(doctype: str) -> str:
+		"""DocPerm + Custom DocPerm matrix for one DocType, plus the permlevels
+		actually in use and those declared on fields.
+
+		Call this when the user prompt mentions roles, permlevels, or "only X
+		can do Y" - so you can place new permission rows on permlevels that
+		already exist rather than inventing one.
+
+		Example: get_doctype_perms("Employee")
+		  -> {"doctype": "Employee",
+		      "perms": [{"role": "HR Manager", "permlevel": 0,
+		                  "read": 1, "write": 1, ..., "source": "standard"}, ...],
+		      "permlevels_in_use": [0, 1],
+		      "valid_permlevels_for_fields": [0, 1]}
+		"""
+		return _mcp_call(mcp_client, "get_doctype_perms", {"doctype": doctype})
+
+	@tool
+	def find_field(doctype: str, fieldname_hint: str, top_k: int = 3) -> str:
+		"""Fuzzy-match a hinted fieldname against the live meta of a DocType.
+		Deterministic difflib match, no LLM. Includes child-table fields.
+
+		Call this when the user mentions a fieldname you are uncertain about
+		(typo, partial name, label-shaped). Pick the highest-confidence
+		candidate rather than emitting a hallucinated fieldname.
+
+		Example: find_field("ToDo", "priorty")
+		  -> {"doctype": "ToDo", "hint": "priorty",
+		      "exact_match": null,
+		      "candidates": [
+		        {"fieldname": "priority", "fieldtype": "Select",
+		         "label": "Priority", "source": "standard", "confidence": 0.93}]}
+		"""
+		return _mcp_call(mcp_client, "find_field", {
+			"doctype": doctype, "fieldname_hint": fieldname_hint, "top_k": top_k,
+		})
+
+	@tool
+	def validate_changeset(changeset: str) -> str:
+		"""Static schema validation BEFORE the savepoint dry-run. Catches the
+		classes the Developer hallucinates: unknown fields, duplicate fields,
+		invalid permlevels, bad parent DocType paths, missing mandatories,
+		bad link targets, fieldtype/options mismatches.
+
+		ALWAYS call this on your assembled changeset BEFORE Final Answer. Fix
+		any `critical` issues and re-validate (one retry only). It is cheaper
+		than dry_run_changeset and catches static issues earlier.
+
+		Example: validate_changeset('[{"op": "create", "doctype": "Custom Field",
+		    "data": {"dt": "ToDo", "fieldname": "priority", "fieldtype": "Data"}}]')
+		  -> {"valid": false, "issues": [{"severity": "critical", "item_index": 0,
+		      "doctype": "Custom Field", "code": "duplicate_field",
+		      "message": "Field 'priority' already exists on 'ToDo'", ...}],
+		      "checked": 1}
+		"""
+		return _mcp_call(mcp_client, "validate_changeset", {"changeset": changeset})
+
 	# Lite pipeline: one agent handles the whole SDLC, so it gets the union of
 	# every tool the specialist agents would need (deduped while preserving order).
 	_lite_source = [
 		lookup_doctype, lookup_pattern, lookup_frappe_knowledge,
 		get_site_info, get_doctypes, get_doctype_schema, get_existing_customizations,
 		get_site_customization_detail,
+		# Schema grounding - the lite agent does both architect + developer work
+		# in one pass and benefits most from real-meta lookups before generation.
+		get_doctype_context, get_doctype_perms, find_field, validate_changeset,
 		get_user_context, check_permission, validate_name_available, has_active_workflow,
 		check_has_records, validate_python_syntax_stub, validate_js_syntax_stub,
 		dry_run_changeset,
@@ -619,6 +719,15 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 		],
 		"developer": [
 			lookup_doctype,              # verify field names for the changeset
+			# Schema grounding - call FIRST for any field/perm-touching op.
+			# get_doctype_context returns layered meta (standard + custom +
+			# property-setter), get_doctype_perms returns the role x permlevel
+			# matrix, find_field disambiguates a hinted fieldname, and
+			# validate_changeset is a static pre-check before Final Answer.
+			get_doctype_context,
+			get_doctype_perms,
+			find_field,
+			validate_changeset,
 			lookup_pattern,              # retrieve template to adapt
 			lookup_frappe_knowledge,     # platform rules (no-import, permissions, etc.)
 			lookup_kb_entry_by_id,       # cheap re-fetch when the id is already known
@@ -638,6 +747,8 @@ def build_mcp_tools(mcp_client: MCPClient) -> dict[str, list]:
 			validate_changeset_order_tool,
 			validate_python_syntax_stub, validate_js_syntax_stub, validate_name_available,
 			check_permission, has_active_workflow, lookup_doctype, check_has_records,
+			# Schema grounding - tester double-checks the Developer's claims.
+			get_doctype_context, get_doctype_perms, find_field, validate_changeset,
 			dry_run_changeset,
 		],
 		"deployer": [check_has_records],
