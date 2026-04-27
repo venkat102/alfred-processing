@@ -32,7 +32,7 @@ dependencies = [
 	# calls out as deliberate work. See task #11 in tech-debt-backlog
 	# for the planned crewai bump.
 	"litellm>=1.40,<2.0",
-	"redis[hiredis]>=5.0,<6.0",
+	"redis[hiredis]>=5.0,<8.0",
 	"pydantic>=2.0,<3.0",
 	"pydantic-settings>=2.0,<3.0",
 	"pyjwt>=2.8,<3.0",
